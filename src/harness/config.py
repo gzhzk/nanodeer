@@ -1,0 +1,182 @@
+"""Configuration loader for NanoDeer harness.
+
+Loads settings from config.yaml with environment variable substitution.
+"""
+import os
+import re
+from pathlib import Path
+from typing import Any
+
+import yaml
+from dotenv import load_dotenv
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Load .env file for development
+load_dotenv()
+
+
+def _resolve_env_vars(value: Any) -> Any:
+    """Recursively resolve environment variables in config values.
+
+    Supports $VAR and ${VAR} syntax.
+    """
+    import re
+
+    ENV_VAR_PATTERN = re.compile(r'\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?')
+
+    def replace_env_var(match: re.Match) -> str:
+        var_name = match.group(1)
+        return os.getenv(var_name, match.group(0))
+
+    if isinstance(value, str):
+        return ENV_VAR_PATTERN.sub(replace_env_var, value)
+    elif isinstance(value, dict):
+        return {k: _resolve_env_vars(v) for k, v in value.items()}
+    elif isinstance(value, list):
+        return [_resolve_env_vars(item) for item in value]
+    return value
+
+
+def _load_yaml_config() -> dict:
+    """Load config from config.yaml with env var resolution."""
+    # Try default paths
+    paths = [
+        Path("config.yaml"),
+        Path(__file__).parent.parent.parent / "config.yaml",
+        Path.cwd() / "config.yaml",
+    ]
+
+    # Allow override via environment variable
+    config_path = os.getenv("NANODEER_CONFIG_PATH")
+    if config_path:
+        paths.insert(0, Path(config_path))
+
+    for path in paths:
+        if path.exists():
+            with open(path) as f:
+                config = yaml.safe_load(f)
+            return _resolve_env_vars(config)
+
+    return {}
+
+
+class ModelConfig(BaseSettings):
+    """Model configuration."""
+    name: str
+    display_name: str | None = None
+    use: str  # e.g., "langchain_anthropic:ChatAnthropic"
+    model: str
+    api_key: str | None = None
+    base_url: str | None = None
+    request_timeout: float = 600.0
+    max_retries: int = 2
+    max_tokens: int = 4096
+    supports_vision: bool = False
+    supports_thinking: bool = False
+
+
+class SandboxConfig(BaseSettings):
+    """Sandbox configuration."""
+    use: str = "nanodeer.sandbox.docker:DockerSandboxProvider"
+    image: str = "enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:latest"
+    replicas: int = 3
+    container_prefix: str = "nanodeer-sandbox"
+    port: int = 8080
+
+
+class SubagentsConfig(BaseSettings):
+    """Subagents configuration."""
+    timeout_seconds: int = 900
+    max_concurrent: int = 3
+
+
+class MemoryConfig(BaseSettings):
+    """Memory configuration."""
+    enabled: bool = True
+    storage_path: str = "memory.json"
+    debounce_seconds: float = 30.0
+    max_facts: int = 100
+    fact_confidence_threshold: float = 0.7
+    injection_enabled: bool = True
+    max_injection_tokens: int = 2000
+
+
+class ThreadConfig(BaseSettings):
+    """Thread storage configuration."""
+    storage_path: Path = Field(default=Path("/tmp/nanodeer/threads"))
+    checkpointer_type: str = "memory"  # memory / sqlite / postgres
+
+
+class SecurityConfig(BaseSettings):
+    """Security configuration."""
+    mode: str = "default"  # default / plan / auto / bypass
+
+
+class HarnessConfig(BaseSettings):
+    """Harness-level configuration loaded from config.yaml."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="NANODEER_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    # Config sections
+    models: list[ModelConfig] = Field(default_factory=list)
+    sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
+    subagents: SubagentsConfig = Field(default_factory=SubagentsConfig)
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
+    thread: ThreadConfig = Field(default_factory=ThreadConfig)
+    security: SecurityConfig = Field(default_factory=SecurityConfig)
+
+    # Logging
+    log_level: str = "info"
+
+    @classmethod
+    def from_yaml(cls) -> "HarnessConfig":
+        """Load configuration from config.yaml."""
+        yaml_config = _load_yaml_config()
+
+        # Extract and convert to Pydantic models
+        config_dict = {}
+
+        if "models" in yaml_config:
+            config_dict["models"] = [
+                ModelConfig(**m) for m in yaml_config["models"]
+            ]
+
+        if "sandbox" in yaml_config:
+            config_dict["sandbox"] = SandboxConfig(**yaml_config["sandbox"])
+
+        if "subagents" in yaml_config:
+            config_dict["subagents"] = SubagentsConfig(**yaml_config["subagents"])
+
+        if "memory" in yaml_config:
+            config_dict["memory"] = MemoryConfig(**yaml_config["memory"])
+
+        if "thread" in yaml_config:
+            config_dict["thread"] = ThreadConfig(**yaml_config["thread"])
+
+        if "security" in yaml_config:
+            config_dict["security"] = SecurityConfig(**yaml_config["security"])
+
+        if "log_level" in yaml_config:
+            config_dict["log_level"] = yaml_config["log_level"]
+
+        return cls(**config_dict)
+
+
+# Global config instance
+_config: HarnessConfig | None = None
+
+
+def get_config() -> HarnessConfig:
+    """Get the global config instance (lazy loading from config.yaml)."""
+    global _config
+    if _config is None:
+        _config = HarnessConfig.from_yaml()
+        # Ensure storage directories exist
+        _config.thread.storage_path.mkdir(parents=True, exist_ok=True)
+    return _config
