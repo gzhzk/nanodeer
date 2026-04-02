@@ -1,6 +1,6 @@
 """Agent state definitions."""
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from langchain_core.messages import BaseMessage
 from langgraph.graph import add_messages
@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 #
 #     If re-enabled, merge_artifacts should use Artifact objects
 #     with id-based deduplication.
-# """
+#     """
 #     id: str
 #     type: str  # "file", "image", "code"
 #     content: str
@@ -49,10 +49,15 @@ def merge_artifacts(
 
 
 class SandboxInfo(BaseModel):
-    """Sandbox execution context for a thread."""
+    """Sandbox execution context for a thread.
+
+    Represents a sandboxed execution environment (always Docker container).
+    Must be acquired before any tool execution; never nullable.
+    """
     thread_id: str
-    sandbox_type: str = "docker"  # "docker" only (local removed for security)
-    working_dir: str | None = None
+    container_id: str | None = None  # Filled after container is created
+    status: Literal["acquiring", "ready", "released"] = "acquiring"
+    working_dir: str | None = None  # Physical path inside container
 
 
 class ThreadState(BaseModel):
@@ -73,7 +78,7 @@ class ThreadState(BaseModel):
     artifacts: Annotated[list[str], merge_artifacts] = Field(
         default_factory=list,
     )
-    sandbox: SandboxInfo | None = Field(default=None)
+    sandbox: SandboxInfo = Field(default_factory=lambda: SandboxInfo(thread_id=""))
     uploaded_files: list[str] = Field(default_factory=list)
     thread_id: str | None = Field(default=None)
     needs_clarification: bool = Field(default=False)

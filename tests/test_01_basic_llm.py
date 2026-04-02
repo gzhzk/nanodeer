@@ -22,7 +22,7 @@ async def test_basic_agent():
     )
 
     # Create agent graph (no tools yet)
-    agent = make_lead_agent(llm=llm, tools=[])
+    agent = make_lead_agent(llm=llm, tools=[], checkpointer_type=None)
 
     # Create initial state
     initial_state = ThreadState(

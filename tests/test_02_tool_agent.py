@@ -24,7 +24,7 @@ async def test_tool_agent():
     # Create agent with tools
     # BashCommand disabled - requires Sandbox (Day 3-4)
     tools = [ReadFile, WriteFile]
-    agent = make_lead_agent(llm=llm, tools=tools)
+    agent = make_lead_agent(llm=llm, tools=tools, checkpointer_type=None)
 
     # Create a test file first
     test_file = "/tmp/nanodeer_test.txt"
