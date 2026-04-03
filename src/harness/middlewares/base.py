@@ -1,10 +1,9 @@
-"""Base class for Harness middlewares.
+"""Middleware chain for agent execution pipeline.
 
-Middlewares intercept the agent execution pipeline at various hooks.
-They can read/write state and perform side effects (acquire resources,
-validate inputs, update memory, etc).
+Middlewares intercept at hooks: before_agent_start, before_tool_call, etc.
+before_* hooks run forward, after_* hooks run in reverse (reverse cleanup).
 """
-from abc import ABC, abstractmethod
+from abc import ABC
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -12,71 +11,31 @@ if TYPE_CHECKING:
 
 
 class Middleware(ABC):
-    """Abstract base class for all Harness middlewares.
+    """Interceptor hooks at agent execution lifecycle points."""
 
-    Middlewares implement hooks that are called at specific points
-    in the agent execution lifecycle.
-    """
+    async def before_agent_start(self, state: "ThreadState") -> None: ...
 
-    async def before_agent_start(self, state: "ThreadState") -> None:
-        """Called before the agent starts processing.
+    async def after_agent_end(self, state: "ThreadState") -> None: ...
 
-        Args:
-            state: Current ThreadState (mutable).
-        """
-        pass
+    async def before_tool_call(
+        self, state: "ThreadState", tool_name: str, tool_args: dict
+    ) -> None: ...
 
-    async def after_agent_end(self, state: "ThreadState") -> None:
-        """Called after the agent finishes processing.
+    async def after_tool_call(
+        self, state: "ThreadState", tool_name: str, tool_args: dict, result: str
+    ) -> None: ...
 
-        Args:
-            state: Current ThreadState.
-        """
-        pass
-
-    async def before_tool_call(self, state: "ThreadState", tool_name: str, tool_args: dict) -> None:
-        """Called before a tool is executed.
-
-        Args:
-            state: Current ThreadState.
-            tool_name: Name of the tool to be called.
-            tool_args: Arguments to the tool.
-        """
-        pass
-
-    async def after_tool_call(self, state: "ThreadState", tool_name: str, tool_args: dict, result: str) -> None:
-        """Called after a tool finishes executing.
-
-        Args:
-            state: Current ThreadState.
-            tool_name: Name of the tool that was called.
-            tool_args: Arguments that were passed.
-            result: Tool execution result (as string).
-        """
-        pass
-
-    async def on_error(self, state: "ThreadState", error: Exception) -> None:
-        """Called when an error occurs during execution.
-
-        Args:
-            state: Current ThreadState.
-            error: The exception that was raised.
-        """
-        pass
+    async def on_error(self, state: "ThreadState", error: Exception) -> None: ...
 
 
 class MiddlewareChain:
-    """Chain of middlewares with ordered execution.
+    """Middleware chain with ordered execution.
 
-    Hooks are called in order for "before_*" and reverse order for "after_*".
+    before_* hooks execute in registration order.
+    after_* hooks execute in reverse order (reverse cleanup pattern).
     """
 
     def __init__(self, middlewares: list[Middleware]):
-        """Initialize chain.
-
-        Args:
-            middlewares: Ordered list of middlewares.
-        """
         self.middlewares = middlewares
 
     async def before_agent_start(self, state: "ThreadState") -> None:
@@ -87,11 +46,15 @@ class MiddlewareChain:
         for m in reversed(self.middlewares):
             await m.after_agent_end(state)
 
-    async def before_tool_call(self, state: "ThreadState", tool_name: str, tool_args: dict) -> None:
+    async def before_tool_call(
+        self, state: "ThreadState", tool_name: str, tool_args: dict
+    ) -> None:
         for m in self.middlewares:
             await m.before_tool_call(state, tool_name, tool_args)
 
-    async def after_tool_call(self, state: "ThreadState", tool_name: str, tool_args: dict, result: str) -> None:
+    async def after_tool_call(
+        self, state: "ThreadState", tool_name: str, tool_args: dict, result: str
+    ) -> None:
         for m in reversed(self.middlewares):
             await m.after_tool_call(state, tool_name, tool_args, result)
 

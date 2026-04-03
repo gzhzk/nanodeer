@@ -71,21 +71,7 @@ class AgentBuilder:
         return self._compiled
 
     async def ainvoke_with_hooks(self, initial_state: ThreadState) -> dict:
-        """Invoke agent with middleware hooks.
-
-        Executes middleware lifecycle:
-        - before_agent_start: acquire resources (sandbox, directories)
-        - tool calls routed through before_tool_call validation
-        - after_agent_end: release resources (reverse order)
-
-        Note: Must call build() first to compile the graph.
-
-        Args:
-            initial_state: Starting ThreadState.
-
-        Returns:
-            Final state after agent execution.
-        """
+        """Invoke agent with middleware hooks."""
         if not hasattr(self, "_compiled"):
             raise RuntimeError("Must call build() before ainvoke_with_hooks()")
 
@@ -93,20 +79,14 @@ class AgentBuilder:
             return await self._compiled.ainvoke(initial_state)
 
         try:
-            # before_agent_start hook
             await self.middleware_chain.before_agent_start(initial_state)
-
-            # Run agent
             result = await self._compiled.ainvoke(initial_state)
-
             return result
         except Exception as e:
-            # on_error hook for cleanup
             if hasattr(self.middleware_chain, "on_error"):
                 await self.middleware_chain.on_error(initial_state, e)
             raise
         finally:
-            # after_agent_end hook (always runs, even on error)
             await self.middleware_chain.after_agent_end(initial_state)
 
     async def _agent_node(self, state: ThreadState) -> dict:
@@ -122,21 +102,7 @@ class AgentBuilder:
         return {"messages": [response]}
 
     async def _tool_executor_node(self, state: ThreadState) -> dict:
-        """Tool execution node: runs tools and returns results.
-
-        When sandbox is available (state.sandbox.status == "ready"),
-        tools execute inside the Docker container via sandbox.run().
-        Otherwise falls back to direct tool.ainvoke().
-
-        Middleware hooks (before_tool_call/after_tool_call) are called
-        around each tool execution if middleware_chain is set.
-
-        Args:
-            state: Current ThreadState with tool_calls in last message.
-
-        Returns:
-            dict: Update with ToolMessage results appended to messages.
-        """
+        """Tool execution node: runs tools and returns results."""
         from langchain_core.messages import AIMessage
 
         last_message = state.messages[-1]
@@ -158,17 +124,14 @@ class AgentBuilder:
                 ))
                 continue
 
-            # Call before_tool_call hook
             if self.middleware_chain:
                 await self.middleware_chain.before_tool_call(state, tc["name"], tc["args"])
 
-            # Execute via sandbox if available
             if sandbox:
                 result = await self._execute_in_sandbox(sandbox, tool, tc)
             else:
                 result = await tool.ainvoke(tc["args"])
 
-            # Call after_tool_call hook
             if self.middleware_chain:
                 await self.middleware_chain.after_tool_call(state, tc["name"], tc["args"], str(result))
 
@@ -180,18 +143,7 @@ class AgentBuilder:
         return {"messages": results}
 
     async def _execute_in_sandbox(self, sandbox, tool, tool_call):
-        """Execute a tool call inside the sandbox container.
-
-        Translates virtual paths and runs commands via sandbox.run().
-
-        Args:
-            sandbox: SandboxInfo with container details.
-            tool: The BaseTool to execute.
-            tool_call: The tool call dict with name and args.
-
-        Returns:
-            Tool result as string.
-        """
+        """Execute tool call inside Docker container. Translates virtual paths."""
         from ..sandbox import Sandbox, get_sandbox_provider
         from ..sandbox.path import translate_and_validate
 
@@ -207,44 +159,34 @@ class AgentBuilder:
             virtual_path = args.get("file_path", "")
             content = args.get("content", "")
             physical_path = translate_and_validate(virtual_path, sandbox.thread_id)
-            # Escape content for shell (simple version - doesn't handle all cases)
-            escaped_content = content.replace("'", "'\"'\"'")
-            cmd = f"mkdir -p $(dirname {physical_path}) && echo '{escaped_content}' > {physical_path}"
+            # Simple shell escaping - doesn't handle all edge cases
+            escaped = content.replace("'", "'\"'\"'")
+            cmd = f"mkdir -p $(dirname {physical_path}) && echo '{escaped}' > {physical_path}"
 
         elif tool_name == "BashCommand":
-            command = args.get("command", "")
-            cmd = command
+            cmd = args.get("command", "")
 
         else:
             return f"Unknown tool: {tool_name}"
 
-        # Get provider from context
+        # Provider stored in context by SandboxMiddleware
         provider = get_sandbox_provider(sandbox.thread_id)
         if not provider:
             return "Error: Sandbox provider not found in context"
 
-        # Create Sandbox object for provider.run()
         sandbox_obj = Sandbox(
             thread_id=sandbox.thread_id,
             container_id=sandbox.container_id,
             working_dir=sandbox.working_dir or f"/workspace/{sandbox.thread_id}",
         )
 
-        # Execute via sandbox
         run_result = await provider.run(sandbox_obj, cmd)
         if run_result.returncode != 0:
             return f"Error: {run_result.stderr}"
         return run_result.stdout
 
     def _should_continue(self, state: ThreadState) -> Literal["continue", "end"]:
-        """Route: continue or end based on tool_calls.
-
-        Args:
-            state: Current ThreadState.
-
-        Returns:
-            "continue" if LLM called tools, "end" otherwise.
-        """
+        """Route to tools if LLM called tools, otherwise end."""
         from langchain_core.messages import AIMessage
 
         last_message = state.messages[-1]
@@ -275,19 +217,7 @@ def make_lead_agent(
 
 
 def _create_checkpointer(checkpointer_type: str) -> MemorySaver:
-    """Create a checkpointer based on type.
-
-    Currently only memory checkpointer is implemented.
-    SQLite and Postgres checkpointers are planned for future.
-    """
+    """Create a checkpointer based on type. Currently only memory is implemented."""
     if checkpointer_type == "memory":
         return MemorySaver()
-    # Future: sqlite, postgres
-    # elif checkpointer_type == "sqlite":
-    #     from langgraph.checkpoint.sqlite import SqliteSaver
-    #     return SqliteSaver.from_conn_string(...)
-    # elif checkpointer_type == "postgres":
-    #     from langgraph.checkpoint.postgres import PostgresSaver
-    #     return PostgresSaver.from_conn_string(...)
-    else:
-        return MemorySaver()
+    return MemorySaver()  # TODO: sqlite, postgres
