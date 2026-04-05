@@ -1,5 +1,6 @@
 """Docker-based sandbox provider. Ephemeral containers, one per thread."""
 import asyncio
+import os
 
 import docker
 
@@ -16,20 +17,33 @@ class DockerSandboxProvider(SandboxProvider):
         self,
         image: str = "enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:latest",
         container_prefix: str = "nanodeer-sandbox",
+        base_url: str | None = None,
     ):
+        """Initialize Docker provider.
+
+        Args:
+            image: Docker image to use for containers.
+            container_prefix: Prefix for container names.
+            base_url: Docker daemon address. Defaults to DOCKER_HOST env var or unix socket.
+        """
         self.image = image
         self.container_prefix = container_prefix
+        self.base_url = base_url or os.environ.get("DOCKER_HOST", None)
         self._client: docker.DockerClient | None = None
 
     @property
     def client(self) -> docker.DockerClient:
-        """TCP for Docker Desktop/WSL2, unix socket fallback for Linux/Mac."""
+        """Connect to Docker daemon."""
         if self._client is None:
-            try:
-                self._client = docker.DockerClient(base_url="tcp://localhost:2375")
-                self._client.ping()
-            except docker.errors.DockerException:
-                self._client = docker.from_env()
+            if self.base_url:
+                self._client = docker.DockerClient(base_url=self.base_url)
+            else:
+                # Try TCP localhost first (Docker Desktop on WSL2), then unix socket
+                try:
+                    self._client = docker.DockerClient(base_url="tcp://localhost:2375")
+                    self._client.ping()
+                except docker.errors.DockerException:
+                    self._client = docker.from_env()
         return self._client
 
     async def acquire(self, thread_id: str) -> Sandbox:

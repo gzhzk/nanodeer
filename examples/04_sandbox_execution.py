@@ -53,11 +53,13 @@ async def main():
 
     # Create agent with middleware chain
     config = get_config()
-    model_cfg = config.models[0]
+    model = config.agents.defaults.model
+    provider_name = config.agents.defaults.provider
+    p = config.get_provider_config(provider_name)
     llm = ChatAnthropic(
-        model=model_cfg.model,
-        anthropic_api_key=model_cfg.api_key,
-        base_url=model_cfg.base_url,
+        model=model,
+        anthropic_api_key=p.api_key,
+        base_url=p.api_base,
     )
     tools = [BashCommand]
 

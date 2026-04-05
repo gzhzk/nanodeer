@@ -2,24 +2,76 @@
 # NanoDeer Configuration
 # ============================================================================
 # Copy this file to `config.yaml` and customize it for your environment.
-# Environment variables are available for all field values. Example: `api_key: $MINIMAX_API_KEY`
+# Environment variables are available for all field values. Example: `api_key: $ANTHROPIC_API_KEY`
 
 # ============================================================================
-# Models Configuration
+# Agent Defaults
 # ============================================================================
+# Default model and provider for all agents.
+# Provider must be explicitly specified.
 
-models:
-  - name: minimax-m2.7
-    display_name: MiniMax M2.7
-    use: langchain_anthropic:ChatAnthropic
-    model: MiniMax-M2.7
-    api_key: $MINIMAX_API_KEY
-    base_url: $MINIMAX_BASE_URL
-    request_timeout: 600.0
-    max_retries: 2
-    max_tokens: 4096
-    supports_vision: true
-    supports_thinking: true
+agents:
+  defaults:
+    model: MiniMax-M2.7  # Model name
+    provider: minimax  # minimax, anthropic, openrouter, deepseek, moonshot, etc.
+    max_tokens: 8192
+    temperature: 0.1
+
+# ============================================================================
+# Provider Configurations
+# ============================================================================
+# Each provider only needs api_key (and optionally api_base if non-standard).
+# Standard api_base values are predefined but can be overridden.
+
+# Anthropic-compatible providers (use ChatAnthropic)
+anthropic:
+  api_key: $ANTHROPIC_API_KEY
+  api_base: https://api.anthropic.com
+
+openrouter:
+  api_key: $OPENROUTER_API_KEY
+  api_base: https://openrouter.ai/api/v1
+
+deepseek:
+  api_key: $DEEPSEEK_API_KEY
+  api_base: https://api.deepseek.com/v1
+
+moonshot:
+  api_key: $MOONSHOT_API_KEY
+  api_base: https://api.moonshot.cn/v1
+
+zhipu:
+  api_key: $ZHIPU_API_KEY
+  api_base: https://open.bigmodel.cn/api/paas/v1
+
+dashscope:
+  api_key: $DASHSCOPE_API_KEY
+  api_base: https://dashscope.aliyuncs.com/api/v1
+
+minimax:
+  api_key: $MINIMAX_API_KEY
+  api_base: $MINIMAX_BASE_URL  # Set in environment
+
+siliconflow:
+  api_key: $SILICONFLOW_API_KEY
+  api_base: https://api.siliconflow.cn
+
+# OpenAI-compatible providers (use ChatOpenAI)
+openai:
+  api_key: $OPENAI_API_KEY
+  api_base: https://api.openai.com/v1
+
+gemini:
+  api_key: $GEMINI_API_KEY
+  api_base: https://generativelanguage.googleapis.com/v1beta
+
+groq:
+  api_key: $GROQ_API_KEY
+  api_base: https://api.groq.com/openai/v1
+
+ollama:
+  api_base: http://localhost:11434/v1
+  # No api_key needed for local
 
 # ============================================================================
 # Sandbox Configuration (Docker only - local removed for security)

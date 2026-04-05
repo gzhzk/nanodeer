@@ -3,13 +3,14 @@
 from typing import Annotated, Literal
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import BaseMessage, ToolMessage
+from langchain_core.messages import BaseMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 
 from .state import ThreadState
+from .prompt import build_lead_agent_prompt
 
 # Optional: Middleware chain for hooks (lazy import to avoid hard dependency)
 try:
@@ -90,7 +91,7 @@ class AgentBuilder:
             await self.middleware_chain.after_agent_end(initial_state)
 
     async def _agent_node(self, state: ThreadState) -> dict:
-        """Agent node: calls the LLM.
+        """Agent node: calls the LLM with system prompt injected.
 
         Args:
             state: Current ThreadState.
@@ -98,7 +99,21 @@ class AgentBuilder:
         Returns:
             dict: Update to merge into state (adds messages).
         """
-        response = await self.llm.ainvoke(state.messages)
+        # Build system prompt with available tools
+        tool_names = [t.name for t in self.tools]
+        sandbox = state.sandbox
+        thread_id = sandbox.thread_id if sandbox else None
+
+        system_prompt = build_lead_agent_prompt(
+            tools=tool_names,
+            thread_id=thread_id,
+        )
+
+        # Prepend system message to conversation
+        system_message = SystemMessage(content=system_prompt)
+        messages = [system_message] + list(state.messages)
+
+        response = await self.llm.ainvoke(messages)
         return {"messages": [response]}
 
     async def _tool_executor_node(self, state: ThreadState) -> dict:

@@ -14,11 +14,22 @@ from harness.tools.file import ReadFile, WriteFile  # , BashCommand
 async def test_tool_agent():
     """Test: Agent calls ReadFile tool and returns result."""
     config = get_config()
-    model_cfg = config.models[0]
+
+    # Use minimax provider
+    model = "MiniMax-M2.7"
+    provider_name = "minimax"
+    p = config.get_provider_config(provider_name)
+    api_key = p.api_key if p else None
+    api_base = p.api_base if p else None
+
+    print(f"Using provider: {provider_name}")
+    print(f"Model: {model}")
+    print(f"API Base: {api_base}")
+
     llm = ChatAnthropic(
-        model=model_cfg.model,
-        anthropic_api_key=model_cfg.api_key,
-        base_url=model_cfg.base_url,
+        model=model,
+        anthropic_api_key=api_key,
+        base_url=api_base,
     )
 
     # Create agent with tools

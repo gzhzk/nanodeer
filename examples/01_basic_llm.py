@@ -24,17 +24,20 @@ async def main():
     """Run a simple agent that can respond to messages."""
     config = get_config()
 
-    # Get first model from config
-    model_cfg = config.models[0]
+    # Provider-based config
+    model = config.agents.defaults.model
+    provider_name = config.agents.defaults.provider
+    p = config.get_provider_config(provider_name)
     llm = ChatAnthropic(
-        model=model_cfg.model,
-        anthropic_api_key=model_cfg.api_key,
-        base_url=model_cfg.base_url,
+        model=model,
+        anthropic_api_key=p.api_key,
+        base_url=p.api_base,
     )
 
     # Create the agent graph
     # Note: tools=[] means NO tools - this is just a basic LLM call
-    agent = make_lead_agent(llm=llm, tools=[])
+    # checkpointer_type=None disables persistence (not needed for simple examples)
+    agent = make_lead_agent(llm=llm, tools=[], checkpointer_type=None)
 
     # Create initial state
     initial_state = ThreadState(

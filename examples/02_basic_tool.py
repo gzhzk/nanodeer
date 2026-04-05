@@ -27,17 +27,20 @@ from harness.tools.file import ReadFile, WriteFile  # , BashCommand
 async def main():
     """Run an agent with file and bash tools."""
     config = get_config()
-    model_cfg = config.models[0]
+    model = config.agents.defaults.model
+    provider_name = config.agents.defaults.provider
+    p = config.get_provider_config(provider_name)
     llm = ChatAnthropic(
-        model=model_cfg.model,
-        anthropic_api_key=model_cfg.api_key,
-        base_url=model_cfg.base_url,
+        model=model,
+        anthropic_api_key=p.api_key,
+        base_url=p.api_base,
     )
 
     # Create agent with tools bound
     # BashCommand disabled - requires Sandbox (Day 3-4)
     tools = [ReadFile, WriteFile]
-    agent = make_lead_agent(llm=llm, tools=tools)
+    # checkpointer_type=None disables persistence for simple examples
+    agent = make_lead_agent(llm=llm, tools=tools, checkpointer_type=None)
 
     # Create a test file for the agent to read
     test_file = "/tmp/nanodeer_example02.txt"

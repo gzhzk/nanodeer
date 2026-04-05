@@ -1,4 +1,4 @@
-# NanoDeer 轻量化AI Super Agent系统项目报告
+# NanoDeer 轻量化AI Super Agent系统项目蓝图
 
 ## 项目概述
 NanoDeer是一款基于**Python+LangGraph**打造的轻量化AI Super Agent系统，核心定位为**飞书生态适配的企业级轻量化Agent底座**，通过复刻DeerFlow大厂级分层架构、融合Claude Code核心设计亮点，在保持**Agent编排、沙箱隔离、主动式记忆、多Agent协作、企业级安全**五大核心能力完整的前提下，实现架构、依赖、功能、运行全维度轻量化。
