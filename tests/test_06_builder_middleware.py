@@ -1,4 +1,4 @@
-"""Test 05: Full System Integration Test
+"""Test 06: Full System Integration Test
 
 Tests the complete system including:
 - Provider-based config loading

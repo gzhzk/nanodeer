@@ -1,6 +1,6 @@
-"""Example 04: Sandbox Execution with Docker
+"""Example 05: Sandbox Execution with Docker
 
-Run with: python -m examples.04_sandbox_execution
+Run with: python -m examples.05_sandbox_real
 
 This example demonstrates:
 - Middleware chain integration with builder
@@ -102,9 +102,8 @@ async def main():
     except Exception as e:
         print(f"\n❌ Error: {e}")
         print("\nNote: If Docker failed, check:")
-        print("  - Docker daemon is running (Docker Desktop)")
-        print("  - TCP port 2375 is exposed (Settings > General)")
-        print("  - Proxy settings in Docker Desktop are correct")
+        print("  - Docker daemon is running (Docker Desktop or dockerd)")
+        print("  - unix:///var/run/docker.sock is accessible")
 
 
 if __name__ == "__main__":

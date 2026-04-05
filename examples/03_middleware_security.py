@@ -1,6 +1,6 @@
 """Example 03: Middleware Chain + Security Validation
 
-Run with: python -m examples.03_sandbox_middleware
+Run with: python -m examples.03_middleware_security
 
 This example demonstrates:
 - How ThreadDataMiddleware creates thread directory structure

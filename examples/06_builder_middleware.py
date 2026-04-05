@@ -1,6 +1,6 @@
-"""Example 05: Provider-based Agent with Tools
+"""Example 06: Provider-based Agent with Tools
 
-Run with: python -m examples.05_provider_agent
+Run with: python -m examples.06_builder_middleware
 
 Demonstrates:
 - Provider-based config (new pattern)
