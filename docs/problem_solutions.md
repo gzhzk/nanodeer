@@ -94,7 +94,7 @@ make_lead_agent(llm, tools, checkpointer_type="memory")
 
 | 问题 | 优先级 | 状态 |
 |------|--------|------|
-| Memory 记忆系统 | P1 | 待做 |
+| Memory 记忆系统 | P1 | ✅ v1 文件存储 + Middleware 注入完成 |
 | WriteFile 命令注入加固 | P2 | 待做 |
 | config extra="allow" 静默吞错误 | P2 | 待讨论 |
 | pending_subagent_tasks 扩展 | P3 | 只有 list，无状态/依赖/超时 |

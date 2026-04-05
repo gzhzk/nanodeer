@@ -6,7 +6,7 @@ English | [中文](./README_zh.md)
 
 ## Status
 
-**In development** — Core framework validated with 65 passing tests.
+**In development** — Core framework validated with 80 passing tests.
 
 ## Quick Start
 
@@ -18,7 +18,11 @@ cp config.yaml.example config.yaml
 # Run examples
 python -m examples.01_basic_llm        # Basic LLM (no tools)
 python -m examples.02_basic_tool        # Agent with file tools
-python -m examples.03_sandbox_middleware  # Middleware chain + security
+python -m examples.03_middleware_security  # Middleware chain + security
+python -m examples.04_sandbox_mock        # Sandbox path utilities (no Docker)
+python -m examples.05_sandbox_real        # Real Docker sandbox execution
+python -m examples.06_builder_middleware  # Builder + middleware integration
+python -m examples.07_memory            # Memory system + file-based storage
 ```
 
 ## Project Structure
@@ -31,15 +35,18 @@ nanodeer/
 │   │   │   ├── builder.py
 │   │   │   ├── prompt.py
 │   │   │   └── state.py
-│   │   ├── middlewares/     # ThreadData, Sandbox, Security
+│   │   ├── middlewares/     # ThreadData, Sandbox, Security, Memory
 │   │   │   ├── base.py
+│   │   │   ├── memory.py
 │   │   │   ├── sandbox.py
 │   │   │   ├── security.py
 │   │   │   └── thread_data.py
 │   │   ├── sandbox/         # Docker container isolation
 │   │   │   ├── docker.py
 │   │   │   └── path.py
-│   │   ├── memory/          # Checkpoint persistence
+│   │   ├── memory/          # File-based memory storage
+│   │   │   ├── storage.py
+│   │   │   └── types.py
 │   │   ├── plan/            # Planning subagent
 │   │   ├── security/        # Security policies
 │   │   ├── subagents/       # Subagent registry
@@ -53,16 +60,19 @@ nanodeer/
 ├── examples/                  # Usage examples
 │   ├── 01_basic_llm.py
 │   ├── 02_basic_tool.py
-│   ├── 03_sandbox_middleware.py
-│   ├── 04_sandbox_execution.py
-│   └── 05_provider_agent.py
-├── tests/                     # Test suite (65 tests)
+│   ├── 03_middleware_security.py
+│   ├── 04_sandbox_mock.py
+│   ├── 05_sandbox_real.py
+│   ├── 06_builder_middleware.py
+│   └── 07_memory.py
+├── tests/                     # Test suite (80 tests)
 │   ├── test_01_basic_llm.py
-│   ├── test_02_tool_agent.py
-│   ├── test_03_middlewares.py
-│   ├── test_04_sandbox.py
-│   ├── test_04_sandbox_real.py
-│   └── test_05_provider_agent.py
+│   ├── test_02_basic_tool.py
+│   ├── test_03_middleware_security.py
+│   ├── test_04_sandbox_mock.py
+│   ├── test_05_sandbox_real.py
+│   ├── test_06_builder_middleware.py
+│   └── test_07_memory.py
 ├── sandbox/                   # Docker sandbox
 │   ├── Dockerfile
 │   ├── build.sh
@@ -102,7 +112,8 @@ Three-layer architecture:
 
 - **Agent State Machine**: LangGraph-powered state management
 - **Sandbox Isolation**: Docker containers for secure execution
-- **Middleware Chain**: Pluggable interceptors (ThreadData, Sandbox, Security, etc.)
+- **Middleware Chain**: Pluggable interceptors (ThreadData, Sandbox, Security, Memory, etc.)
+- **Memory System**: File-based cross-session memory with user + project dimensions
 - **Checkpoint Persistence**: Memory/SQLite/PostgreSQL support
 - **Path Translation**: Virtual paths (/mnt/user-data/) mapped to containers
 - **Subagent System**: Composable multi-agent architecture
@@ -113,9 +124,11 @@ Three-layer architecture:
 |---------|-------------|
 | 01_basic_llm | Create agent without tools |
 | 02_basic_tool | Agent with ReadFile/WriteFile tools |
-| 03_sandbox_middleware | Middleware chain + security validation |
-| 04_sandbox_execution | Full sandbox execution in Docker containers |
-| 05_provider_agent | Multi-provider LLM routing |
+| 03_middleware_security | Middleware chain + security validation |
+| 04_sandbox_mock | Sandbox path utilities (no Docker) |
+| 05_sandbox_real | Real Docker sandbox execution |
+| 06_builder_middleware | Builder + middleware integration |
+| 07_memory | Memory system + file-based storage |
 
 ## Sandbox Image
 
