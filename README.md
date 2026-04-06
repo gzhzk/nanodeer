@@ -6,7 +6,7 @@ English | [中文](./README_zh.md)
 
 ## Status
 
-**In development** — Core framework validated with 80 passing tests.
+**In development** — Core framework validated with 96 passing tests.
 
 ## Quick Start
 
@@ -22,71 +22,60 @@ python -m examples.03_middleware_security  # Middleware chain + security
 python -m examples.04_sandbox_mock        # Sandbox path utilities (no Docker)
 python -m examples.05_sandbox_real        # Real Docker sandbox execution
 python -m examples.06_builder_middleware  # Builder + middleware integration
-python -m examples.07_memory            # Memory system + file-based storage
+python -m examples.07_memory            # Memory v2: file storage + auto-extraction + SaveMemory
+python -m examples.08_plan               # Plan mode: todo tracking
 ```
 
 ## Project Structure
 
 ```
 nanodeer/
-├── src/                      # Source package
-│   ├── harness/              # Core Agent harness
-│   │   ├── agent/           # State machine + builder
-│   │   │   ├── builder.py
-│   │   │   ├── prompt.py
-│   │   │   └── state.py
-│   │   ├── middlewares/     # ThreadData, Sandbox, Security, Memory
-│   │   │   ├── base.py
-│   │   │   ├── memory.py
-│   │   │   ├── sandbox.py
-│   │   │   ├── security.py
-│   │   │   └── thread_data.py
-│   │   ├── sandbox/         # Docker container isolation
-│   │   │   ├── docker.py
-│   │   │   └── path.py
-│   │   ├── memory/          # File-based memory storage
-│   │   │   ├── storage.py
-│   │   │   └── types.py
-│   │   ├── plan/            # Planning subagent
-│   │   ├── security/        # Security policies
-│   │   ├── subagents/       # Subagent registry
-│   │   ├── tools/           # File, Bash tools
-│   │   │   ├── base.py
-│   │   │   └── file.py
-│   │   ├── config.py        # YAML config loader
-│   │   └── __init__.py
-│   └── app/                 # App interface (FastAPI, Feishu)
-│       └── __init__.py
-├── examples/                  # Usage examples
-│   ├── 01_basic_llm.py
-│   ├── 02_basic_tool.py
-│   ├── 03_middleware_security.py
-│   ├── 04_sandbox_mock.py
-│   ├── 05_sandbox_real.py
-│   ├── 06_builder_middleware.py
-│   └── 07_memory.py
-├── tests/                     # Test suite (80 tests)
-│   ├── test_01_basic_llm.py
-│   ├── test_02_basic_tool.py
-│   ├── test_03_middleware_security.py
-│   ├── test_04_sandbox_mock.py
-│   ├── test_05_sandbox_real.py
-│   ├── test_06_builder_middleware.py
-│   └── test_07_memory.py
+├── src/harness/              # Core Agent harness
+│   ├── agent/                # State machine + builder
+│   │   ├── __init__.py
+│   │   ├── builder.py        # AgentBuilder: LangGraph graph construction
+│   │   ├── prompt.py         # System prompt dynamic assembly
+│   │   └── state.py          # ThreadState: shared state across nodes
+│   ├── middlewares/          # Intercept chain (before/after hooks)
+│   │   ├── __init__.py
+│   │   ├── base.py           # Middleware, MiddlewareChain (reverse cleanup)
+│   │   ├── compression.py    # Compress long history via LLM
+│   │   ├── memory.py         # Load memory + intercept SaveMemory + auto-extract
+│   │   ├── plan.py          # TodoListMiddleware: load/save todos
+│   │   ├── sandbox.py       # Acquire/release Docker container lifecycle
+│   │   ├── security.py       # Path traversal + dangerous command validation
+│   │   ├── thread_data.py   # Thread-level shared data init
+│   │   └── uploads.py       # Process user uploads into memory context
+│   ├── sandbox/             # Docker container isolation
+│   │   ├── __init__.py
+│   │   ├── docker.py        # DockerSandboxProvider: lifecycle management
+│   │   └── path.py          # translate_and_validate: virtual ↔ physical path
+│   ├── memory/              # File-based memory (filesystem = memory)
+│   │   ├── __init__.py
+│   │   ├── extractor.py     # MemoryExtractor: LLM auto-extract key info
+│   │   ├── storage.py       # MemoryStore: frontmatter .md files
+│   │   └── types.py         # MemoryRecord types
+│   ├── plan/                # Planning types (tools → tools/plan.py)
+│   │   ├── __init__.py
+│   │   └── types.py         # TodoItem, TodoStatus, TODOS_SECTION_TEMPLATE
+│   ├── tools/               # Capability extensions (bound to LLM)
+│   │   ├── __init__.py
+│   │   ├── base.py          # NanoDeerTool base class
+│   │   ├── file.py         # read_file, write_file, ls, glob, grep
+│   │   ├── memory.py        # SaveMemory (intercepted by MemoryMiddleware)
+│   │   └── plan.py         # WriteTodo, ListTodos, CompleteTodo
+│   ├── config.py            # YAML config loader
+│   └── __init__.py
+├── src/app/                  # App interface (FastAPI, Feishu planned)
+├── examples/                  # Usage examples (01–10)
+├── tests/                     # Test suite (01–10)
 ├── sandbox/                   # Docker sandbox
 │   ├── Dockerfile
 │   ├── build.sh
 │   └── README.md
 ├── docs/                      # Project documentation
-│   ├── ref/                   # External references (ClaudeCode, DeerFlow, OpenClaw and NanoClaw)
-│   │   ├── claudecode_architecture_report.md
-│   │   ├── claudecode_prompts.md
-│   │   ├── deerflow_architecture_report.md
-│   │   ├── deerflow_prompts.md
-│   │   ├── openclaw_architecture_report.md
-│   │   ├── openclaw_prompts.md
-│   │   └── nanoclaw_sandbox_report.md
-│   ├── nanodeer_blueprint_20260401.md
+│   ├── ref/                  # External reference reports
+│   ├── tutorials/            # Tutorials (01–09)
 │   ├── knowledge.md
 │   ├── brief_summary.md
 │   └── problem_solutions.md
@@ -101,9 +90,9 @@ nanodeer/
 Three-layer architecture:
 ├── Harness (core)
 │   ├── Agent          # State machine + builder
-│   ├── Middlewares    # ThreadData, Sandbox, Security
+│   ├── Middlewares    # ThreadData, Sandbox, Security, Memory, Plan, Uploads, Compression
 │   ├── Sandbox         # Docker container isolation
-│   ├── Tools          # File, Bash tools
+│   ├── Tools          # File, Memory, Plan tools
 │   └── Config         # YAML config loader
 └── App (interface)   # FastAPI + Feishu (planned)
 ```
@@ -112,23 +101,28 @@ Three-layer architecture:
 
 - **Agent State Machine**: LangGraph-powered state management
 - **Sandbox Isolation**: Docker containers for secure execution
-- **Middleware Chain**: Pluggable interceptors (ThreadData, Sandbox, Security, Memory, etc.)
-- **Memory System**: File-based cross-session memory with user + project dimensions
-- **Checkpoint Persistence**: Memory/SQLite/PostgreSQL support
+- **Middleware Chain**: Pluggable interceptors (ThreadData, Sandbox, Security, Memory, Plan, Uploads, Compression)
+- **Memory System**: File-based cross-session memory with user + project dimensions, auto-extraction, and SaveMemory tool
+- **Plan Mode**: TodoList task tracking with WriteTodo/CompleteTodo tools
+- **Checkpoint Persistence**: Memory/SQLite/PostgreSQL support (MemorySaver implemented, others TODO)
 - **Path Translation**: Virtual paths (/mnt/user-data/) mapped to containers
-- **Subagent System**: Composable multi-agent architecture
+- **Upload Files**: UploadsMiddleware processes user-uploaded files into memory context
+- **Context Compression**: CompressionMiddleware prevents context overflow via LLM summarization
 
 ## Examples
 
-| Example | Demonstrates |
-|---------|-------------|
-| 01_basic_llm | Create agent without tools |
-| 02_basic_tool | Agent with ReadFile/WriteFile tools |
-| 03_middleware_security | Middleware chain + security validation |
-| 04_sandbox_mock | Sandbox path utilities (no Docker) |
-| 05_sandbox_real | Real Docker sandbox execution |
-| 06_builder_middleware | Builder + middleware integration |
-| 07_memory | Memory system + file-based storage |
+| Example | What It Does | Run with |
+|---------|---------------|-----------|
+| 01_basic_llm | Create an agent, chat with it (no tools). Shows how messages flow through LangGraph. | `python -m examples.01_basic_llm` |
+| 02_basic_tool | Agent uses all 5 tools: read_file, write_file, ls, glob, grep. Reads files, lists dirs, searches content, finds by pattern. | `python -m examples.02_basic_tool` |
+| 03_middleware_security | MiddlewareChain hook order demo. SecurityMiddleware blocks path traversal and dangerous patterns. | `python -m examples.03_middleware_security` |
+| 04_sandbox_mock | Virtual path ↔ physical path translation. `validate_path` blocks `../` and system files. No Docker needed. | `python -m examples.04_sandbox_mock` |
+| 05_sandbox_real | **Requires Docker.** Full sandbox lifecycle: acquire container → run tools inside → release. All tools run in isolated container. | `python -m examples.05_sandbox_real` |
+| 06_builder_middleware | AgentBuilder with middleware chain. Shows how to wire up ThreadDataMiddleware + SecurityMiddleware + builder. | `python -m examples.06_builder_middleware` |
+| 07_memory | Memory v2: MemoryStore frontmatter files, MemoryMiddleware injects history, `SaveMemory` tool intercepted, auto-extraction via LLM. | `python -m examples.07_memory` |
+| 08_plan | Plan mode: TodoListMiddleware loads/saves todos, WriteTodo/CompleteTodo/ListTodos tools for task tracking. | `python -m examples.08_plan` |
+| 09_uploads | UploadsMiddleware: processes user-uploaded files, injects content into memory_context, stores in uploads/ dir. | `python -m examples.09_uploads` |
+| 10_compression | CompressionMiddleware: compresses long conversation history via LLM summarization, prevents context overflow. | `python -m examples.10_compression` |
 
 ## Sandbox Image
 

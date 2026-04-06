@@ -4,16 +4,15 @@ Run with: python -m examples.05_sandbox_real
 
 This example demonstrates:
 - Middleware chain integration with builder
-- Agent tools executing inside Docker containers
+- Agent tools (read_file, write_file, ls) executing inside Docker containers
 - Full lifecycle: acquire sandbox -> run tools -> release sandbox
 - Security validation via SecurityMiddleware
 
 Prerequisites:
 - Docker must be running and accessible
-- A Docker image with bash (e.g., alpine, ubuntu)
 
 Note: Uses redis:6-alpine for testing (exists in local registry).
-Production would use: python:3.11-slim or custom sandbox image.
+Production would use a custom sandbox image with python + tools.
 """
 import asyncio
 
@@ -29,29 +28,24 @@ from harness.middlewares import (
 )
 from harness.middlewares.sandbox import SandboxMiddleware
 from harness.sandbox.docker import DockerSandboxProvider
-from harness.tools.file import BashCommand
+from harness.tools.file import read_file, write_file, ls
 
 
 async def main():
-    """Demonstrate agent with sandbox execution."""
     print("=" * 60)
-    print("Example 04: Sandbox Execution with Docker")
+    print("NanoDeer Sandbox Real Docker Demo")
     print("=" * 60)
 
-    # Setup: Use redis:6-alpine (has bash, exists locally)
-    # Production: use python:3.11-slim or custom sandbox image
     sandbox_provider = DockerSandboxProvider(
         image="redis:6-alpine",
-        container_prefix="nanodeer-example-04",
+        container_prefix="nanodeer-example-05",
     )
 
-    # Create middleware chain
     thread_data = ThreadDataMiddleware()
     security = SecurityMiddleware()
     sandbox = SandboxMiddleware(provider=sandbox_provider)
     chain = MiddlewareChain([thread_data, security, sandbox])
 
-    # Create agent with middleware chain
     config = get_config()
     model = config.agents.defaults.model
     provider_name = config.agents.defaults.provider
@@ -61,24 +55,22 @@ async def main():
         anthropic_api_key=p.api_key,
         base_url=p.api_base,
     )
-    tools = [BashCommand]
+    tools = [read_file, write_file, ls]
 
     builder = AgentBuilder(llm=llm, tools=tools, checkpointer=None, middleware_chain=chain)
     agent = builder.build()
 
-    # Create initial state with thread_id
     initial_state = ThreadState(
         messages=[HumanMessage(
-            content="""Run this bash command and tell me the result:
-            echo "Hello from sandbox! Current date is $(date)" """
+            content="""Write "Hello from NanoDeer sandbox!" to /tmp/test.txt,
+            then read it back and tell me what it says."""
         )],
-        thread_id="example-04",
+        thread_id="example-05",
     )
 
     print("\n1. Agent will:")
     print("   - Acquire Docker sandbox (redis:6-alpine container)")
-    print("   - Execute BashCommand inside container")
-    print("   - SecurityMiddleware validates command (blocks dangerous)")
+    print("   - Run read_file/write_file/ls tools inside container")
     print("   - Release sandbox (container destroyed)")
 
     print("\n2. Running agent with ainvoke_with_hooks()...")
@@ -97,7 +89,9 @@ async def main():
                 for tc in msg.tool_calls:
                     print(f"  → Tool: {tc['name']}({tc['args']})")
 
-        print("\n✅ Sandbox execution example completed!")
+        print("\n" + "=" * 60)
+        print("✅ Sandbox real docker demo completed!")
+        print("=" * 60)
 
     except Exception as e:
         print(f"\n❌ Error: {e}")

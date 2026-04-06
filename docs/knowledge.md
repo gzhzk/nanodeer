@@ -27,12 +27,39 @@
 ## 当前进度
 
 - ✅ Day 1-2: Agent 状态机 + Tools 基础 + Checkpoint 持久化
-- ✅ Day 3-4: Sandbox 沙箱（Docker ephemeral）+ Middleware 链（3个核心中间件）+ 路径翻译/安全校验 + 真实容器 E2E 测试
-- 🔄 Day 5-7: Memory 记忆（v1 文件存储 + Middleware 注入完成）
-- ⬜ Day 8-9: Middlewares + Security (6级权限)
-- ⬜ Day 10-11: Subagents + Plan
+- ✅ Day 3-4: Sandbox 沙箱（Docker ephemeral）+ Middleware 链（5个中间件）+ 路径翻译/安全校验 + 真实容器 E2E 测试
+- ✅ Day 5-7: Memory 记忆（v2 文件存储 + auto-extract + SaveMemory）
+- ✅ Day 8-9: UploadsMiddleware（文件上传）+ CompressionMiddleware（上下文压缩）
+- ✅ Day 10-11: Plan 模式（TodoListMiddleware + WriteTodo/CompleteTodo/ListTodos）
 - ⬜ Day 12-13: FastAPI + 飞书
 - ⬜ Day 14: 串联测试
+
+**测试：96 passed, 9 Docker（需环境）**
+
+---
+
+## 系统组件概览
+
+| 组件 | 文件 | 功能 |
+|------|------|------|
+| **AgentBuilder** | `agent/builder.py` | 核心大脑：拼装 LLM + tools + middleware，管理多轮对话 |
+| **ThreadState** | `agent/state.py` | 状态载体：messages / todos / memory_context / sandbox |
+| **MiddlewareChain** | `middlewares/base.py` | 插件链：before_* 正向执行，after_* 逆向清理 |
+| **ThreadDataMiddleware** | `middlewares/thread_data.py` | 创建目录结构：`workspace/` `uploads/` `outputs/` |
+| **SecurityMiddleware** | `middlewares/security.py` | 路径校验：阻止 `../` 遍历和系统文件 |
+| **SandboxMiddleware** | `middlewares/sandbox.py` | 容器生命周期：acquire → ready → release |
+| **MemoryMiddleware** | `middlewares/memory.py` | 记忆注入：before_agent_start 加载，after_agent_end 自动提取 |
+| **TodoListMiddleware** | `middlewares/plan.py` | 任务追踪：before_agent_start 加载，after_agent_end 保存 |
+| **UploadsMiddleware** | `middlewares/uploads.py` | 文件上传：处理用户文件，注入内容到 memory_context |
+| **CompressionMiddleware** | `middlewares/compression.py` | 上下文压缩：LLM 摘要长对话，防止 context overflow |
+| **read_file/write_file/ls/glob/grep** | `tools/file.py` | 5 个文件工具，全部在 Docker 内执行，base64 编码防注入 |
+| **SaveMemory** | `tools/memory.py` | 记忆保存工具，被 MemoryMiddleware 拦截 |
+| **MemoryStore** | `memory/storage.py` | frontmatter 文件存储，按 user_id/project_slug 分维度 |
+| **MemoryExtractor** | `memory/extractor.py` | LLM 自动提取关键信息存入记忆 |
+| **TodoItem** | `plan/types.py` | 单个任务：content / status / priority |
+| **WriteTodo/CompleteTodo/ListTodos** | `tools/plan.py` | 任务管理工具 |
+| **DockerSandboxProvider** | `sandbox/docker.py` | Docker 容器管理：network=none, read-only rootfs |
+| **translate_and_validate** | `sandbox/path.py` | 虚拟路径 `/mnt/user-data/` → 物理路径 `/workspace/{thread_id}/` |
 
 ---
 
@@ -263,7 +290,7 @@ Tools = 手和脚（具体操作）
 ```
 Agent（大脑）
   ├── 决策："需要读取文件"
-  ├── 发指令 → Tools.ReadFile（手）
+  ├── 发指令 → Tools.read_file（手）
   │              ↓
   │           Sandbox（身体）执行
   │              ↓
@@ -349,9 +376,11 @@ class NanoDeerTool(BaseModel, ABC):
 
 | 工具 | 函数 | 说明 |
 |------|------|------|
-| ReadFile | 读文件 | 读取指定路径的文件内容 |
-| WriteFile | 写文件 | 将内容写入指定路径 |
-| BashCommand | 执行命令 | 在沙箱中执行 bash 命令 |
+| read_file | 读文件 | 读取指定路径的文件内容 |
+| write_file | 写文件 | 将内容写入指定路径（base64 编码防注入） |
+| ls | 列表 | 列出目录内容 |
+| glob | 搜索 | 按模式搜索文件 |
+| grep | 搜索 | 在文件中搜索内容 |
 
 **代码实现**：[tools/file.py](../src/harness/tools/file.py)
 
@@ -359,10 +388,11 @@ class NanoDeerTool(BaseModel, ABC):
 from langchain_core.tools import tool
 
 @tool
-def ReadFile(file_path: str) -> str:
+def read_file(file_path: str) -> str:
     """Read content from a file."""
-    with open(file_path, "r") as f:
-        return f.read()
+    import subprocess
+    result = subprocess.run(["cat", file_path], capture_output=True, text=True)
+    return result.stdout
 ```
 
 ---
@@ -447,8 +477,8 @@ async def _tool_executor_node(self, state: ThreadState) -> dict:
 ### 2.6 验证结果
 
 ```
-HumanMessage → Agent (LLM decides to call ReadFile)
-            → Tools (ReadFile executes, returns "Hello from NanoDeer test!")
+HumanMessage → Agent (LLM decides to call read_file)
+            → Tools (read_file executes, returns "Hello from NanoDeer test!")
             → Agent (receives result, responds to user)
             → End
 ```
@@ -857,7 +887,7 @@ DOCKER_HOST=tcp://xxx.xxx.xxx.xxx:2375 PYTHONPATH=src python -m pytest tests/tes
 **发现**：
 - nanodeer/sandbox 镜像：**完全只读文件系统**，无 volume mount
 - `/workspace` 在镜像层，容器内无法写入
-- 这意味着后续需要**挂载临时 volume** 来支持 WriteFile 工具
+- 这意味着后续需要**挂载临时 volume** 来支持 write_file 工具
 
 ---
 
@@ -975,7 +1005,7 @@ LLM 本身不知道自己是谁、有什么能力、遵守什么规则。System 
 
 ```
 你是 NanoDeer，一个轻量级 AI Super Agent
-你有以下工具：ReadFile, WriteFile, BashCommand
+你有以下工具：read_file, write_file, ls, glob, grep
 安全规则：只访问 /mnt/user-data/...
 ```
 
@@ -1042,7 +1072,7 @@ from agent.prompt import build_lead_agent_prompt
 # 构建 system prompt
 prompt = build_lead_agent_prompt(
     agent_name="NanoDeer",
-    tools=["ReadFile", "WriteFile", "BashCommand"],
+    tools=["read_file", "write_file", "ls", "glob", "grep"],
     memory_context=None,  # 后续 Memory 系统注入
 )
 ```
@@ -1468,12 +1498,124 @@ agent_node()
 </project_memory>
 ```
 
-### 6.7 v1 范围 vs v2 规划
+### 6.7 v1 vs v2 功能对比
 
-**v1（已实现）**：
-- 文件存储（`~/.nanodeer/memory/`）
-- 读取 user.md + project/{slug}.md
-- Middleware 注入 system prompt
+| 功能 | v1 | v2 |
+|------|----|----|
+| 文件存储 | ✅ | ✅ |
+| 读取记忆 | ✅ | ✅ |
+| 主动保存（SaveMemory 工具） | ❌ | ✅ |
+| 自动提取（LLM 分析） | ❌ | ✅ |
+| 去重检查 | ❌ | ✅（简化版） |
+
+### 6.8 v2 实现细节
+
+**文件结构（新增）**：
+```
+src/harness/
+├── memory/
+│   ├── types.py        # MemoryEntry + frontmatter
+│   ├── storage.py      # MemoryStore 读写
+│   └── extractor.py    # MemoryExtractor LLM提取
+├── middlewares/
+│   └── memory.py       # MemoryMiddleware (v1+v2)
+└── tools/
+    └── memory.py       # SaveMemory 工具
+```
+
+**MemoryExtractor**：`memory/extractor.py`
+
+```python
+class MemoryExtractor:
+    """使用 LLM 从对话中提取记忆。"""
+
+    def __init__(self, llm):
+        self.llm = llm
+
+    async def extract(self, messages: list[BaseMessage]) -> list[ExtractedMemory]:
+        """分析对话，提取关键信息。"""
+        # 调用 LLM，解析 JSON 返回
+```
+
+**ExtractedMemory** 数据结构：
+```python
+class ExtractedMemory(BaseModel):
+    name: str           # 简短名称（≤50字符）
+    description: str    # 一句话描述
+    category: str       # user | project | api | style | feedback | decision
+    content: str        # 详细内容
+    keywords: list[str] # 去重关键词
+```
+
+**v2 触发时机**：
+```
+1. after_agent_end：Agent 每次结束后自动触发
+   └── MemoryMiddleware.after_agent_end(result)
+       → extractor.extract(messages)
+       → 保存到对应 memory 文件
+
+2. after_tool_call：拦截 SaveMemory 工具调用
+   └── MemoryMiddleware.after_tool_call(state, tool_name, tool_args, result)
+       → 直接保存到 memory 文件
+```
+
+**SaveMemory 工具**：`tools/memory.py`
+
+```python
+@tool
+def SaveMemory(content: str, category: str = "general") -> str:
+    """保存重要信息到记忆系统。"""
+    # category: user | project | api | style | feedback | decision
+```
+
+**MemoryMiddleware v2 完整代码**：
+
+```python
+class MemoryMiddleware(Middleware):
+    def __init__(
+        self,
+        memory_store: MemoryStore,
+        project_slug: str = "default",
+        extractor: MemoryExtractor = None,
+        auto_extract: bool = True,
+    ):
+        self.memory_store = memory_store
+        self.project_slug = project_slug
+        self.extractor = extractor
+        self.auto_extract = auto_extract
+
+    async def before_agent_start(self, state: Any) -> None:
+        # v1: 加载记忆到 state.memory_context
+        memory_context = self.memory_store.load(user_id, self.project_slug)
+        state["memory_context"] = memory_context
+
+    async def after_agent_end(self, result: dict) -> None:
+        # v2: 自动提取并保存
+        if not self.auto_extract or not self.extractor:
+            return
+        messages = result.get("messages", [])
+        extracted = await self.extractor.extract(messages)
+        for mem in extracted:
+            if mem.category == "user":
+                self.memory_store.save_user_memory(...)
+            else:
+                self.memory_store.save_project_memory(...)
+
+    async def after_tool_call(self, state, tool_name, tool_args, result) -> None:
+        # v2: 拦截 SaveMemory 工具调用
+        if tool_name != "SaveMemory":
+            return
+        content = tool_args.get("content", "")
+        category = tool_args.get("category", "general")
+        # 保存记忆...
+```
+
+### 6.9 后续规划
+
+- [ ] v3: Fork 后台 agent 做记忆提取（参考 Claude Code）
+- [ ] v3: 相似度去重（而非简单的关键词匹配）
+- [ ] v3: 自动判断 category（无需用户指定）
+- [ ] v3: 记忆优先级（重要 vs 不重要）
 
 **v2（后续）**：
 - LLM 自动提取记忆（Session Memory）
@@ -1513,4 +1655,92 @@ agent_node()
 
 ## 10. Plan 任务规划
 
-（待补充）
+### 10.1 核心理念
+
+Plan 模式让 Agent 能够追踪和管理多步骤任务，类似 TodoList。
+
+```
+用户请求 → Agent 分析 → WriteTodo 添加任务 → 执行 → CompleteTodo 完成
+```
+
+### 10.2 数据结构
+
+**TodoItem**：`plan/types.py`
+
+```python
+@dataclass
+class TodoItem:
+    id: str              # 格式: todo-{timestamp}
+    content: str         # 任务描述
+    status: TodoStatus  # pending / in_progress / completed
+    priority: int       # 优先级
+    created_at: str     # ISO 时间戳
+    updated_at: str     # ISO 时间戳
+```
+
+**Markdown 格式**：
+```
+[x] 已完成的任务
+[>] 进行中的任务
+[ ] 待处理的任务
+```
+
+### 10.3 组件
+
+| 组件 | 文件 | 职责 |
+|------|------|------|
+| `TodoItem` | `plan/types.py` | 任务数据结构 |
+| `TodoStatus` | `plan/types.py` | 状态枚举 |
+| `TodoListMiddleware` | `middlewares/plan.py` | 加载/保存 todos |
+| `WriteTodo` | `tools/plan.py` | 添加工具 |
+| `ListTodos` | `tools/plan.py` | 列表工具 |
+| `CompleteTodo` | `tools/plan.py` | 完成工具 |
+
+### 10.4 System Prompt 注入
+
+`<todos>` 标签注入到 system prompt：
+
+```xml
+<todos>
+[x] Design the architecture
+[>] Implement core agent
+[ ] Write tests
+</todos>
+```
+
+### 10.5 存储
+
+`~/.nanodeer/memory/{user_id}/todos/{project_slug}.json`
+
+```json
+[
+  {"id": "todo-123", "content": "Task 1", "status": "completed", ...},
+  {"id": "todo-124", "content": "Task 2", "status": "pending", ...}
+]
+```
+
+### 10.6 代码路径
+
+```
+ainvoke_with_hooks()
+    ↓
+MiddlewareChain.before_agent_start()
+    → TodoListMiddleware.before_agent_start()
+        → MemoryStore.load_todos(user_id, project_slug)
+        → state.todos = todos
+    ↓
+AgentBuilder._agent_node()
+    → build_lead_agent_prompt(todos=state.todos)
+    → system_prompt 包含 <todos> 标签
+    ↓
+after_agent_end()
+    → TodoListMiddleware.after_agent_end()
+        → MemoryStore.save_todos(user_id, project_slug, todos)
+```
+
+### 10.7 后续规划
+
+- [ ] EnterPlanMode 延迟确认模式
+- [ ] Todo 依赖关系
+- [ ] 优先级排序
+- [ ] 自动提取任务（从对话）

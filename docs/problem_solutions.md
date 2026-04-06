@@ -72,7 +72,7 @@ make_lead_agent(llm, tools, checkpointer_type="memory")
 | WSL2 无法访问 Docker Desktop | 开启 WSL Integration + 暴露 2375 端口 |
 | Docker Desktop 代理干扰 | 关闭系统代理，或改用云服务器 |
 | Docker Hub 拉取超时 | 配置国内镜像加速器 |
-| 云服务器开放 2375 | systemd 配置 `-H tcp://0.0.0.0:2375` |
+| 远程 Docker 连接 | base_url="tcp://xxx.xxx.xxx.xxx:2375"（开发测试用，生产需 TLS）|
 | Debian awk 虚拟包 | 用 `mawk` 或 `gawk` 替代 |
 
 ---
@@ -95,7 +95,7 @@ make_lead_agent(llm, tools, checkpointer_type="memory")
 | 问题 | 优先级 | 状态 |
 |------|--------|------|
 | Memory 记忆系统 | P1 | ✅ v1 文件存储 + Middleware 注入完成 |
-| WriteFile 命令注入加固 | P2 | 待做 |
+| write_file 命令注入加固 | P2 | ✅ 已修复（base64 编码） |
 | config extra="allow" 静默吞错误 | P2 | 待讨论 |
 | pending_subagent_tasks 扩展 | P3 | 只有 list，无状态/依赖/超时 |
 | 单 Agent vs 多 Agent 边界 | P3 | 只有 Lead Agent |

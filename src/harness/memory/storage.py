@@ -26,6 +26,7 @@ MEMORY_ROOT = Path.home() / ".nanodeer" / "memory"
 USER_MEMORY_FILE = "user.md"
 INDEX_FILE = "MEMORY.md"
 PROJECT_DIR = "project"
+TODOS_DIR = "todos"
 MAX_INDEX_LINES = 200
 
 
@@ -202,6 +203,59 @@ class MemoryStore:
             updated_at=datetime.now().isoformat(),
         )
         project_file.write_text(entry.to_frontmatter(), encoding="utf-8")
+
+    # -------------------------------------------------------------------------
+    # Todo operations
+    # -------------------------------------------------------------------------
+
+    def _todos_dir(self, user_id: str) -> Path:
+        """Get todos directory for a user."""
+        user_dir = self._user_dir(user_id)
+        todos_dir = user_dir / TODOS_DIR
+        todos_dir.mkdir(parents=True, exist_ok=True)
+        return todos_dir
+
+    def load_todos(self, user_id: str, project_slug: str = "default") -> list[dict]:
+        """Load todos for a user/project.
+
+        Args:
+            user_id: User identifier.
+            project_slug: Project identifier.
+
+        Returns:
+            List of todo dictionaries.
+        """
+        import json
+
+        todos_file = self._todos_dir(user_id) / f"{project_slug}.json"
+        if not todos_file.exists():
+            return []
+
+        try:
+            data = json.loads(todos_file.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return data
+            return []
+        except Exception:
+            return []
+
+    def save_todos(
+        self,
+        user_id: str,
+        project_slug: str,
+        todos: list[dict],
+    ) -> None:
+        """Save todos for a user/project.
+
+        Args:
+            user_id: User identifier.
+            project_slug: Project identifier.
+            todos: List of todo dictionaries.
+        """
+        import json
+
+        todos_file = self._todos_dir(user_id) / f"{project_slug}.json"
+        todos_file.write_text(json.dumps(todos, indent=2, ensure_ascii=False), encoding="utf-8")
 
     def update_index(self, user_id: str) -> None:
         """Update MEMORY.md index for a user (v2 feature)."""

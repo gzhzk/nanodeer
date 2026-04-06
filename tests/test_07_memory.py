@@ -202,5 +202,218 @@ class TestMemoryStore:
             assert root.exists()
 
 
+class TestMemoryExtractor:
+    """Test MemoryExtractor LLM-based extraction."""
+
+    @pytest.mark.asyncio
+    async def test_extract_parses_json_response(self):
+        """Extractor parses valid JSON from LLM response."""
+        from harness.memory.extractor import MemoryExtractor
+        from unittest.mock import AsyncMock, MagicMock
+
+        # Mock LLM that returns structured JSON
+        mock_llm = AsyncMock()
+        mock_response = MagicMock()
+        mock_response.content = '''[
+            {
+                "name": "User prefers Python",
+                "description": "User likes Python over other languages",
+                "category": "user",
+                "content": "Always use Python for new projects",
+                "keywords": ["python", "preference"]
+            }
+        ]'''
+        mock_llm.ainvoke = AsyncMock(return_value=mock_response)
+
+        extractor = MemoryExtractor(mock_llm)
+
+        from langchain_core.messages import HumanMessage, AIMessage
+        messages = [
+            HumanMessage(content="I want to build a web app"),
+            AIMessage(content="I'll use Python with FastAPI"),
+        ]
+
+        result = await extractor.extract(messages)
+
+        assert len(result) == 1
+        assert result[0].name == "User prefers Python"
+        assert result[0].category == "user"
+        assert "python" in result[0].keywords
+
+    @pytest.mark.asyncio
+    async def test_extract_handles_invalid_json(self):
+        """Extractor handles non-JSON LLM response gracefully."""
+        from harness.memory.extractor import MemoryExtractor
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_llm = AsyncMock()
+        mock_response = MagicMock()
+        mock_response.content = "This is not JSON"
+        mock_llm.ainvoke = AsyncMock(return_value=mock_response)
+
+        extractor = MemoryExtractor(mock_llm)
+
+        from langchain_core.messages import HumanMessage
+        messages = [HumanMessage(content="Hello")]
+
+        result = await extractor.extract(messages)
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_extract_returns_empty_for_empty_messages(self):
+        """Extractor returns empty list for empty messages."""
+        from harness.memory.extractor import MemoryExtractor
+        from unittest.mock import AsyncMock
+
+        mock_llm = AsyncMock()
+        extractor = MemoryExtractor(mock_llm)
+
+        result = await extractor.extract([])
+        assert result == []
+
+
+class TestMemoryMiddlewareV2:
+    """Test MemoryMiddleware v2 features."""
+
+    @pytest.mark.asyncio
+    async def test_after_tool_call_intercepts_save_memory(self):
+        """after_tool_call saves memory when SaveMemory is called."""
+        from harness.middlewares.memory import MemoryMiddleware
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = MemoryStore(root=Path(tmpdir))
+            middleware = MemoryMiddleware(
+                memory_store=store,
+                project_slug="test-project",
+            )
+
+            # Simulate SaveMemory tool call
+            tool_args = {
+                "content": "User prefers dark mode",
+                "category": "user",
+            }
+
+            await middleware.after_tool_call(
+                state={"thread_id": "test-thread"},
+                tool_name="SaveMemory",
+                tool_args=tool_args,
+                result="Memory saved",
+            )
+
+            # Verify memory was saved
+            user_memory = store.load_user_memory("default")
+            assert "User prefers dark mode" in user_memory
+
+    @pytest.mark.asyncio
+    async def test_after_tool_call_ignores_other_tools(self):
+        """after_tool_call ignores non-SaveMemory tools."""
+        from harness.middlewares.memory import MemoryMiddleware
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = MemoryStore(root=Path(tmpdir))
+            middleware = MemoryMiddleware(
+                memory_store=store,
+                project_slug="test-project",
+            )
+
+            # Simulate ReadFile tool call
+            await middleware.after_tool_call(
+                state={},
+                tool_name="ReadFile",
+                tool_args={"file_path": "/tmp/test.txt"},
+                result="file content",
+            )
+
+            # No memory should be saved
+            assert store.load_user_memory("default") == ""
+
+    @pytest.mark.asyncio
+    async def test_after_agent_end_extracts_and_saves(self):
+        """after_agent_end triggers extraction and saving."""
+        from harness.middlewares.memory import MemoryMiddleware
+        from unittest.mock import AsyncMock, MagicMock
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = MemoryStore(root=Path(tmpdir))
+
+            # Create mock extractor
+            mock_extractor = AsyncMock()
+            from harness.memory.extractor import ExtractedMemory
+            mock_extractor.extract = AsyncMock(return_value=[
+                ExtractedMemory(
+                    name="Test memory",
+                    description="A test entry",
+                    category="user",
+                    content="Test content",
+                    keywords=["test"],
+                )
+            ])
+
+            middleware = MemoryMiddleware(
+                memory_store=store,
+                project_slug="test-project",
+                extractor=mock_extractor,
+                auto_extract=True,
+            )
+
+            # Simulate agent result
+            from langchain_core.messages import HumanMessage
+            result = {
+                "messages": [HumanMessage(content="Build a web app")],
+            }
+
+            await middleware.after_agent_end(result)
+
+            # Verify memory was saved
+            user_memory = store.load_user_memory("default")
+            assert "Test content" in user_memory
+
+    @pytest.mark.asyncio
+    async def test_after_agent_end_skips_when_disabled(self):
+        """after_agent_end does nothing when auto_extract=False."""
+        from harness.middlewares.memory import MemoryMiddleware
+        from unittest.mock import AsyncMock
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = MemoryStore(root=Path(tmpdir))
+            mock_extractor = AsyncMock()
+
+            middleware = MemoryMiddleware(
+                memory_store=store,
+                extractor=mock_extractor,
+                auto_extract=False,  # Disabled
+            )
+
+            await middleware.after_agent_end({"messages": []})
+
+            # Extractor should not have been called
+            mock_extractor.extract.assert_not_called()
+
+
+class TestSaveMemoryTool:
+    """Test SaveMemory tool."""
+
+    def test_save_memory_tool_exists(self):
+        """SaveMemory tool can be imported."""
+        from harness.tools import SaveMemory
+        assert SaveMemory is not None
+        assert SaveMemory.name == "SaveMemory"
+
+    def test_save_memory_tool_signature(self):
+        """SaveMemory tool has expected signature."""
+        from harness.tools import SaveMemory
+        # Check tool has the expected parameters
+        assert "content" in SaveMemory.args_schema.model_fields
+        assert "category" in SaveMemory.args_schema.model_fields
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

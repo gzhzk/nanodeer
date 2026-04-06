@@ -1,31 +1,36 @@
-"""Example 02: Agent with Tools
+"""Example 02: Agent with All File Tools
 
 Run with: python -m examples.02_basic_tool
 
 This example demonstrates:
-- How to bind tools to an agent
-- How the agent decides to call a tool based on user input
+- All 5 file tools: read_file, write_file, ls, glob, grep
+- How the agent decides which tool to call based on user input
 - How tool results are fed back to the agent for final response
 
 Tools available:
-- ReadFile: Read content from a file
-- WriteFile: Write content to a file
-- BashCommand: Execute a bash command (disabled - requires Sandbox, Day 3-4)
+- read_file: Read file content
+- write_file: Write content to a file (base64-encoded, safe)
+- ls: List directory contents (like ls -la)
+- glob: Find files by pattern (like find -name)
+- grep: Search for text in files (like grep -r)
 """
 
 import asyncio
+import os
 
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage
 
 from harness.agent import make_lead_agent, ThreadState
 from harness.config import get_config
-# BashCommand disabled - requires Sandbox (Day 3-4) for safe execution
-from harness.tools.file import ReadFile, WriteFile  # , BashCommand
+from harness.tools.file import read_file, write_file, ls, glob, grep
 
 
 async def main():
-    """Run an agent with file and bash tools."""
+    print("=" * 60)
+    print("NanoDeer All File Tools Demo")
+    print("=" * 60)
+
     config = get_config()
     model = config.agents.defaults.model
     provider_name = config.agents.defaults.provider
@@ -36,45 +41,61 @@ async def main():
         base_url=p.api_base,
     )
 
-    # Create agent with tools bound
-    # BashCommand disabled - requires Sandbox (Day 3-4)
-    tools = [ReadFile, WriteFile]
-    # checkpointer_type=None disables persistence for simple examples
+    tools = [read_file, write_file, ls, glob, grep]
     agent = make_lead_agent(llm=llm, tools=tools, checkpointer_type=None)
 
-    # Create a test file for the agent to read
-    test_file = "/tmp/nanodeer_example02.txt"
-    with open(test_file, "w") as f:
-        f.write("Hello from NanoDeer Example 02!")
+    # Prepare a temp directory with some files for the agent to work with
+    test_dir = "/tmp/nanodeer_example02"
+    os.makedirs(f"{test_dir}/workspace", exist_ok=True)
 
-    # Ask agent to read the file
+    # Write a few test files
+    files = {
+        f"{test_dir}/workspace/hello.py": "def greet(name):\n    return f'Hello, {name}!'",
+        f"{test_dir}/workspace/utils.py": "def add(a, b):\n    return a + b\n\ndef multiply(a, b):\n    return a * b",
+        f"{test_dir}/workspace/README.txt": "This is a sample project.",
+    }
+    for path, content in files.items():
+        with open(path, "w") as f:
+            f.write(content)
+
+    print(f"\nTest files created in {test_dir}/workspace:")
+    for name in files:
+        print(f"  - {os.path.basename(name)}")
+
+    # Ask agent to explore and search the files
     initial_state = ThreadState(
-        messages=[HumanMessage(content=f"Read the file at {test_file} and tell me what it says.")],
+        messages=[HumanMessage(
+            content=f"""Do the following in order:
+            1. List the files in {test_dir}/workspace
+            2. Read hello.py and tell me the greet function
+            3. Search for "def add" in {test_dir}/workspace
+            4. Find all .py files in {test_dir}/workspace"""
+        )],
         thread_id="example-02",
     )
 
-    print("Running agent with tools...\n")
+    print("\nRunning agent with tools (read_file, write_file, ls, glob, grep)...\n")
     result = await agent.ainvoke(initial_state)
 
-    # Print the conversation flow
     print("Conversation flow:")
     for msg in result["messages"]:
         print(f"\n[{type(msg).__name__}]")
-        # Show tool calls if present
         if hasattr(msg, "tool_calls") and msg.tool_calls:
             for tc in msg.tool_calls:
                 print(f"  → Tool call: {tc['name']}({tc['args']})")
-        # Show content (truncated)
         content = msg.content
         if isinstance(content, list):
-            # Handle MiniMax thinking format
             for block in content:
                 if isinstance(block, dict) and block.get('type') == 'text':
-                    print(f"  Content: {block.get('text', '')[:100]}...")
+                    print(f"  Content: {block.get('text', '')[:200]}...")
                 elif isinstance(block, dict) and block.get('type') == 'thinking':
                     print(f"  Thinking: {block.get('thinking', '')[:50]}...")
         else:
-            print(f"  Content: {str(content)[:100]}...")
+            print(f"  Content: {str(content)[:200]}...")
+
+    print("\n" + "=" * 60)
+    print("✅ All file tools demo completed!")
+    print("=" * 60)
 
 
 if __name__ == "__main__":

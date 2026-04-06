@@ -122,7 +122,7 @@ def demo_provider_initialization():
 
 def main():
     print("=" * 60)
-    print("Example 04: Sandbox Utilities (Mock)")
+    print("NanoDeer Sandbox Utilities Demo")
     print("=" * 60)
 
     demo_path_translation()
@@ -132,9 +132,9 @@ def main():
     demo_provider_initialization()
 
     print("\n" + "=" * 60)
-    print("✅ Sandbox mock demo completed!")
+    print("✅ Sandbox utilities demo completed!")
     print("=" * 60)
-    print("\nFor real Docker execution, run: python -m examples.04_sandbox_mock_real")
+    print("\nFor real Docker execution, run: python -m examples.05_sandbox_real")
 
 
 if __name__ == "__main__":

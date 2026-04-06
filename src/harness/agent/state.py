@@ -79,7 +79,9 @@ class ThreadState(BaseModel):
         default_factory=list,
     )
     sandbox: SandboxInfo = Field(default_factory=lambda: SandboxInfo(thread_id=""))
-    uploaded_files: list[str] = Field(default_factory=list)
+    uploaded_files: list[dict] = Field(default_factory=list)  # [{name, content, mime_type}, ...]
     thread_id: str | None = Field(default=None)
     needs_clarification: bool = Field(default=False)
     pending_subagent_tasks: list[str] = Field(default_factory=list)
+    memory_context: str | None = Field(default=None)
+    todos: list[dict] = Field(default_factory=list)  # Plan mode task tracking

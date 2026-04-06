@@ -1,9 +1,13 @@
 """Harness middlewares - intercept and modify agent execution pipeline."""
 
 from .base import Middleware, MiddlewareChain
+from .compression import CompressionMiddleware
+from .memory import MemoryMiddleware
+from .plan import TodoListMiddleware
 from .sandbox import SandboxMiddleware
 from .security import SecurityError, SecurityMiddleware
 from .thread_data import ThreadDataMiddleware
+from .uploads import UploadsMiddleware
 
 __all__ = [
     "Middleware",
@@ -12,4 +16,8 @@ __all__ = [
     "SandboxMiddleware",
     "SecurityMiddleware",
     "SecurityError",
+    "MemoryMiddleware",
+    "TodoListMiddleware",
+    "UploadsMiddleware",
+    "CompressionMiddleware",
 ]

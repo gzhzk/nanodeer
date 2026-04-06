@@ -21,10 +21,11 @@ from harness.config import get_config
 
 
 async def main():
-    """Run a simple agent that can respond to messages."""
-    config = get_config()
+    print("=" * 60)
+    print("NanoDeer Basic LLM Demo")
+    print("=" * 60)
 
-    # Provider-based config
+    config = get_config()
     model = config.agents.defaults.model
     provider_name = config.agents.defaults.provider
     p = config.get_provider_config(provider_name)
@@ -34,25 +35,23 @@ async def main():
         base_url=p.api_base,
     )
 
-    # Create the agent graph
-    # Note: tools=[] means NO tools - this is just a basic LLM call
-    # checkpointer_type=None disables persistence (not needed for simple examples)
     agent = make_lead_agent(llm=llm, tools=[], checkpointer_type=None)
 
-    # Create initial state
     initial_state = ThreadState(
         messages=[HumanMessage(content="Hello, who are you?")],
         thread_id="test-001",
     )
 
-    # Run the agent
-    print("Running agent...\n")
+    print("\nRunning agent...\n")
     result = await agent.ainvoke(initial_state)
 
-    # Print the response
     print("Agent response:")
     for message in result["messages"]:
         print(f"  [{type(message).__name__}]: {message.content[:200]}...")
+
+    print("\n" + "=" * 60)
+    print("✅ Basic LLM demo completed!")
+    print("=" * 60)
 
 
 if __name__ == "__main__":

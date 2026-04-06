@@ -6,7 +6,7 @@
 
 ## 状态
 
-**开发中** — 核心框架已通过 80 个测试用例验证。
+**开发中** — 核心框架已通过 96 个测试用例验证。
 
 ## 快速开始
 
@@ -22,77 +22,66 @@ python -m examples.03_middleware_security  # 中间件链 + 安全验证
 python -m examples.04_sandbox_mock        # 沙箱路径工具（无需 Docker）
 python -m examples.05_sandbox_real        # 真实 Docker 沙箱执行
 python -m examples.06_builder_middleware   # Builder + 中间件集成
-python -m examples.07_memory            # 记忆系统 + 文件存储
+python -m examples.07_memory            # 记忆系统 v2：文件存储 + 自动提取 + SaveMemory
+python -m examples.08_plan               # Plan 模式：任务追踪
 ```
 
 ## 项目结构
 
 ```
 nanodeer/
-├── src/                      # 源码包
-│   ├── harness/              # 核心 Agent 框架
-│   │   ├── agent/           # 状态机 + 构建器
-│   │   │   ├── builder.py
-│   │   │   ├── prompt.py
-│   │   │   └── state.py
-│   │   ├── middlewares/     # ThreadData, Sandbox, Security, Memory
-│   │   │   ├── base.py
-│   │   │   ├── memory.py
-│   │   │   ├── sandbox.py
-│   │   │   ├── security.py
-│   │   │   └── thread_data.py
-│   │   ├── sandbox/        # Docker 容器隔离
-│   │   │   ├── docker.py
-│   │   │   └── path.py
-│   │   ├── memory/          # 文件记忆存储
-│   │   │   ├── storage.py
-│   │   │   └── types.py
-│   │   ├── plan/             # 规划子 Agent
-│   │   ├── security/         # 安全策略
-│   │   ├── subagents/        # 子 Agent 注册表
-│   │   ├── tools/            # 文件 / Bash 工具
-│   │   │   ├── base.py
-│   │   │   └── file.py
-│   │   ├── config.py         # YAML 配置加载器
-│   │   └── __init__.py
-│   └── app/                  # 应用接口（FastAPI、飞书规划中）
-│       └── __init__.py
-├── examples/                  # 使用示例
-│   ├── 01_basic_llm.py
-│   ├── 02_basic_tool.py
-│   ├── 03_middleware_security.py
-│   ├── 04_sandbox_mock.py
-│   ├── 05_sandbox_real.py
-│   ├── 06_builder_middleware.py
-│   └── 07_memory.py
-├── tests/                     # 测试套件（80 个测试）
-│   ├── test_01_basic_llm.py
-│   ├── test_02_basic_tool.py
-│   ├── test_03_middleware_security.py
-│   ├── test_04_sandbox_mock.py
-│   ├── test_05_sandbox_real.py
-│   ├── test_06_builder_middleware.py
-│   └── test_07_memory.py
+├── src/harness/              # 核心 Agent 框架
+│   ├── agent/                # 状态机 + 构建器
+│   │   ├── __init__.py
+│   │   ├── builder.py        # AgentBuilder：LangGraph 图构造
+│   │   ├── prompt.py         # System prompt 动态拼装
+│   │   └── state.py          # ThreadState：跨节点共享状态
+│   ├── middlewares/          # 拦截链（before/after 钩子）
+│   │   ├── __init__.py
+│   │   ├── base.py           # Middleware, MiddlewareChain（逆序清理）
+│   │   ├── compression.py    # 通过 LLM 压缩长对话历史
+│   │   ├── memory.py         # 加载记忆 + 拦截 SaveMemory + 自动提取
+│   │   ├── plan.py          # TodoListMiddleware：加载/保存 todos
+│   │   ├── sandbox.py       # 获取/释放 Docker 容器生命周期
+│   │   ├── security.py       # 路径遍历 + 危险命令验证
+│   │   ├── thread_data.py   # Thread 级共享数据初始化
+│   │   └── uploads.py       # 将用户上传文件注入 memory context
+│   ├── sandbox/             # Docker 容器隔离
+│   │   ├── __init__.py
+│   │   ├── docker.py        # DockerSandboxProvider：生命周期管理
+│   │   └── path.py          # translate_and_validate：虚拟 ↔ 物理路径
+│   ├── memory/              # 文件记忆（文件系统即记忆）
+│   │   ├── __init__.py
+│   │   ├── extractor.py     # MemoryExtractor：LLM 自动提取关键信息
+│   │   ├── storage.py       # MemoryStore：frontmatter .md 文件
+│   │   └── types.py         # MemoryRecord 类型定义
+│   ├── plan/                # 规划类型（工具已迁移至 tools/plan.py）
+│   │   ├── __init__.py
+│   │   └── types.py         # TodoItem, TodoStatus, TODOS_SECTION_TEMPLATE
+│   ├── tools/               # 能力扩展（绑定到 LLM）
+│   │   ├── __init__.py
+│   │   ├── base.py          # NanoDeerTool 基类
+│   │   ├── file.py         # read_file, write_file, ls, glob, grep
+│   │   ├── memory.py        # SaveMemory（被 MemoryMiddleware 拦截）
+│   │   └── plan.py         # WriteTodo, ListTodos, CompleteTodo
+│   ├── config.py            # YAML 配置加载器
+│   └── __init__.py
+├── src/app/                  # 应用接口（FastAPI、飞书规划中）
+├── examples/                  # 使用示例（01–10）
+├── tests/                     # 测试套件（01–10）
 ├── sandbox/                   # Docker 沙箱
 │   ├── Dockerfile
 │   ├── build.sh
 │   └── README.md
 ├── docs/                      # 项目文档
-│   ├── ref/                   # 外部参考资料（ClaudeCode, DeerFlow, OpenClaw, NanoClaw）
-│   │   ├── claudecode_architecture_report.md
-│   │   ├── claudecode_prompts.md
-│   │   ├── deerflow_architecture_report.md
-│   │   ├── deerflow_prompts.md
-│   │   ├── openclaw_architecture_report.md
-│   │   ├── openclaw_prompts.md
-│   │   └── nanoclaw_sandbox_report.md
-│   ├── nanodeer_blueprint_20260401.md
+│   ├── ref/                  # 外部参考报告
+│   ├── tutorials/            # 教程（01–09）
 │   ├── knowledge.md
 │   ├── brief_summary.md
 │   └── problem_solutions.md
 ├── config.yaml.example
 ├── pyproject.toml
-└── README.md
+└── README_zh.md
 ```
 
 ## 架构
@@ -101,9 +90,9 @@ nanodeer/
 三层架构：
 ├── Harness（核心）
 │   ├── Agent          # 状态机 + 构建器
-│   ├── Middlewares    # ThreadData, Sandbox, Security
+│   ├── Middlewares    # ThreadData, Sandbox, Security, Memory, Plan, Uploads, Compression
 │   ├── Sandbox        # Docker 容器隔离
-│   ├── Tools          # 文件、Bash 工具
+│   ├── Tools          # 文件、记忆、Plan 工具
 │   └── Config         # YAML 配置加载器
 └── App（接口）        # FastAPI + 飞书（规划中）
 ```
@@ -112,23 +101,28 @@ nanodeer/
 
 - **Agent 状态机**：基于 LangGraph 的状态管理
 - **沙箱隔离**：Docker 容器实现安全执行
-- **中间件链**：可插拔拦截器（ThreadData、Sandbox、Security、Memory 等）
-- **记忆系统**：基于文件的双维度记忆（用户 + 项目）
-- **检查点持久化**：支持 Memory / SQLite / PostgreSQL
+- **中间件链**：可插拔拦截器（ThreadData, Sandbox, Security, Memory, Plan, Uploads, Compression）
+- **记忆系统**：基于文件的双维度记忆（用户 + 项目），支持自动提取和 SaveMemory 工具
+- **Plan 模式**：TodoList 任务追踪，支持 WriteTodo/CompleteTodo 工具
+- **检查点持久化**：Memory/SQLite/PostgreSQL 支持（MemorySaver 已实现，其余 TODO）
 - **路径翻译**：虚拟路径（/mnt/user-data/）映射到容器
-- **子 Agent 系统**：可组合的多 Agent 架构
+- **文件上传**：UploadsMiddleware 将用户上传文件注入 memory context
+- **上下文压缩**：CompressionMiddleware 通过 LLM 摘要防止 context overflow
 
 ## 示例
 
-| 示例 | 说明 |
-|------|------|
-| 01_basic_llm | 创建无工具的 Agent |
-| 02_basic_tool | 带 ReadFile/WriteFile 工具的 Agent |
-| 03_middleware_security | 中间件链 + 安全验证 |
-| 04_sandbox_mock | 沙箱路径工具（无需 Docker） |
-| 05_sandbox_real | 真实 Docker 沙箱执行 |
-| 06_builder_middleware | Builder + 中间件集成 |
-| 07_memory | 记忆系统 + 文件存储 |
+| 示例 | 说明 | 运行 |
+|------|------|------|
+| 01_basic_llm | 创建 Agent 并对话（无工具）。展示消息如何流经 LangGraph。 | `python -m examples.01_basic_llm` |
+| 02_basic_tool | Agent 使用全部 5 个工具：read_file, write_file, ls, glob, grep。读文件、列目录、搜内容、按模式查找。 | `python -m examples.02_basic_tool` |
+| 03_middleware_security | MiddlewareChain 钩子顺序演示。SecurityMiddleware 阻止路径遍历和危险命令。 | `python -m examples.03_middleware_security` |
+| 04_sandbox_mock | 虚拟路径 ↔ 物理路径翻译演示。`validate_path` 阻止 `../` 和系统文件。无需 Docker。 | `python -m examples.04_sandbox_mock` |
+| 05_sandbox_real | **需要 Docker。** 完整沙箱生命周期：获取容器 → 在容器内运行工具 → 释放容器。 | `python -m examples.05_sandbox_real` |
+| 06_builder_middleware | AgentBuilder + 中间件链。展示 ThreadDataMiddleware + SecurityMiddleware 如何接入 builder。 | `python -m examples.06_builder_middleware` |
+| 07_memory | Memory v2：MemoryStore frontmatter 文件、MemoryMiddleware 注入历史、`SaveMemory` 工具拦截、自动提取。 | `python -m examples.07_memory` |
+| 08_plan | Plan 模式：TodoListMiddleware 加载/保存待办、WriteTodo/CompleteTodo/ListTodos 工具。 | `python -m examples.08_plan` |
+| 09_uploads | UploadsMiddleware：处理用户上传文件，注入内容到 memory_context，存储到 uploads/ 目录。 | `python -m examples.09_uploads` |
+| 10_compression | CompressionMiddleware：通过 LLM 摘要压缩长对话历史，防止 context overflow。 | `python -m examples.10_compression` |
 
 ## 沙箱镜像
 

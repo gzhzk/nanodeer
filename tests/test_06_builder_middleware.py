@@ -18,7 +18,7 @@ from harness.config import get_config
 from harness.middlewares import MiddlewareChain, SecurityMiddleware, ThreadDataMiddleware
 from harness.middlewares.sandbox import SandboxMiddleware
 from harness.sandbox.docker import DockerSandboxProvider
-from harness.tools.file import ReadFile, WriteFile
+from harness.tools.file import read_file, write_file
 from langchain_core.messages import HumanMessage
 
 
@@ -52,7 +52,7 @@ class TestSystemPrompt:
     def test_thread_id_injected(self):
         """thread_id is properly injected into prompt."""
         prompt = build_lead_agent_prompt(
-            tools=["ReadFile", "WriteFile"],
+            tools=["read_file", "write_file"],
             thread_id="test-thread-123",
         )
         assert "test-thread-123" in prompt
@@ -66,11 +66,13 @@ class TestSystemPrompt:
     def test_tools_section_generated(self):
         """Tools section is generated from tool names."""
         prompt = build_lead_agent_prompt(
-            tools=["ReadFile", "WriteFile", "BashCommand"],
+            tools=["read_file", "write_file", "ls", "glob", "grep"],
         )
-        assert "ReadFile" in prompt
-        assert "WriteFile" in prompt
-        assert "BashCommand" in prompt
+        assert "read_file" in prompt
+        assert "write_file" in prompt
+        assert "ls" in prompt
+        assert "glob" in prompt
+        assert "grep" in prompt
 
 
 class TestMiddlewareChain:
@@ -104,7 +106,7 @@ class TestAgentWithProvider:
             base_url=p.api_base,
         )
 
-        tools = [ReadFile, WriteFile]
+        tools = [read_file, write_file]
         builder = AgentBuilder(llm=llm, tools=tools, checkpointer=None)
         agent = builder.build()
 

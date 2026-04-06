@@ -1,12 +1,15 @@
-"""Example 06: Provider-based Agent with Tools
+"""Example 06: Builder + Middleware Integration
 
 Run with: python -m examples.06_builder_middleware
 
-Demonstrates:
-- Provider-based config (new pattern)
-- Agent with file tools
-- System prompt injection with thread_id
+This example demonstrates:
+- AgentBuilder with middleware chain
+- MiddlewareChain.before_agent_start() / after_agent_end()
+- Provider-based config pattern
+
+Prerequisites: Requires API keys in config.yaml
 """
+
 import asyncio
 
 from langchain_anthropic import ChatAnthropic
@@ -14,77 +17,81 @@ from langchain_core.messages import HumanMessage
 
 from harness.agent import AgentBuilder, ThreadState
 from harness.config import get_config
+from harness.middlewares import MiddlewareChain, ThreadDataMiddleware, SecurityMiddleware
 
 
-async def main():
-    """Run agent with provider-based config."""
-    print("=" * 60)
-    print("Example 05: Provider-based Agent")
-    print("=" * 60)
+async def demo_builder_creation():
+    """Demo: Create AgentBuilder with middleware chain."""
+    print("\n=== AgentBuilder Demo ===")
 
-    # New provider-based config
     config = get_config()
     model = config.agents.defaults.model
     provider_name = config.agents.defaults.provider
-
-    print(f"Model: {model}")
-    print(f"Provider: {provider_name}")
-
-    # Get provider config
     p = config.get_provider_config(provider_name)
-    if not p:
-        print(f"❌ Provider '{provider_name}' not configured")
-        return
 
-    api_key = p.api_key
-    api_base = p.api_base or None  # None means use default
+    print(f"  Model: {model}")
+    print(f"  Provider: {provider_name}")
 
-    print(f"API Base: {api_base or '(default)'}")
-
-    # Create LLM
     llm = ChatAnthropic(
         model=model,
-        anthropic_api_key=api_key,
-        base_url=api_base,
+        anthropic_api_key=p.api_key,
+        base_url=p.api_base,
     )
 
-    # Import tools
-    from harness.tools.file import ReadFile, WriteFile
+    # Create middleware chain
+    chain = MiddlewareChain([
+        ThreadDataMiddleware(),
+        SecurityMiddleware(),
+    ])
 
-    # Create agent
-    tools = [ReadFile, WriteFile]
-    builder = AgentBuilder(llm=llm, tools=tools, checkpointer=None)
+    from harness.tools.file import read_file, write_file
+    tools = [read_file, write_file]
+
+    # Build agent with middleware
+    builder = AgentBuilder(
+        llm=llm,
+        tools=tools,
+        checkpointer=None,
+        middleware_chain=chain,
+    )
     agent = builder.build()
 
-    # Create a test file
-    test_file = "/tmp/nanodeer_example05.txt"
-    with open(test_file, "w") as f:
-        f.write("Hello from NanoDeer provider example!")
+    print(f"  ✓ Agent created with {len(tools)} tools")
+    print(f"  ✓ Middleware chain: {len(chain.middlewares)} middlewares")
 
-    # Create initial state
-    initial_state = ThreadState(
-        messages=[HumanMessage(
-            content=f"Read the file at {test_file} and tell me what it says."
-        )],
-        thread_id="example-05",
-    )
 
-    print(f"\nRunning agent (thread_id={initial_state.thread_id})...")
-    print("-" * 60)
+async def demo_middleware_chain_hooks():
+    """Demo: MiddlewareChain hooks execution."""
+    print("\n=== MiddlewareChain Hooks Demo ===")
 
-    result = await agent.ainvoke(initial_state)
+    chain = MiddlewareChain([
+        ThreadDataMiddleware(),
+        SecurityMiddleware(),
+    ])
 
-    print("\nResult:")
-    print("-" * 60)
-    for msg in result["messages"]:
-        role = type(msg).__name__
-        content = msg.content[:500] if len(msg.content) > 500 else msg.content
-        print(f"[{role}]: {content}")
-        if hasattr(msg, "tool_calls") and msg.tool_calls:
-            for tc in msg.tool_calls:
-                print(f"  → Tool: {tc['name']}({tc['args']})")
+    state = ThreadState(thread_id="example-06")
 
-    print("\n✅ Provider example completed!")
+    # before_agent_start
+    await chain.before_agent_start(state)
+    print(f"  ✓ before_agent_start: sandbox.status = {state.sandbox.status}")
+
+    # after_agent_end
+    result = {"messages": [], "todos": [], "sandbox": state.sandbox}
+    await chain.after_agent_end(result)
+    print(f"  ✓ after_agent_end: cleanup completed")
+
+
+async def main():
+    print("=" * 60)
+    print("NanoDeer Builder + Middleware Demo")
+    print("=" * 60)
+
+    await demo_builder_creation()
+    await demo_middleware_chain_hooks()
+
+    print("\n" + "=" * 60)
+    print("✅ Builder + middleware demos passed!")
+    print("=" * 60)
 
 
 if __name__ == "__main__":

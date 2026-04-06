@@ -1,21 +1,23 @@
-"""Test 02: Agent with Tools - ReadFile tool call loop."""
+"""Test 02: Agent with All File Tools - multi-tool call loop.
+
+Tests all 5 tools: read_file, write_file, ls, glob, grep.
+"""
 
 import asyncio
+import os
 
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage
 
 from harness.agent import make_lead_agent, ThreadState
 from harness.config import get_config
-# BashCommand disabled - requires Sandbox (Day 3-4) for safe execution
-from harness.tools.file import ReadFile, WriteFile  # , BashCommand
+from harness.tools.file import read_file, write_file, ls, glob, grep
 
 
-async def test_tool_agent():
-    """Test: Agent calls ReadFile tool and returns result."""
+async def test_all_tools():
+    """Test: Agent uses all 5 file tools in sequence."""
     config = get_config()
 
-    # Use minimax provider
     model = "MiniMax-M2.7"
     provider_name = "minimax"
     p = config.get_provider_config(provider_name)
@@ -24,7 +26,6 @@ async def test_tool_agent():
 
     print(f"Using provider: {provider_name}")
     print(f"Model: {model}")
-    print(f"API Base: {api_base}")
 
     llm = ChatAnthropic(
         model=model,
@@ -32,35 +33,58 @@ async def test_tool_agent():
         base_url=api_base,
     )
 
-    # Create agent with tools
-    # BashCommand disabled - requires Sandbox (Day 3-4)
-    tools = [ReadFile, WriteFile]
+    tools = [read_file, write_file, ls, glob, grep]
     agent = make_lead_agent(llm=llm, tools=tools, checkpointer_type=None)
 
-    # Create a test file first
-    test_file = "/tmp/nanodeer_test.txt"
-    with open(test_file, "w") as f:
-        f.write("Hello from NanoDeer test!")
+    # Prepare a temp directory with files
+    test_dir = "/tmp/nanodeer_test02"
+    os.makedirs(f"{test_dir}/workspace", exist_ok=True)
 
-    # Ask agent to read the file
+    files = {
+        f"{test_dir}/workspace/hello.py": "def greet(name):\n    return f'Hello, {name}!'",
+        f"{test_dir}/workspace/utils.py": "def add(a, b):\n    return a + b",
+    }
+    for path, content in files.items():
+        with open(path, "w") as f:
+            f.write(content)
+
     initial_state = ThreadState(
-        messages=[HumanMessage(content=f"Read the file at {test_file} and tell me what it says.")],
+        messages=[HumanMessage(
+            content=f"""Do the following:
+            1. List files in {test_dir}/workspace
+            2. Read hello.py
+            3. Search for "def add" in {test_dir}/workspace
+            4. Find all .py files in {test_dir}/workspace"""
+        )],
         thread_id="test-002",
     )
 
-    print("Running agent with tools...\n")
+    print("Running agent with all 5 tools...\n")
     result = await agent.ainvoke(initial_state)
 
-    # Print all messages
-    print("Conversation:")
+    # Verify tools were called
+    tool_calls = []
     for msg in result["messages"]:
-        print(f"  [{type(msg).__name__}]: {msg.content[:300]}...")
         if hasattr(msg, "tool_calls") and msg.tool_calls:
             for tc in msg.tool_calls:
-                print(f"    → Tool call: {tc['name']}({tc['args']})")
+                tool_calls.append(tc["name"])
 
-    print("\n✅ Tool agent test passed!")
+    print("Conversation:")
+    for msg in result["messages"]:
+        print(f"  [{type(msg).__name__}]: {msg.content[:200]}...")
+        if hasattr(msg, "tool_calls") and msg.tool_calls:
+            for tc in msg.tool_calls:
+                print(f"    → Tool: {tc['name']}({tc['args']})")
+
+    # Verify all 4 expected tools were called (order may vary)
+    expected = {"ls", "read_file", "grep", "glob"}
+    called = set(tool_calls)
+    missing = expected - called
+    if missing:
+        print(f"\n⚠️  Expected tools not called: {missing}")
+    else:
+        print(f"\n✅ All expected tools called: {called}")
 
 
 if __name__ == "__main__":
-    asyncio.run(test_tool_agent())
+    asyncio.run(test_all_tools())

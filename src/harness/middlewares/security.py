@@ -40,10 +40,9 @@ class SecurityMiddleware(Middleware):
         self, state: ThreadState, tool_name: str, tool_args: dict
     ) -> None:
         """Validate tool arguments."""
-        if tool_name in ("ReadFile", "WriteFile"):
+        # All file tools operate on virtual paths - validate them all
+        if tool_name in ("read_file", "write_file", "ls", "glob", "grep"):
             await self._validate_file_tool(tool_args)
-        elif tool_name == "BashCommand":
-            await self._validate_bash_command(tool_args)
 
     async def _validate_file_tool(self, tool_args: dict) -> None:
         """Validate file path."""

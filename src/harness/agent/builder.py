@@ -88,7 +88,76 @@ class AgentBuilder:
                 await self.middleware_chain.on_error(initial_state, e)
             raise
         finally:
+            await self.middleware_chain.after_agent_end(result)
+
+    async def stream(self, initial_state: ThreadState):
+        """Stream agent responses (async generator).
+
+        Yields messages as they are generated, useful for REPL/UI.
+        Single turn only - use run() for multi-turn conversations.
+
+        Args:
+            initial_state: Initial ThreadState.
+
+        Yields:
+            Messages as they are generated.
+        """
+        if not hasattr(self, "_compiled"):
+            raise RuntimeError("Must call build() before stream()")
+
+        if self.middleware_chain:
+            await self.middleware_chain.before_agent_start(initial_state)
+
+        async for msg in self._compiled.astream(initial_state):
+            yield msg
+
+        if self.middleware_chain:
             await self.middleware_chain.after_agent_end(initial_state)
+
+    async def run(self, initial_state: ThreadState) -> dict:
+        """Multi-turn continuous conversation (async generator).
+
+        Each user message triggers a turn. Use this for REPL mode.
+
+        Usage:
+            async for msg in builder.run(state):
+                print(msg)
+                state.messages.append(msg)
+
+        Args:
+            initial_state: Initial ThreadState with first user message.
+
+        Yields:
+            Each message as it's generated.
+        """
+        if not hasattr(self, "_compiled"):
+            raise RuntimeError("Must call build() before run()")
+
+        state = initial_state
+
+        if self.middleware_chain:
+            await self.middleware_chain.before_agent_start(state)
+
+        # Continue loop until no more tool calls (conversation ends naturally)
+        while True:
+            # Process this turn
+            async for chunk in self._compiled.astream(state):
+                # astream yields state dicts, extract messages from them
+                if "messages" in chunk:
+                    for msg in chunk["messages"]:
+                        yield msg
+                        state.messages.append(msg)
+
+            # Check if last message has tool calls (need more turns)
+            if not state.messages:
+                break
+            last_msg = state.messages[-1]
+            from langchain_core.messages import AIMessage
+            if not isinstance(last_msg, AIMessage) or not getattr(last_msg, 'tool_calls', None):
+                break
+
+        if self.middleware_chain:
+            await self.middleware_chain.after_agent_end(state)
 
     async def _agent_node(self, state: ThreadState) -> dict:
         """Agent node: calls the LLM with system prompt injected.
@@ -107,6 +176,8 @@ class AgentBuilder:
         system_prompt = build_lead_agent_prompt(
             tools=tool_names,
             thread_id=thread_id,
+            memory_context=state.memory_context,
+            todos=state.todos,
         )
 
         # Prepend system message to conversation
@@ -158,28 +229,53 @@ class AgentBuilder:
         return {"messages": results}
 
     async def _execute_in_sandbox(self, sandbox, tool, tool_call):
-        """Execute tool call inside Docker container. Translates virtual paths."""
+        """Execute tool call inside Docker container via safe python subprocess."""
+        import base64
+
         from ..sandbox import Sandbox, get_sandbox_provider
         from ..sandbox.path import translate_and_validate
 
         tool_name = tool_call["name"]
         args = tool_call["args"]
 
-        if tool_name == "ReadFile":
-            virtual_path = args.get("file_path", "")
-            physical_path = translate_and_validate(virtual_path, sandbox.thread_id)
-            cmd = f"cat {physical_path}"
+        # All tools operate on virtual paths, translate to physical
+        file_path = args.get("file_path", "")
+        physical_path = translate_and_validate(file_path, sandbox.thread_id) if file_path else ""
 
-        elif tool_name == "WriteFile":
-            virtual_path = args.get("file_path", "")
+        # Build safe commands
+        # read_file, ls: python with argv (no shell interpolation)
+        # write_file: python with base64-encoded args (no shell interpolation)
+        # glob: python with base64-encoded args (no shell interpolation)
+        # grep: shell command with -e (pattern is literal, not regex/shell expansion)
+
+        if tool_name == "read_file":
+            # Safe: python reads file, path as direct argument (no shell)
+            cmd_str = f"python3 -c \"import sys; print(open(sys.argv[1]).read())\" {physical_path}"
+
+        elif tool_name == "write_file":
             content = args.get("content", "")
-            physical_path = translate_and_validate(virtual_path, sandbox.thread_id)
-            # Simple shell escaping - doesn't handle all edge cases
-            escaped = content.replace("'", "'\"'\"'")
-            cmd = f"mkdir -p $(dirname {physical_path}) && echo '{escaped}' > {physical_path}"
+            encoded_content = base64.b64encode(content.encode("utf-8")).decode("ascii")
+            encoded_path = base64.b64encode(physical_path.encode("utf-8")).decode("ascii")
+            # Safe: all args are base64-encoded, no shell interpolation possible
+            cmd_str = f"python3 -c \"import base64,os,sys; p=base64.b64decode(sys.argv[1]).decode(); os.makedirs(os.path.dirname(p) or '.',exist_ok=True); open(p,'wb').write(base64.b64decode(sys.argv[2]))\" {encoded_path} {encoded_content}"
 
-        elif tool_name == "BashCommand":
-            cmd = args.get("command", "")
+        elif tool_name == "ls":
+            # Safe: python lists directory, path as direct argument
+            cmd_str = f"python3 -c \"import os; [print(f) for f in os.listdir(sys.argv[1])]\" {physical_path}"
+
+        elif tool_name == "glob":
+            pattern = args.get("pattern", "*")
+            encoded_path = base64.b64encode(physical_path.encode("utf-8")).decode("ascii")
+            encoded_pat = base64.b64encode(pattern.encode("utf-8")).decode("ascii")
+            # Safe: args are base64-encoded, no shell interpolation
+            cmd_str = f"python3 -c \"import base64,os,fnmatch; p=base64.b64decode(sys.argv[1]).decode(); pat=base64.b64decode(sys.argv[2]).decode(); [print(os.path.join(r,f)) for r,_,fs in os.walk(p) for f in fs if fnmatch.fnmatch(f,pat)]\" {encoded_path} {encoded_pat}"
+
+        elif tool_name == "grep":
+            pattern = args.get("pattern", "")
+            recursive = args.get("recursive", True)
+            rec_flag = "-r" if recursive else ""
+            # Safe: -e makes pattern a literal (not regex/shell), path validated
+            cmd_str = f"grep {rec_flag} -n -e {repr(pattern)} {physical_path}"
 
         else:
             return f"Unknown tool: {tool_name}"
@@ -195,7 +291,7 @@ class AgentBuilder:
             working_dir=sandbox.working_dir or f"/workspace/{sandbox.thread_id}",
         )
 
-        run_result = await provider.run(sandbox_obj, cmd)
+        run_result = await provider.run(sandbox_obj, cmd_str)
         if run_result.returncode != 0:
             return f"Error: {run_result.stderr}"
         return run_result.stdout

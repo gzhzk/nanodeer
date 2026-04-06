@@ -52,6 +52,8 @@ You are {agent_name}, a lightweight AI super agent built with NanoDeer.
 
 {memory_section}
 
+{todos_section}
+
 <current_date>{date}
 """
 
@@ -62,9 +64,11 @@ def get_tools_section(tools: list[str]) -> str:
         return "No tools available."
 
     tool_descriptions = {
-        "ReadFile": "Read file contents. Args: file_path (str)",
-        "WriteFile": "Write content to file. Args: file_path (str), content (str)",
-        "BashCommand": "Execute bash command. Args: command (str)",
+        "read_file": "Read file contents. Args: file_path (str)",
+        "write_file": "Write content to file. Args: file_path (str), content (str)",
+        "ls": "List directory contents. Args: file_path (str)",
+        "glob": "Find files matching pattern. Args: file_path (str), pattern (str)",
+        "grep": "Search for pattern in files. Args: file_path (str), pattern (str), recursive (bool)",
     }
 
     lines = []
@@ -75,11 +79,34 @@ def get_tools_section(tools: list[str]) -> str:
     return "\n".join(lines)
 
 
+def format_todos(todos: list[dict]) -> str:
+    """Format todos as markdown checkbox list."""
+    if not todos:
+        return ""
+
+    lines = []
+    for todo in todos:
+        status = todo.get("status", "pending")
+        content = todo.get("content", "")
+
+        if status == "completed":
+            checkbox = "[x]"
+        elif status == "in_progress":
+            checkbox = "[>]"
+        else:
+            checkbox = "[ ]"
+
+        lines.append(f"{checkbox} {content}")
+
+    return "<todos>\n" + "\n".join(lines) + "\n</todos>"
+
+
 def build_lead_agent_prompt(
     agent_name: str = "NanoDeer",
     tools: list[str] | None = None,
     memory_context: str | None = None,
     thread_id: str | None = None,
+    todos: list[dict] | None = None,
 ) -> str:
     """Build the lead agent system prompt.
 
@@ -88,18 +115,21 @@ def build_lead_agent_prompt(
         tools: List of available tool names.
         memory_context: Memory context string (from memory system).
         thread_id: Thread ID for sandbox path.
+        todos: List of todo dictionaries.
 
     Returns:
         Formatted system prompt string.
     """
     tools_section = get_tools_section(tools or [])
     memory_section = memory_context if memory_context else ""
+    todos_section = format_todos(todos) if todos else ""
     thread_id_str = thread_id or "UNSET"
 
     return LEAD_AGENT_PROMPT.format(
         agent_name=agent_name,
         tools_section=tools_section,
         memory_section=memory_section,
+        todos_section=todos_section,
         thread_id=thread_id_str,
         date=date.today().isoformat(),
     )
