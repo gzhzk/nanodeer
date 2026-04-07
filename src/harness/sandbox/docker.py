@@ -18,6 +18,7 @@ class DockerSandboxProvider(SandboxProvider):
         image: str = "enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:latest",
         container_prefix: str = "nanodeer-sandbox",
         base_url: str | None = None,
+        network_mode: str = "bridge",
     ):
         """Initialize Docker provider.
 
@@ -25,10 +26,12 @@ class DockerSandboxProvider(SandboxProvider):
             image: Docker image to use for containers.
             container_prefix: Prefix for container names.
             base_url: Docker daemon address. Defaults to DOCKER_HOST env var or unix socket.
+            network_mode: Docker network mode ("bridge", "none", "host").
         """
         self.image = image
         self.container_prefix = container_prefix
         self.base_url = base_url or os.environ.get("DOCKER_HOST", None)
+        self.network_mode = network_mode
         self._client: docker.DockerClient | None = None
 
     @property
@@ -54,7 +57,7 @@ class DockerSandboxProvider(SandboxProvider):
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, self._pull_image)
 
-        # Security: network=none (no egress), read_only rootfs, tmpfs for /tmp
+        # Security: read_only rootfs, tmpfs for /tmp; network_mode configurable
         container = await loop.run_in_executor(
             None,
             lambda: self.client.containers.run(
@@ -63,7 +66,7 @@ class DockerSandboxProvider(SandboxProvider):
                 name=container_name,
                 auto_remove=True,
                 working_dir=working_dir,
-                network_mode="none",
+                network_mode=self.network_mode,
                 read_only=True,
                 tmpfs={"/tmp": "rw,noexec,nosuid,size=64m"},
                 command="sleep infinity",

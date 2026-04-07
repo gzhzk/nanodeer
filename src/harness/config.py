@@ -101,6 +101,7 @@ class SandboxConfig(Base):
     replicas: int = 3
     container_prefix: str = "nanodeer-sandbox"
     port: int = 8080
+    network_mode: str = "bridge"  # "bridge"=有网络(默认), "none"=无网络, "host"=宿主机网络
 
 
 class SubagentsConfig(Base):

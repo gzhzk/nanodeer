@@ -1,6 +1,6 @@
 """Test 02: Agent with All File Tools - multi-tool call loop.
 
-Tests all 5 tools: read_file, write_file, ls, glob, grep.
+Tests all 6 tools: read_file, write_file, ls, glob, grep, bash.
 """
 
 import asyncio
@@ -11,11 +11,11 @@ from langchain_core.messages import HumanMessage
 
 from harness.agent import make_lead_agent, ThreadState
 from harness.config import get_config
-from harness.tools.file import read_file, write_file, ls, glob, grep
+from harness.tools.file import read_file, write_file, ls, glob, grep, bash
 
 
 async def test_all_tools():
-    """Test: Agent uses all 5 file tools in sequence."""
+    """Test: Agent uses all 6 file tools in sequence."""
     config = get_config()
 
     model = "MiniMax-M2.7"
@@ -33,7 +33,7 @@ async def test_all_tools():
         base_url=api_base,
     )
 
-    tools = [read_file, write_file, ls, glob, grep]
+    tools = [read_file, write_file, ls, glob, grep, bash]
     agent = make_lead_agent(llm=llm, tools=tools, checkpointer_type=None)
 
     # Prepare a temp directory with files
@@ -54,12 +54,13 @@ async def test_all_tools():
             1. List files in {test_dir}/workspace
             2. Read hello.py
             3. Search for "def add" in {test_dir}/workspace
-            4. Find all .py files in {test_dir}/workspace"""
+            4. Find all .py files in {test_dir}/workspace
+            5. Run: echo "hello from bash" """
         )],
         thread_id="test-002",
     )
 
-    print("Running agent with all 5 tools...\n")
+    print("Running agent with all 6 tools...\n")
     result = await agent.ainvoke(initial_state)
 
     # Verify tools were called
@@ -76,8 +77,8 @@ async def test_all_tools():
             for tc in msg.tool_calls:
                 print(f"    → Tool: {tc['name']}({tc['args']})")
 
-    # Verify all 4 expected tools were called (order may vary)
-    expected = {"ls", "read_file", "grep", "glob"}
+    # Verify all 5 expected tools were called (order may vary)
+    expected = {"ls", "read_file", "grep", "glob", "bash"}
     called = set(tool_calls)
     missing = expected - called
     if missing:

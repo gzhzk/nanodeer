@@ -20,6 +20,7 @@ class SandboxMiddleware(Middleware):
         self.provider = provider or DockerSandboxProvider(
             image=self.config.sandbox.image,
             container_prefix=self.config.sandbox.container_prefix,
+            network_mode=self.config.sandbox.network_mode,
         )
 
     async def before_agent_start(self, state: ThreadState) -> None:

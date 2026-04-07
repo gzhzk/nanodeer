@@ -13,6 +13,7 @@ Harness（核心）
 ├── Sandbox    # Docker 隔离执行 — 路径映射 + 容器生命周期
 ├── Tools      # 能力扩展 — 文件、记忆、Plan 工具集
 ├── Memory     # 文件系统即记忆 — frontmatter MD 存储
+├── Plan       # 目标分解 — 将高层目标拆解为 Todo 清单
 └── Config     # YAML 配置加载
 
 App（接口层）# FastAPI + 飞书（规划中）
@@ -73,26 +74,18 @@ v2 的关键增量：
 - **auto-extract**：对话结束后 `MemoryMiddleware.after_agent_end` 调用 `MemoryExtractor`（LLM）自动抽取关键信息存入记忆文件
 - **SaveMemory 拦截**：`after_tool_call` 拦截 `SaveMemory` 工具调用，将内容实际写入文件
 
-## Plan（Todo 清单）
+## Plan（目标分解层）
 
-定义了 `TodoItem`（content/status/priority）和 `TodoStatus`（pending/in_progress/completed），通过 `TodoListMiddleware` 与 `MemoryStore` 打通，实现 todo 的持久化。
+Plan 是**目标到行动的桥梁**。负责把高层目标（用户意图、项目任务）拆解成可执行的 Todo 清单，是 Agent 的"规划脑"。
 
-不过当前工具实现是 stub（`ListTodos` 返回占位文本），实际 todo 状态通过 middleware 注入 `state.todos`，不走工具返回值这条路——这是一个可以优化的设计点。
+核心机制：
+- **目标理解**：接收用户输入的目标或任务描述
+- **任务分解**：调用 LLM 将目标拆解为步骤（Plan 工具中的 `WriteTodo`）
+- **Todo 清单**：步骤转化为 `TodoItem`（content/status/priority），持久化到 Memory
+- **进度追踪**：`TodoListMiddleware` 注入 `state.todos`，Agent 每轮可感知当前进度
 
-## 目录结构（已修正）
+> 当前实现中 Plan 工具是 stub（`ListTodos` 返回占位），实际 todo 状态通过 middleware 注入 `state.todos`，不走工具返回值这条路——这是一个可以优化的设计点。
 
-之前 `plan/tools.py` 放在 `plan/` 模块下，但从设计一致性看不够合理：**Tools 是核心能力模块，Plan 是其下的一个功能子集**。修正后的结构：
-
-```
-src/harness/tools/
-├── base.py       # 工具基类
-├── file.py       # 文件工具
-├── memory.py     # 记忆工具
-└── plan.py       # Plan 工具（从 plan/tools.py 迁入）
-
-src/harness/plan/
-└── types.py      # TodoItem, TodoStatus 数据结构
-```
 
 ## To B 扩展方向
 
@@ -105,6 +98,6 @@ src/harness/plan/
 
 ## 整体评价
 
-NanoDeer 的分层设计很清晰：**Agent 管状态流转，Middleware 管横切关注点，Tools 管能力扩展，Sandbox 管安全执行，Memory 管跨会话上下文**。各层之间耦合控制得当，扩展接口清晰。
+NanoDeer 的分层设计很清晰：**Agent 管状态流转，Middleware 管横切关注点，Tools 管能力扩展，Sandbox 管安全执行，Memory 管跨会话上下文，Plan 管目标分解**。各层之间耦合控制得当，扩展接口清晰。
 
 框架目前处于"核心框架已验证（96 个测试通过）"的状态，往 to B 方向走的关键是 **Tools 层和 Middleware 层的丰富程度**——这决定了这个 harness 能覆盖多少真实业务场景。

@@ -3,7 +3,7 @@
 Run with: python -m examples.02_basic_tool
 
 This example demonstrates:
-- All 5 file tools: read_file, write_file, ls, glob, grep
+- All 6 file tools: read_file, write_file, ls, glob, grep, bash
 - How the agent decides which tool to call based on user input
 - How tool results are fed back to the agent for final response
 
@@ -13,6 +13,7 @@ Tools available:
 - ls: List directory contents (like ls -la)
 - glob: Find files by pattern (like find -name)
 - grep: Search for text in files (like grep -r)
+- bash: Execute bash commands in sandbox (network=none, read-only rootfs)
 """
 
 import asyncio
@@ -23,7 +24,7 @@ from langchain_core.messages import HumanMessage
 
 from harness.agent import make_lead_agent, ThreadState
 from harness.config import get_config
-from harness.tools.file import read_file, write_file, ls, glob, grep
+from harness.tools.file import read_file, write_file, ls, glob, grep, bash
 
 
 async def main():
@@ -41,7 +42,7 @@ async def main():
         base_url=p.api_base,
     )
 
-    tools = [read_file, write_file, ls, glob, grep]
+    tools = [read_file, write_file, ls, glob, grep, bash]
     agent = make_lead_agent(llm=llm, tools=tools, checkpointer_type=None)
 
     # Prepare a temp directory with some files for the agent to work with
@@ -69,12 +70,13 @@ async def main():
             1. List the files in {test_dir}/workspace
             2. Read hello.py and tell me the greet function
             3. Search for "def add" in {test_dir}/workspace
-            4. Find all .py files in {test_dir}/workspace"""
+            4. Find all .py files in {test_dir}/workspace
+            5. Run: echo "hello from bash" """
         )],
         thread_id="example-02",
     )
 
-    print("\nRunning agent with tools (read_file, write_file, ls, glob, grep)...\n")
+    print("\nRunning agent with tools (read_file, write_file, ls, glob, grep, bash)...\n")
     result = await agent.ainvoke(initial_state)
 
     print("Conversation flow:")

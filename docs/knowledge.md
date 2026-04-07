@@ -52,13 +52,13 @@
 | **TodoListMiddleware** | `middlewares/plan.py` | 任务追踪：before_agent_start 加载，after_agent_end 保存 |
 | **UploadsMiddleware** | `middlewares/uploads.py` | 文件上传：处理用户文件，注入内容到 memory_context |
 | **CompressionMiddleware** | `middlewares/compression.py` | 上下文压缩：LLM 摘要长对话，防止 context overflow |
-| **read_file/write_file/ls/glob/grep** | `tools/file.py` | 5 个文件工具，全部在 Docker 内执行，base64 编码防注入 |
+| **read_file/write_file/ls/glob/grep/bash** | `tools/file.py` | 6 个文件工具，全部在 Docker 内执行，base64 编码防注入 |
 | **SaveMemory** | `tools/memory.py` | 记忆保存工具，被 MemoryMiddleware 拦截 |
 | **MemoryStore** | `memory/storage.py` | frontmatter 文件存储，按 user_id/project_slug 分维度 |
 | **MemoryExtractor** | `memory/extractor.py` | LLM 自动提取关键信息存入记忆 |
 | **TodoItem** | `plan/types.py` | 单个任务：content / status / priority |
 | **WriteTodo/CompleteTodo/ListTodos** | `tools/plan.py` | 任务管理工具 |
-| **DockerSandboxProvider** | `sandbox/docker.py` | Docker 容器管理：network=none, read-only rootfs |
+| **DockerSandboxProvider** | `sandbox/docker.py` | Docker 容器管理：network_mode 可配置（bridge/none/host），read-only rootfs |
 | **translate_and_validate** | `sandbox/path.py` | 虚拟路径 `/mnt/user-data/` → 物理路径 `/workspace/{thread_id}/` |
 
 ---
@@ -576,7 +576,7 @@ class SandboxProvider(ABC):
 | 配置 | 值 | 作用 |
 |------|-----|------|
 | `auto_remove=True` | 容器停止时自动删除 | 临时容器，用完即销毁 |
-| `network_mode="none"` | 无网络访问 | 隔离网络，防止外联 |
+| `network_mode` | 可配置（默认 bridge） | 隔离网络，"none"=无网络，"bridge"=有网络 |
 | `read_only=True` | 根文件系统只读 | 防止写入系统目录 |
 | `tmpfs={"/tmp": ...}` | 内存文件系统 | /tmp 可写但不持久化 |
 
@@ -691,21 +691,38 @@ def clear_sandbox_provider(thread_id):           # SandboxMiddleware 调用
 
 ### 3.8 Docker 镜像构建（工程实践）
 
-**目标**：构建 `nanodeer/sandbox:latest` 镜像，供 NanoDeer 全流程使用。
+**目标**：构建 `nanodeer/sandbox:1.2` 镜像，供 NanoDeer 全流程使用。
 
 **镜像设计原则**：
-- **Minimal**：只装必要工具（python3, git, jq, curl, bash, vim）
+- **Minimal**：只装必要工具
 - **Ephemeral**：容器销毁后无持久化
 - **Security**：非 root 用户运行，只读文件系统
+- **预装工具**：数据分析、网页抓取、代码质量工具
 
 **Dockerfile**：
 
 ```dockerfile
 FROM ubuntu:24.04
 
+# System tools
 RUN apt-get update && apt-get install -y \
     python3 python3-pip git jq curl bash vim \
     && rm -rf /var/lib/apt/lists/*
+
+# Data analysis: numpy, pandas, Excel, plotting
+RUN pip3 install --no-cache-dir --break-system-packages \
+    -i https://pypi.tuna.tsinghua.edu.cn/simple \
+    numpy pandas openpyxl xlrd matplotlib
+
+# Web scraping: requests, HTML/XML parsing
+RUN pip3 install --no-cache-dir --break-system-packages \
+    -i https://pypi.tuna.tsinghua.edu.cn/simple \
+    requests beautifulsoup4 lxml
+
+# Code quality: linting, formatting, type checking
+RUN pip3 install --no-cache-dir --break-system-packages \
+    -i https://pypi.tuna.tsinghua.edu.cn/simple \
+    pylint black mypy isort
 
 WORKDIR /workspace
 RUN useradd -m -s /bin/bash agent && chown -R agent:agent /workspace
@@ -888,6 +905,11 @@ DOCKER_HOST=tcp://xxx.xxx.xxx.xxx:2375 PYTHONPATH=src python -m pytest tests/tes
 - nanodeer/sandbox 镜像：**完全只读文件系统**，无 volume mount
 - `/workspace` 在镜像层，容器内无法写入
 - 这意味着后续需要**挂载临时 volume** 来支持 write_file 工具
+
+**v1.2 更新**：
+- 镜像预装数据分析、网页抓取、代码质量工具
+- `network_mode` 从硬编码 `"none"` 改为可配置
+- 通过 config.yaml 的 `sandbox.network_mode` 控制（默认 `"bridge"`）
 
 ---
 

@@ -277,6 +277,14 @@ class AgentBuilder:
             # Safe: -e makes pattern a literal (not regex/shell), path validated
             cmd_str = f"grep {rec_flag} -n -e {repr(pattern)} {physical_path}"
 
+        elif tool_name == "bash":
+            command = args.get("command", "")
+            timeout = args.get("timeout", 30)
+            if timeout > 120:
+                timeout = 120
+            # Execute bash command - container has network=none, read-only rootfs for safety
+            cmd_str = f"bash -c {repr(command)}"
+
         else:
             return f"Unknown tool: {tool_name}"
 

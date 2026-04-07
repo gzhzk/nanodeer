@@ -61,7 +61,7 @@ nanodeer/
 │   ├── tools/               # Capability extensions (bound to LLM)
 │   │   ├── __init__.py
 │   │   ├── base.py          # NanoDeerTool base class
-│   │   ├── file.py         # read_file, write_file, ls, glob, grep
+│   │   ├── file.py         # read_file, write_file, ls, glob, grep, bash
 │   │   ├── memory.py        # SaveMemory (intercepted by MemoryMiddleware)
 │   │   └── plan.py         # WriteTodo, ListTodos, CompleteTodo
 │   ├── config.py            # YAML config loader
@@ -87,12 +87,14 @@ nanodeer/
 ## Architecture
 
 ```
-Three-layer architecture:
-├── Harness (core)
-│   ├── Agent          # State machine + builder
+NanoDeer
+├── Harness (core framework)
+│   ├── Agent          # State machine + builder (LangGraph)
 │   ├── Middlewares    # ThreadData, Sandbox, Security, Memory, Plan, Uploads, Compression
-│   ├── Sandbox         # Docker container isolation
+│   ├── Sandbox        # Docker container isolation
 │   ├── Tools          # File, Memory, Plan tools
+│   ├── Memory         # File-based cross-session memory
+│   ├── Plan           # Goal decomposition → Todo清单
 │   └── Config         # YAML config loader
 └── App (interface)   # FastAPI + Feishu (planned)
 ```
@@ -100,7 +102,7 @@ Three-layer architecture:
 ## Core Features
 
 - **Agent State Machine**: LangGraph-powered state management
-- **Sandbox Isolation**: Docker containers for secure execution
+- **Sandbox Isolation**: Docker containers for secure execution, configurable network mode (bridge/none/host)
 - **Middleware Chain**: Pluggable interceptors (ThreadData, Sandbox, Security, Memory, Plan, Uploads, Compression)
 - **Memory System**: File-based cross-session memory with user + project dimensions, auto-extraction, and SaveMemory tool
 - **Plan Mode**: TodoList task tracking with WriteTodo/CompleteTodo tools
@@ -108,13 +110,15 @@ Three-layer architecture:
 - **Path Translation**: Virtual paths (/mnt/user-data/) mapped to containers
 - **Upload Files**: UploadsMiddleware processes user-uploaded files into memory context
 - **Context Compression**: CompressionMiddleware prevents context overflow via LLM summarization
+- **Data Analysis Ready**: Pre-built sandbox image with pandas, matplotlib, openpyxl for Excel/data tasks
+- **Web Scraping Ready**: Pre-built sandbox image with requests, beautifulsoup4, lxml
 
 ## Examples
 
 | Example | What It Does | Run with |
 |---------|---------------|-----------|
 | 01_basic_llm | Create an agent, chat with it (no tools). Shows how messages flow through LangGraph. | `python -m examples.01_basic_llm` |
-| 02_basic_tool | Agent uses all 5 tools: read_file, write_file, ls, glob, grep. Reads files, lists dirs, searches content, finds by pattern. | `python -m examples.02_basic_tool` |
+| 02_basic_tool | Agent uses all 6 tools: read_file, write_file, ls, glob, grep, bash. Reads files, lists dirs, searches content, finds by pattern, runs bash commands. | `python -m examples.02_basic_tool` |
 | 03_middleware_security | MiddlewareChain hook order demo. SecurityMiddleware blocks path traversal and dangerous patterns. | `python -m examples.03_middleware_security` |
 | 04_sandbox_mock | Virtual path ↔ physical path translation. `validate_path` blocks `../` and system files. No Docker needed. | `python -m examples.04_sandbox_mock` |
 | 05_sandbox_real | **Requires Docker.** Full sandbox lifecycle: acquire container → run tools inside → release. All tools run in isolated container. | `python -m examples.05_sandbox_real` |
@@ -126,17 +130,30 @@ Three-layer architecture:
 
 ## Sandbox Image
 
-NanoDeer uses a dedicated sandbox image for secure tool execution.
+NanoDeer uses a dedicated sandbox image for secure tool execution. The image includes a pre-installed Python environment for data analysis, web scraping, and code quality tasks.
+
+**Pre-installed packages:**
+- Data analysis: `numpy`, `pandas`, `openpyxl`, `xlrd`, `matplotlib`
+- Web scraping: `requests`, `beautifulsoup4`, `lxml`
+- Code quality: `pylint`, `black`, `mypy`, `isort`
 
 **Build locally:**
 ```bash
 docker build -t nanodeer/sandbox:latest -f sandbox/Dockerfile sandbox/
+docker build -t nanodeer/sandbox:1.2 -f sandbox/Dockerfile sandbox/
 ```
 
 **Or use the pre-built image:**
 ```yaml
 sandbox:
-  image: "nanodeer/sandbox:latest"
+  image: "nanodeer/sandbox:1.2"
+  network_mode: "bridge"  # "bridge", "none", "host"; "none" = no network (secure)
+```
+
+**Verify the image:**
+```bash
+docker run --rm -it nanodeer/sandbox:1.2 bash -c \
+  "python3 -c 'import numpy, pandas, openpyxl, matplotlib, requests, bs4; print(\"OK\")'"
 ```
 
 ## Design Principles
