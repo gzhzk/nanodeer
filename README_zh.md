@@ -10,7 +10,7 @@
 
 ## 状态
 
-**开发中** — 核心框架已通过 96 个测试用例验证。
+**开发中** — 核心框架已通过 196 个测试用例验证。
 
 ## 快速开始
 
@@ -19,15 +19,25 @@ pip install -e .
 cp config.yaml.example config.yaml
 # 编辑 config.yaml 填入你的 API keys
 
-# 运行示例
-python -m examples.01_basic_llm        # 基础 LLM（无工具）
-python -m examples.02_basic_tool       # 带文件工具的 Agent
-python -m examples.03_middleware_security  # 中间件链 + 安全验证
-python -m examples.04_sandbox_mock        # 沙箱路径工具（无需 Docker）
-python -m examples.05_sandbox_real        # 真实 Docker 沙箱执行
-python -m examples.06_builder_middleware   # Builder + 中间件集成
-python -m examples.07_memory            # 记忆系统 v2：文件存储 + 自动提取 + SaveMemory
-python -m examples.08_plan               # Plan 模式：任务追踪
+# 运行单元示例
+python -m examples.unit.01_agent_state       # ThreadState, SandboxInfo
+python -m examples.unit.02_agent_prompt       # System prompt 生成
+python -m examples.unit.03_tools             # 全部 15 个工具
+python -m examples.unit.04_middleware_chain   # 中间件钩子顺序
+python -m examples.unit.05_memory_store       # MemoryStore 文件存储
+python -m examples.unit.06_plan               # Todo 任务追踪
+python -m examples.unit.07_sandbox_path       # 路径翻译
+python -m examples.unit.08_router             # 模式检测
+
+# 运行集成示例
+python -m examples.integration.10_agent_builder        # AgentBuilder
+python -m examples.integration.11_sandbox_mock           # 沙箱工具包装器
+python -m examples.integration.12_middleware_integration # Uploads/Compression
+python -m examples.integration.13_skills                # Skills 系统
+
+# 运行测试
+pytest tests/unit/ -v              # 单元测试（快速）
+pytest tests/integration/ -v        # 集成测试
 ```
 
 ## 项目结构
@@ -36,64 +46,58 @@ python -m examples.08_plan               # Plan 模式：任务追踪
 nanodeer/
 ├── src/harness/              # 核心 Agent 框架
 │   ├── agent/                # 状态机 + 构建器
-│   │   ├── __init__.py
 │   │   ├── builder.py        # AgentBuilder：LangGraph 图构造
 │   │   ├── prompt.py         # System prompt 动态拼装
-│   │   └── state.py          # ThreadState：跨节点共享状态
+│   │   ├── state.py          # ThreadState：跨节点共享状态
+│   │   └── router.py         # Router：模式检测（Direct/ReAct/Plan）
 │   ├── middlewares/          # 拦截链（before/after 钩子）
-│   │   ├── __init__.py
-│   │   ├── base.py           # Middleware, MiddlewareChain（逆序清理）
+│   │   ├── base.py           # Middleware, MiddlewareChain
 │   │   ├── compression.py    # 通过 LLM 压缩长对话历史
-│   │   ├── memory.py         # 加载记忆 + 拦截 SaveMemory + 自动提取
-│   │   ├── plan.py          # TodoListMiddleware：加载/保存 todos
-│   │   ├── sandbox.py       # 获取/释放 Docker 容器生命周期
+│   │   ├── memory.py         # 加载记忆 + 拦截 SaveMemory
+│   │   ├── plan.py           # TodoListMiddleware：加载/保存 todos
+│   │   ├── sandbox.py        # 获取/释放 Docker 容器
 │   │   ├── security.py       # 路径遍历 + 危险命令验证
 │   │   ├── thread_data.py   # Thread 级共享数据初始化
-│   │   └── uploads.py       # 将用户上传文件注入 memory context
-│   ├── sandbox/             # Docker 容器隔离
-│   │   ├── __init__.py
-│   │   ├── docker.py        # DockerSandboxProvider：生命周期管理
-│   │   └── path.py          # translate_and_validate：虚拟 ↔ 物理路径
-│   ├── memory/              # 文件记忆（文件系统即记忆）
-│   │   ├── __init__.py
-│   │   ├── extractor.py     # MemoryExtractor：LLM 自动提取关键信息
-│   │   ├── storage.py       # MemoryStore：frontmatter .md 文件
-│   │   └── types.py         # MemoryRecord 类型定义
-│   ├── plan/                # 规划类型（工具已迁移至 tools/plan.py）
-│   │   ├── __init__.py
-│   │   └── types.py         # TodoItem, TodoStatus, TODOS_SECTION_TEMPLATE
-│   ├── tools/               # 能力扩展（绑定到 LLM）
-│   │   ├── __init__.py
-│   │   ├── base.py         # NanoDeerTool 基类
-│   │   ├── file.py         # read_file, write_file
-│   │   ├── list_dir.py     # ls: 列出目录
-│   │   ├── search.py       # glob, grep: 文件搜索
-│   │   ├── shell.py        # bash: shell 执行
-│   │   ├── fetch_url.py    # fetch_url: HTTP GET + HTML 解析
-│   │   ├── web_search.py   # web_search: DuckDuckGo 搜索
-│   │   ├── read_image.py   # read_image: 读图供 vision LLM 分析
-│   │   ├── exec_python.py  # exec_python: 在沙箱执行 Python 代码
-│   │   ├── invoke_skill.py # invoke_skill: 调用 Skill
-│   │   ├── memory.py       # save_memory
-│   │   └── plan.py         # write_todo, list_todos, complete_todo
-│   ├── config.py            # YAML 配置加载器
-│   └── __init__.py
-├── src/app/                  # 应用接口（FastAPI、飞书规划中）
-├── examples/                  # 使用示例（01–10）
-├── tests/                     # 测试套件（01–10）
-├── sandbox/                   # Docker 沙箱
-│   ├── Dockerfile
-│   ├── build.sh
-│   └── README.md
-├── docs/                      # 项目文档
-│   ├── ref/                  # 外部参考报告
-│   ├── tutorials/            # 教程（01–09）
-│   ├── knowledge.md
-│   ├── brief_summary.md
-│   └── problem_solutions.md
+│   │   └── uploads.py        # 将用户上传文件注入 memory context
+│   ├── sandbox/              # Docker 容器隔离
+│   │   ├── __init__.py       # Sandbox, SandboxProvider, SandboxTool 协议
+│   │   ├── docker.py         # DockerSandboxProvider：生命周期管理
+│   │   ├── path.py           # translate_and_validate：虚拟 ↔ 物理路径
+│   │   └── tools.py          # SandboxTool 包装器
+│   ├── memory/               # 文件记忆
+│   │   ├── storage.py        # MemoryStore：frontmatter .md 文件
+│   │   └── extractor.py      # MemoryExtractor：LLM 自动提取
+│   ├── plan/                 # 规划类型
+│   │   └── types.py          # TodoItem, TodoStatus
+│   ├── skills/               # Skills 系统
+│   │   ├── loader.py         # SkillLoader：加载 .md 文件
+│   │   └── impl/             # Skill 实现（.md 文件）
+│   ├── tools/                # 15 个内置工具
+│   │   ├── file.py           # ReadFile, WriteFile
+│   │   ├── list_dir.py       # Ls
+│   │   ├── search.py         # Glob, Grep
+│   │   ├── shell.py          # Bash
+│   │   ├── exec_python.py    # ExecPython
+│   │   ├── fetch_url.py      # FetchUrl
+│   │   ├── web_search.py     # WebSearch
+│   │   ├── read_image.py     # ReadImage
+│   │   ├── invoke_skill.py   # InvokeSkill
+│   │   ├── memory.py         # SaveMemory
+│   │   └── plan.py           # WriteTodo, ListTodos, CompleteTodo
+│   └── config.py             # YAML 配置加载器
+├── examples/                 # 使用示例
+│   ├── unit/                 # 单元示例 (01-08)
+│   └── integration/          # 集成示例 (10-13)
+├── tests/                    # 测试套件
+│   ├── unit/                 # 单元测试 (01-09)
+│   └── integration/          # 集成测试 (10-13)
+├── docs/                     # 文档
+│   ├── tutorials/            # 教程 (01-08)
+│   └── guides/              # 开发者指南
+├── sandbox/                  # Docker 沙箱镜像
+│   └── Dockerfile
 ├── config.yaml.example
-├── pyproject.toml
-└── README_zh.md
+└── pyproject.toml
 ```
 
 ## 架构
@@ -102,80 +106,54 @@ nanodeer/
 NanoDeer
 ├── Harness（核心框架）
 │   ├── Agent          # 状态机 + 构建器（LangGraph）
+│   ├── Router         # 模式检测（Direct/ReAct/PlanExecute）
 │   ├── Middlewares    # ThreadData, Sandbox, Security, Memory, Plan, Uploads, Compression
 │   ├── Sandbox        # Docker 容器隔离
-│   ├── Tools          # 文件、记忆、Plan 工具
+│   ├── Tools          # 15 个内置工具
 │   ├── Memory         # 文件系统跨会话记忆
-│   ├── Plan           # 目标分解 → Todo 清单
-│   └── Config         # YAML 配置加载器
-└── App（接口层）      # FastAPI + 飞书（规划中）
+│   ├── Plan           # TodoList 任务追踪
+│   └── Skills         # 可复用工作流
+└── App（接口层）      # FastAPI（规划中）
 ```
 
 ## 核心特性
 
 - **Agent 状态机**：基于 LangGraph 的状态管理
-- **沙箱隔离**：Docker 容器实现安全执行，支持可配置网络模式（bridge/none/host）
+- **Router 模式检测**：Direct（直接回答）、ReAct（标准推理+工具）、PlanExecute（规划后执行）
+- **沙箱隔离**：Docker 容器实现安全执行
 - **中间件链**：可插拔拦截器（ThreadData, Sandbox, Security, Memory, Plan, Uploads, Compression）
-- **记忆系统**：基于文件的双维度记忆（用户 + 项目），支持自动提取和 SaveMemory 工具
-- **Plan 模式**：TodoList 任务追踪，支持 WriteTodo/CompleteTodo 工具
-- **检查点持久化**：Memory/SQLite/PostgreSQL 支持（MemorySaver 已实现，其余 TODO）
-- **路径翻译**：虚拟路径（/mnt/user-data/）映射到容器
-- **文件上传**：UploadsMiddleware 将用户上传文件注入 memory context
-- **上下文压缩**：CompressionMiddleware 通过 LLM 摘要防止 context overflow
-- **数据分析支持**：预装 pandas、matplotlib、openpyxl，支持 Excel/CSV 数据分析
-- **网页抓取支持**：内置 fetch_url 和 web_search 工具，支持网页内容获取和搜索
-- **图像理解**：image_understand 工具读取图片并返回 base64，供 vision LLM 分析
+- **记忆系统**：基于文件的双维度记忆（用户 + 项目）
+- **Plan 模式**：TodoList 任务追踪
+- **Skills 系统**：从 .md 文件加载可复用工作流
+- **15 个内置工具**：文件、搜索、Shell、Python、Web、图片、记忆、Plan、Skill
 
-## 示例
+## 测试与示例
 
-| 示例 | 说明 | 运行 |
-|------|------|------|
-| 01_basic_llm | 创建 Agent 并对话（无工具）。展示消息如何流经 LangGraph。 | `python -m examples.01_basic_llm` |
-| 02_basic_tool | Agent 使用全部 15 个工具：read_file, write_file, ls, glob, grep, bash, fetch_url, web_search, read_image, exec_python, invoke_skill, save_memory, write_todo, list_todos, complete_todo。 | `python -m examples.02_basic_tool` |
-| 03_middleware_security | MiddlewareChain 钩子顺序演示。SecurityMiddleware 阻止路径遍历和危险命令。 | `python -m examples.03_middleware_security` |
-| 04_sandbox_mock | 虚拟路径 ↔ 物理路径翻译演示。`validate_path` 阻止 `../` 和系统文件。无需 Docker。 | `python -m examples.04_sandbox_mock` |
-| 05_sandbox_real | **需要 Docker。** 完整沙箱生命周期：获取容器 → 在容器内运行工具 → 释放容器。 | `python -m examples.05_sandbox_real` |
-| 06_builder_middleware | AgentBuilder + 中间件链。展示 ThreadDataMiddleware + SecurityMiddleware 如何接入 builder。 | `python -m examples.06_builder_middleware` |
-| 07_memory | Memory v2：MemoryStore frontmatter 文件、MemoryMiddleware 注入历史、`SaveMemory` 工具拦截、自动提取。 | `python -m examples.07_memory` |
-| 08_plan | Plan 模式：TodoListMiddleware 加载/保存待办、WriteTodo/CompleteTodo/ListTodos 工具。 | `python -m examples.08_plan` |
-| 09_uploads | UploadsMiddleware：处理用户上传文件，注入内容到 memory_context，存储到 uploads/ 目录。 | `python -m examples.09_uploads` |
-| 10_compression | CompressionMiddleware：通过 LLM 摘要压缩长对话历史，防止 context overflow。 | `python -m examples.10_compression` |
+详细测试用例和示例列表见 [docs/guides/test_examples.md](docs/guides/test_examples.md)。
 
 ## 沙箱镜像
 
-NanoDeer 使用专用沙箱镜像进行安全的工具执行。镜像预装了 Python 数据分析、网页抓取和代码质量工具。
-
-**预装工具：**
-- 数据分析：`numpy`、`pandas`、`openpyxl`、`xlrd`、`matplotlib`
-- 网页抓取：`requests`、`beautifulsoup4`、`lxml`
-- 代码质量：`pylint`、`black`、`mypy`、`isort`
+NanoDeer 使用专用沙箱镜像进行安全的工具执行。
 
 **本地构建：**
 ```bash
 docker build -t nanodeer/sandbox:latest -f sandbox/Dockerfile sandbox/
-docker build -t nanodeer/sandbox:1.2 -f sandbox/Dockerfile sandbox/
 ```
 
 **使用预构建镜像：**
 ```yaml
 sandbox:
   image: "nanodeer/sandbox:1.2"
-  network_mode: "bridge"  # "bridge", "none", "host"; "none" = 无网络（安全模式）
-```
-
-**验证镜像：**
-```bash
-docker run --rm -it nanodeer/sandbox:1.2 bash -c \
-  "python3 -c 'import numpy, pandas, openpyxl, matplotlib, requests, bs4; print(\"OK\")'"
+  network_mode: "bridge"  # "bridge", "none", "host"
 ```
 
 ## 设计原则
 
 1. **隔离优于权限**：安全来自沙箱，而非检查
 2. **单一职责**：每个中间件只做一件事
-3. **反向清理**：after_* 钩子按逆序执行
-4. **渐进扩展**：所有关键点都有扩展接口
+3. **逆序清理**：after_* 钩子按逆序执行
+4. **渐进扩展**：Skills 按需加载，非全量注入
 
 ## License
 
-本项目采用 [MIT License](./LICENSE) 开源发布。
+MIT License

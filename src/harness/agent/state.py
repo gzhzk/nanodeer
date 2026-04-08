@@ -6,6 +6,8 @@ from langchain_core.messages import BaseMessage
 from langgraph.graph import add_messages
 from pydantic import BaseModel, Field
 
+from .router import AgentMode
+
 
 # class Artifact(BaseModel):
 #     """Artifact structure.
@@ -85,3 +87,5 @@ class ThreadState(BaseModel):
     pending_subagent_tasks: list[str] = Field(default_factory=list)
     memory_context: str | None = Field(default=None)
     todos: list[dict] = Field(default_factory=list)  # Plan mode task tracking
+    mode: AgentMode = Field(default=AgentMode.REACT)  # Execution mode (Direct/ReAct/PlanExecute)
+    subagent_results: list[dict] = Field(default_factory=list)  # Subagent execution results

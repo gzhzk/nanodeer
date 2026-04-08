@@ -90,8 +90,7 @@ nanodeer/
 │   └── integration/         # Integration examples (10-13)
 ├── tests/                   # Test suite
 │   ├── unit/                # Unit tests (01-09)
-│   ├── integration/         # Integration tests (10-13)
-│   └── e2e/                # E2E tests (TODO)
+│   └── integration/         # Integration tests (10-13)
 ├── docs/                   # Documentation
 │   ├── tutorials/           # Tutorials (01-08)
 │   └── guides/             # Developer guides
@@ -107,8 +106,8 @@ nanodeer/
 NanoDeer
 ├── Harness (core framework)
 │   ├── Agent          # State machine + builder (LangGraph)
-│   ├── Router         # Mode detection (Direct/ReAct/Plan)
-│   ├── Middlewares    # ThreadData, Sandbox, Security, Memory, Plan, Uploads, Compression
+│   ├── Router         # Mode detection (Direct/ReAct/PlanExecute)
+│   ├── Middlewares    # ThreadData, Sandbox, Security, Memory, Plan, Uploads, Compression, Subagent
 │   ├── Sandbox        # Docker container isolation
 │   ├── Tools          # 15 built-in tools
 │   ├── Memory         # File-based cross-session memory
@@ -122,35 +121,16 @@ NanoDeer
 - **Agent State Machine**: LangGraph-powered state management
 - **Router**: Mode detection (Direct/ReAct/PlanExecute)
 - **Sandbox Isolation**: Docker containers for secure execution
-- **Middleware Chain**: Pluggable interceptors (ThreadData, Sandbox, Security, Memory, Plan, Uploads, Compression)
+- **Middleware Chain**: Pluggable interceptors (ThreadData, Sandbox, Security, Memory, Plan, Uploads, Compression, Subagent)
 - **Memory System**: File-based cross-session memory with user + project dimensions
 - **Plan Mode**: TodoList task tracking with WriteTodo/CompleteTodo tools
 - **Skills System**: Reusable workflows loaded from .md files
 - **15 Built-in Tools**: File, Search, Shell, Python, Web, Image, Memory, Plan, Skill
+- **Subagent System**: Parallel task execution via asyncio.gather
 
-## Examples
+## Test Suite
 
-### Unit Examples (01-08)
-
-| Example | What It Does |
-|---------|---------------|
-| 01_agent_state | ThreadState and SandboxInfo data structures |
-| 02_agent_prompt | System prompt generation with tools/memory/todos |
-| 03_tools | All 15 tools and their usage |
-| 04_middleware_chain | Middleware hook execution order (forward/reverse) |
-| 05_memory_store | MemoryStore file-based storage |
-| 06_plan | TodoItem and TodoStatus for task tracking |
-| 07_sandbox_path | Virtual-to-physical path translation and validation |
-| 08_router | Mode detection for Direct/ReAct/PlanExecute |
-
-### Integration Examples (10-13)
-
-| Example | What It Does |
-|---------|---------------|
-| 10_agent_builder | Building LangGraph agent with tools |
-| 11_sandbox_mock | Sandbox tool wrappers and base64 encoding |
-| 12_middleware_integration | UploadsMiddleware and CompressionMiddleware |
-| 13_skills | SkillLoader and invoke_skill tool |
+See [docs/guides/test_examples.md](docs/guides/test_examples.md) for detailed test and example listings.
 
 ## Sandbox Image
 

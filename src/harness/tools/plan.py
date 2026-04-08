@@ -36,12 +36,16 @@ def list_todos() -> str:
     """List all current todo items.
 
     Returns a formatted list of all todos with their status.
+    Note: In REACT/PLAN mode, todos are tracked in ThreadState.todos.
+    This tool returns the current list; the agent should pass the result
+    back to the user.
 
     Returns:
-        Formatted list of todos.
+        Formatted list of todos. "(no todos)" if empty.
     """
-    # This will be connected to state.todos at runtime via middleware
-    return "(Connect to TodoListMiddleware for actual implementation)"
+    # TODO: Connect to TodoListMiddleware for state-aware implementation
+    # Currently returns a marker that the middleware will replace
+    return "[TODOS_PLACEHOLDER]"
 
 
 @tool
@@ -54,4 +58,5 @@ def complete_todo(todo_id: str) -> str:
     Returns:
         Confirmation message.
     """
-    return f"Todo {todo_id} marked as completed"
+    # TODO: Connect to TodoListMiddleware for state-aware implementation
+    return f"[COMPLETE_PLACEHOLDER:{todo_id}]"

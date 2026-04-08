@@ -28,10 +28,12 @@ def validate_path(virtual_path: str) -> str | None:
 
     Blocks: path traversal (../), system files (/etc/passwd, /root/.ssh).
     """
-    normalized = os.path.normpath(virtual_path)
-
-    if ".." in normalized:
+    # Check for .. BEFORE normpath - normpath resolves .. first, bypassing checks
+    # Reject any path containing .. components (we only need direct subdirectories)
+    if ".." in virtual_path:
         return None
+
+    normalized = os.path.normpath(virtual_path)
 
     if not normalized.startswith(VIRTUAL_PREFIX):
         return None

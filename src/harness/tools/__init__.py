@@ -10,6 +10,7 @@ from .exec_python import exec_python
 from .invoke_skill import invoke_skill
 from .memory import save_memory
 from .plan import write_todo, list_todos, complete_todo
+from .subagent import spawn_subagent, get_subagent_results
 
 __all__ = [
     "NanoDeerTool",
@@ -40,4 +41,7 @@ __all__ = [
     "write_todo",
     "list_todos",
     "complete_todo",
+    # subagent
+    "spawn_subagent",
+    "get_subagent_results",
 ]

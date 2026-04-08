@@ -140,6 +140,23 @@ clear_sandbox_provider(thread_id)
 1. **容器级隔离**：恶意代码无法逃逸到宿主机
 2. **只读根文件系统**：防止写入系统目录
 3. **base64 编码参数**：防止 shell 注入
-4. **路径白名单**：只允许 `/mnt/user-data/` 路径
-5. **timeout**：防止死循环占用资源
-6. **network_mode**：可选网络隔离（`none`=无网络）
+4. **shlex.quote() 转义**：Bash 命令使用 `shlex.quote()` 正确转义用户输入
+5. **路径白名单**：只允许 `/mnt/user-data/` 路径，**先检查 `..` 再 normpath**
+6. **timeout**：防止死循环占用资源
+7. **network_mode**：可选网络隔离（`none`=无网络）
+
+### 路径安全校验顺序
+
+```
+1. 检查原始路径是否包含 ".."（在 normpath 之前，防止绕过）
+2. normpath 解析相对路径
+3. 检查是否以 /mnt/user-data 开头
+4. 检查黑名单（/etc/passwd, /root/.ssh）
+```
+
+### Bash 命令安全
+
+所有 bash 命令通过 `shlex.quote()` 转义：
+```python
+cmd = f"bash -c {shlex.quote(command)}"
+```

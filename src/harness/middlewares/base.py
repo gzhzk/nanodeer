@@ -23,7 +23,9 @@ class Middleware(ABC):
 
     async def after_tool_call(
         self, state: "ThreadState", tool_name: str, tool_args: dict, result: str
-    ) -> None: ...
+    ) -> str:
+        """Called after a tool executes. Returns modified result."""
+        return result
 
     async def on_error(self, state: "ThreadState", error: Exception) -> None: ...
 
@@ -54,9 +56,12 @@ class MiddlewareChain:
 
     async def after_tool_call(
         self, state: "ThreadState", tool_name: str, tool_args: dict, result: str
-    ) -> None:
+    ) -> str:
+        """Execute after_tool_call hooks in reverse, each can modify result."""
+        current = result
         for m in reversed(self.middlewares):
-            await m.after_tool_call(state, tool_name, tool_args, result)
+            current = await m.after_tool_call(state, tool_name, tool_args, current)
+        return current
 
     async def on_error(self, state: "ThreadState", error: Exception) -> None:
         for m in reversed(self.middlewares):

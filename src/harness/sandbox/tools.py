@@ -4,6 +4,7 @@ This module provides wrapper classes that implement the SandboxTool protocol,
 allowing each tool to define how it executes inside a Docker container.
 """
 import base64
+import shlex
 
 from . import SandboxCommand
 from .path import translate_and_validate
@@ -121,7 +122,7 @@ class BashSandboxTool(SandboxToolWrapper):
         if timeout > 120:
             timeout = 120
         # Container has read-only rootfs for safety
-        cmd = f"bash -c {repr(command)}"
+        cmd = f"bash -c {shlex.quote(command)}"
         return SandboxCommand(cmd=cmd, timeout=timeout)
 
 

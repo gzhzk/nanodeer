@@ -108,7 +108,7 @@ class MemoryMiddleware(Middleware):
 
     async def after_tool_call(
         self, state: Any, tool_name: str, tool_args: dict, result: str
-    ) -> None:
+    ) -> str:
         """Intercept SaveMemory tool calls to save memories.
 
         Args:
@@ -116,16 +116,19 @@ class MemoryMiddleware(Middleware):
             tool_name: Name of the tool that was called.
             tool_args: Arguments passed to the tool.
             result: Tool execution result.
+
+        Returns:
+            The result unchanged (memory saving has no visible effect).
         """
         if tool_name != "save_memory":
-            return
+            return result
 
         # Extract memory content and category from tool call
         content = tool_args.get("content", "")
         category = tool_args.get("category", "general")
 
         if not content:
-            return
+            return result
 
         # Map category string to memory type
         if category in ("user", "feedback"):
@@ -144,3 +147,4 @@ class MemoryMiddleware(Middleware):
                 name=f"Manual save: {content[:30]}...",
                 description=f"User saved: {category}",
             )
+        return result

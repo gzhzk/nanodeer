@@ -2,6 +2,8 @@
 
 from datetime import date
 
+from .router import AgentMode
+
 
 # =============================================================================
 # Lead Agent System Prompt
@@ -10,6 +12,8 @@ from datetime import date
 LEAD_AGENT_PROMPT = """<role>
 You are {agent_name}, a lightweight AI super agent built with NanoDeer.
 </role>
+
+{mode_instructions}
 
 <thinking_style>
 - Think concisely and strategically BEFORE taking action
@@ -22,6 +26,14 @@ You are {agent_name}, a lightweight AI super agent built with NanoDeer.
 2. If missing info or ambiguous, ask for clarification
 3. Only then proceed with action
 </workflow>
+
+<subagent>
+When a task can be parallelized, use spawn_subagent to delegate work:
+- spawn_subagent(name, task, type): Create a subagent to work in parallel
+- get_subagent_results(): Collect results when subagents complete
+- Types: "general" (full tools), "bash" (shell only)
+- Example: For "analyze project and generate report", spawn researcher + writer subagents
+</subagent>
 
 <tools>
 {tools_section}
@@ -54,8 +66,36 @@ You are {agent_name}, a lightweight AI super agent built with NanoDeer.
 
 {todos_section}
 
+{subagent_results_section}
+
 <current_date>{date}
 """
+
+
+def get_mode_instructions(mode: AgentMode) -> str:
+    """Generate mode-specific instructions for system prompt."""
+    if mode == AgentMode.DIRECT:
+        return """<execution_mode>
+You are in DIRECT mode: Answer questions directly without using tools.
+- Provide clear, concise answers
+- No tool calls needed for simple questions
+- If the task requires file operations, shell commands, or complex actions, use the appropriate tools
+</execution_mode>"""
+    elif mode == AgentMode.PLAN_EXECUTE:
+        return """<execution_mode>
+You are in PLAN_EXECUTE mode: First plan the steps, then execute.
+1. Break down the task into clear steps
+2. Use WriteTodo to create a plan
+3. Execute each step using tools
+4. Mark completed todos as done
+</execution_mode>"""
+    else:  # REACT
+        return """<execution_mode>
+You are in REACT mode: Standard reasoning + action loop.
+- Think step by step
+- Use tools when needed
+- Continue until the task is complete
+</execution_mode>"""
 
 
 def get_tools_section(tools: list[str]) -> str:
@@ -82,7 +122,9 @@ def get_tools_section(tools: list[str]) -> str:
         "SaveMemory": "Save information to memory. Args: content (str), memory_type (str, optional)",
         "WriteTodo": "Create a task. Args: content (str), priority (int, optional)",
         "ListTodos": "List all tasks. No args.",
-        "CompleteTodo": "Mark task done. Args: content (str)",
+        "CompleteTodo": "Mark task done. Args: todo_id (str)",
+        "SpawnSubagent": "Create parallel subagent. Args: name (str), task (str), subagent_type (str, optional)",
+        "GetSubagentResults": "Get subagent results. No args.",
     }
 
     lines = []
@@ -121,6 +163,8 @@ def build_lead_agent_prompt(
     memory_context: str | None = None,
     thread_id: str | None = None,
     todos: list[dict] | None = None,
+    mode: AgentMode = AgentMode.REACT,
+    subagent_results: list[dict] | None = None,
 ) -> str:
     """Build the lead agent system prompt.
 
@@ -130,6 +174,8 @@ def build_lead_agent_prompt(
         memory_context: Memory context string (from memory system).
         thread_id: Thread ID for sandbox path.
         todos: List of todo dictionaries.
+        mode: Execution mode (Direct/ReAct/PlanExecute).
+        subagent_results: List of subagent result dicts.
 
     Returns:
         Formatted system prompt string.
@@ -137,13 +183,34 @@ def build_lead_agent_prompt(
     tools_section = get_tools_section(tools or [])
     memory_section = memory_context if memory_context else ""
     todos_section = format_todos(todos) if todos else ""
+    subagent_results_section = format_subagent_results(subagent_results)
     thread_id_str = thread_id or "UNSET"
+    mode_instructions = get_mode_instructions(mode)
 
     return LEAD_AGENT_PROMPT.format(
         agent_name=agent_name,
+        mode_instructions=mode_instructions,
         tools_section=tools_section,
         memory_section=memory_section,
         todos_section=todos_section,
+        subagent_results_section=subagent_results_section,
         thread_id=thread_id_str,
         date=date.today().isoformat(),
     )
+
+
+def format_subagent_results(results: list[dict] | None) -> str:
+    """Format subagent results for system prompt."""
+    if not results:
+        return ""
+
+    lines = ["<subagent_results>"]
+    for r in results:
+        lines.append(f"## {r.get('name', 'subagent')} ({r.get('status', 'unknown')})")
+        lines.append(f"Output: {r.get('output', '')}")
+        if r.get('error'):
+            lines.append(f"Error: {r.get('error')}")
+        lines.append("")
+    lines.append("</subagent_results>")
+
+    return "\n".join(lines)

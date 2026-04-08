@@ -239,10 +239,10 @@ class TestPlanTools:
         assert list_todos.name == "list_todos"
 
     def test_list_todos_returns_placeholder(self):
-        """ListTodos returns placeholder message."""
+        """ListTodos returns placeholder for middleware to replace."""
         from harness.tools.plan import list_todos
         result = list_todos.invoke({})
-        assert "TodoListMiddleware" in result
+        assert "[TODOS_PLACEHOLDER]" in result
 
     def test_complete_todo_exists(self):
         """CompleteTodo tool exists."""
@@ -250,11 +250,10 @@ class TestPlanTools:
         assert complete_todo.name == "complete_todo"
 
     def test_complete_todo_marks_done(self):
-        """CompleteTodo marks task as completed."""
+        """CompleteTodo returns placeholder for middleware."""
         from harness.tools.plan import complete_todo
         result = complete_todo.invoke({"todo_id": "todo-123"})
-        assert "todo-123" in result
-        assert "completed" in result
+        assert "[COMPLETE_PLACEHOLDER:todo-123]" in result
 
 
 class TestAllToolsImported:

@@ -11,6 +11,7 @@ from langgraph.graph.message import add_messages
 
 from .state import ThreadState
 from .prompt import build_lead_agent_prompt
+from .router import AgentMode
 
 # Optional: Middleware chain for hooks (lazy import to avoid hard dependency)
 try:
@@ -102,7 +103,7 @@ class AgentBuilder:
             raise
         finally:
             if result is not None:
-                await self.middleware_chain.after_agent_end(result)
+                await self.middleware_chain.after_agent_end(initial_state)
 
     async def stream(self, initial_state: ThreadState):
         """Stream agent responses (async generator).
@@ -192,6 +193,8 @@ class AgentBuilder:
             thread_id=thread_id,
             memory_context=state.memory_context,
             todos=state.todos,
+            mode=state.mode,
+            subagent_results=state.subagent_results,
         )
 
         # Prepend system message to conversation
@@ -233,7 +236,7 @@ class AgentBuilder:
                 result = await tool.ainvoke(tc["args"])
 
             if self.middleware_chain:
-                await self.middleware_chain.after_tool_call(state, tc["name"], tc["args"], str(result))
+                result = await self.middleware_chain.after_tool_call(state, tc["name"], tc["args"], str(result))
 
             results.append(ToolMessage(
                 tool_call_id=tc["id"],
@@ -282,8 +285,18 @@ class AgentBuilder:
 
 
     def _should_continue(self, state: ThreadState) -> Literal["continue", "end"]:
-        """Route to tools if LLM called tools, otherwise end."""
+        """Route to tools if LLM called tools, otherwise end.
+
+        Respects execution mode:
+        - DIRECT: Skip tool loop entirely
+        - REACT: Normal tool loop
+        - PLAN_EXECUTE: Currently same as REACT (plan prompt injection)
+        """
         from langchain_core.messages import AIMessage
+
+        # Direct mode: skip tool loop
+        if state.mode == AgentMode.DIRECT:
+            return "end"
 
         last_message = state.messages[-1]
         if isinstance(last_message, AIMessage) and last_message.tool_calls:

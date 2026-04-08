@@ -46,10 +46,20 @@ class MyMiddleware(Middleware):
         # 做点什么：校验参数、修改参数...
         pass
 
-    async def after_tool_call(self, state: ThreadState, tool_name: str, tool_args: dict, result: str) -> None:
-        """工具调用后拦截"""
+    async def after_tool_call(self, state: ThreadState, tool_name: str, tool_args: dict, result: str) -> str:
+        """工具调用后拦截
+
+        Args:
+            state: 当前状态
+            tool_name: 工具名称
+            tool_args: 工具参数
+            result: 工具执行结果
+
+        Returns:
+            修改后的结果（可被后续 middleware 继续修改）
+        """
         # 做点什么：日志、修改结果...
-        pass
+        return result
 ```
 
 ### 2. 注册到 Chain
@@ -119,15 +129,16 @@ class ValidatePathMiddleware(Middleware):
 
 ## 内置 Middleware
 
-| Middleware | before_agent_start | before_tool_call | after_agent_end |
-|------------|-------------------|------------------|-----------------|
-| ThreadDataMiddleware | 创建目录结构 | - | - |
-| SandboxMiddleware | acquire 容器 | - | release 容器 |
-| SecurityMiddleware | - | 校验路径/命令 | - |
-| MemoryMiddleware | 加载记忆 | - | 保存记忆 |
-| TodoListMiddleware | 加载 todos | - | 保存 todos |
-| UploadsMiddleware | 处理上传 | - | - |
-| CompressionMiddleware | 压缩对话 | - | - |
+| Middleware | before_agent_start | before_tool_call | after_tool_call | after_agent_end |
+|------------|-------------------|------------------|-----------------|-----------------|
+| ThreadDataMiddleware | 创建目录结构 | - | - | - |
+| SandboxMiddleware | acquire 容器 | - | - | release 容器 |
+| SecurityMiddleware | - | 校验路径/命令 | - | - |
+| MemoryMiddleware | 加载记忆 | - | 保存记忆到 store | 保存记忆 |
+| TodoListMiddleware | 加载 todos | - | - | 保存 todos |
+| UploadsMiddleware | 处理上传 | - | - | - |
+| CompressionMiddleware | 压缩对话 | - | - | - |
+| SubagentMiddleware | 初始化任务列表 | - | 收集任务/替换占位符 | 并行执行 subagent |
 
 ## 最佳实践
 
