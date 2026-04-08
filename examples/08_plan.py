@@ -7,7 +7,7 @@ This example demonstrates:
 - TodoListMiddleware integration with MemoryStore
 - before_agent_start loads todos from storage
 - after_agent_end saves todos to storage
-- WriteTodo tool usage
+- write_todo tool usage
 """
 
 import asyncio
@@ -15,7 +15,7 @@ import tempfile
 from pathlib import Path
 
 from harness.plan import TodoItem, TodoStatus
-from harness.tools import WriteTodo, ListTodos, CompleteTodo
+from harness.tools import write_todo, list_todos, complete_todo
 from harness.middlewares import TodoListMiddleware
 from harness.memory import MemoryStore
 
@@ -76,11 +76,11 @@ async def demo_todo_list_middleware():
 
 
 async def demo_write_todo_tool():
-    """Demo: WriteTodo tool."""
-    print("\n=== WriteTodo Tool Demo ===")
+    """Demo: write_todo tool."""
+    print("\n=== write_todo Tool Demo ===")
 
     # Create a todo using the tool
-    result = WriteTodo.invoke({
+    result = write_todo.invoke({
         "content": "Review pull requests",
         "status": "pending",
         "priority": 1,

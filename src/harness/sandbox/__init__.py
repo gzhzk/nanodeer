@@ -6,6 +6,7 @@ before use and released when done. Provider is stored in module-level context
 """
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Protocol
 
 
 @dataclass
@@ -22,6 +23,42 @@ class Sandbox:
     thread_id: str
     container_id: str
     working_dir: str
+
+
+@dataclass
+class SandboxCommand:
+    """Command to execute inside a sandbox container."""
+    cmd: str
+    timeout: int = 30
+    env: dict[str, str] | None = None
+
+
+class SandboxTool(Protocol):
+    """Protocol for tools that can execute inside a sandbox.
+
+    Tools that need sandbox isolation (file operations, shell, etc.)
+    should implement this interface to provide their sandbox command.
+
+    The agent builder checks if a tool implements this protocol,
+    and if so, calls get_sandbox_command() to get the command to
+    run inside the Docker container instead of executing locally.
+    """
+
+    @property
+    def name(self) -> str:
+        """Tool name."""
+
+    def get_sandbox_command(self, args: dict, thread_id: str) -> SandboxCommand | None:
+        """Get the command to execute in sandbox.
+
+        Args:
+            args: Tool arguments from the LLM tool call.
+            thread_id: Thread ID for path translation.
+
+        Returns:
+            SandboxCommand to execute, or None if this tool should
+            be executed locally (not in sandbox).
+        """
 
 
 class SandboxProvider(ABC):

@@ -60,10 +60,18 @@ nanodeer/
 │   │   └── types.py         # TodoItem, TodoStatus, TODOS_SECTION_TEMPLATE
 │   ├── tools/               # Capability extensions (bound to LLM)
 │   │   ├── __init__.py
-│   │   ├── base.py          # NanoDeerTool base class
-│   │   ├── file.py         # read_file, write_file, ls, glob, grep, bash
-│   │   ├── memory.py        # SaveMemory (intercepted by MemoryMiddleware)
-│   │   └── plan.py         # WriteTodo, ListTodos, CompleteTodo
+│   │   ├── base.py         # NanoDeerTool base class
+│   │   ├── file.py         # read_file, write_file
+│   │   ├── list_dir.py     # ls: list directory
+│   │   ├── search.py       # glob, grep: file search
+│   │   ├── shell.py        # bash: shell execution
+│   │   ├── fetch_url.py    # fetch_url: HTTP GET with HTML parsing
+│   │   ├── web_search.py   # web_search: DuckDuckGo HTML search
+│   │   ├── read_image.py   # read_image: read image for vision LLM
+│   │   ├── exec_python.py  # exec_python: run Python code in sandbox
+│   │   ├── invoke_skill.py # invoke_skill: call a named skill
+│   │   ├── memory.py       # save_memory
+│   │   └── plan.py         # write_todo, list_todos, complete_todo
 │   ├── config.py            # YAML config loader
 │   └── __init__.py
 ├── src/app/                  # App interface (FastAPI, Feishu planned)
@@ -111,14 +119,15 @@ NanoDeer
 - **Upload Files**: UploadsMiddleware processes user-uploaded files into memory context
 - **Context Compression**: CompressionMiddleware prevents context overflow via LLM summarization
 - **Data Analysis Ready**: Pre-built sandbox image with pandas, matplotlib, openpyxl for Excel/data tasks
-- **Web Scraping Ready**: Pre-built sandbox image with requests, beautifulsoup4, lxml
+- **Web Scraping Ready**: Built-in fetch_url and web_search tools for web content retrieval
+- **Vision Ready**: image_understand tool reads images and returns base64 for vision-capable LLMs
 
 ## Examples
 
 | Example | What It Does | Run with |
 |---------|---------------|-----------|
 | 01_basic_llm | Create an agent, chat with it (no tools). Shows how messages flow through LangGraph. | `python -m examples.01_basic_llm` |
-| 02_basic_tool | Agent uses all 6 tools: read_file, write_file, ls, glob, grep, bash. Reads files, lists dirs, searches content, finds by pattern, runs bash commands. | `python -m examples.02_basic_tool` |
+| 02_basic_tool | Agent uses all 15 tools: read_file, write_file, ls, glob, grep, bash, fetch_url, web_search, read_image, exec_python, invoke_skill, save_memory, write_todo, list_todos, complete_todo. | `python -m examples.02_basic_tool` |
 | 03_middleware_security | MiddlewareChain hook order demo. SecurityMiddleware blocks path traversal and dangerous patterns. | `python -m examples.03_middleware_security` |
 | 04_sandbox_mock | Virtual path ↔ physical path translation. `validate_path` blocks `../` and system files. No Docker needed. | `python -m examples.04_sandbox_mock` |
 | 05_sandbox_real | **Requires Docker.** Full sandbox lifecycle: acquire container → run tools inside → release. All tools run in isolated container. | `python -m examples.05_sandbox_real` |

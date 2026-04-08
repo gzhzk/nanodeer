@@ -277,7 +277,7 @@ class TestMemoryMiddlewareV2:
 
     @pytest.mark.asyncio
     async def test_after_tool_call_intercepts_save_memory(self):
-        """after_tool_call saves memory when SaveMemory is called."""
+        """after_tool_call saves memory when save_memory is called."""
         from harness.middlewares.memory import MemoryMiddleware
         import tempfile
         from pathlib import Path
@@ -289,7 +289,7 @@ class TestMemoryMiddlewareV2:
                 project_slug="test-project",
             )
 
-            # Simulate SaveMemory tool call
+            # Simulate save_memory tool call
             tool_args = {
                 "content": "User prefers dark mode",
                 "category": "user",
@@ -297,7 +297,7 @@ class TestMemoryMiddlewareV2:
 
             await middleware.after_tool_call(
                 state={"thread_id": "test-thread"},
-                tool_name="SaveMemory",
+                tool_name="save_memory",
                 tool_args=tool_args,
                 result="Memory saved",
             )
@@ -308,7 +308,7 @@ class TestMemoryMiddlewareV2:
 
     @pytest.mark.asyncio
     async def test_after_tool_call_ignores_other_tools(self):
-        """after_tool_call ignores non-SaveMemory tools."""
+        """after_tool_call ignores non-save_memory tools."""
         from harness.middlewares.memory import MemoryMiddleware
         import tempfile
         from pathlib import Path
@@ -399,19 +399,19 @@ class TestMemoryMiddlewareV2:
 
 
 class TestSaveMemoryTool:
-    """Test SaveMemory tool."""
+    """Test save_memory tool."""
 
     def test_save_memory_tool_exists(self):
-        """SaveMemory tool can be imported."""
-        from harness.tools import SaveMemory
-        assert SaveMemory is not None
-        assert SaveMemory.name == "SaveMemory"
+        """save_memory tool can be imported."""
+        from harness.tools import save_memory
+        assert save_memory is not None
+        assert save_memory.name == "save_memory"
 
     def test_save_memory_tool_signature(self):
-        """SaveMemory tool has expected signature."""
-        from harness.tools import SaveMemory
+        """save_memory tool has expected signature."""
+        from harness.tools import save_memory
         # Check tool has the expected parameters
-        assert "content" in SaveMemory.args_schema.model_fields
+        assert "content" in save_memory.args_schema.model_fields
         assert "category" in SaveMemory.args_schema.model_fields
 
 

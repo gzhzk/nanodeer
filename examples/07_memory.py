@@ -1,13 +1,13 @@
-"""Example 07: Memory System v2 - file storage, auto-extraction, and SaveMemory tool.
+"""Example 07: Memory System v2 - file storage, auto-extraction, and save_memory tool.
 
 Run with: python -m examples.07_memory
 
 This example demonstrates:
 - MemoryStore file operations (save/load)
 - MemoryMiddleware before_agent_start (read injection)
-- MemoryMiddleware after_tool_call (SaveMemory interception)
+- MemoryMiddleware after_tool_call (save_memory interception)
 - MemoryMiddleware after_agent_end (auto-extraction)
-- SaveMemory tool usage
+- save_memory tool usage
 """
 
 import asyncio
@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from harness.memory import MemoryStore, MemoryEntry, MemoryExtractor, ExtractedMemory
 from harness.middlewares import MemoryMiddleware, MiddlewareChain
-from harness.tools import SaveMemory
+from harness.tools import save_memory
 from harness.agent import ThreadState
 from langchain_core.messages import HumanMessage, AIMessage
 
@@ -109,8 +109,8 @@ async def demo_memory_middleware_v1():
 
 
 async def demo_save_memory_tool():
-    """Demo: SaveMemory tool interception via after_tool_call."""
-    print("\n=== SaveMemory Tool Demo (v2) ===")
+    """Demo: save_memory tool interception via after_tool_call."""
+    print("\n=== save_memory Tool Demo (v2) ===")
 
     with tempfile.TemporaryDirectory() as tmpdir:
         store = MemoryStore(root=Path(tmpdir))
@@ -118,16 +118,16 @@ async def demo_save_memory_tool():
         # Create middleware
         memory_mw = MemoryMiddleware(store, project_slug="test-project")
 
-        # Simulate SaveMemory tool call
+        # Simulate save_memory tool call
         tool_args = {
             "content": "User prefers Python over other languages",
             "category": "user",
         }
 
-        # after_tool_call intercepts SaveMemory and saves
+        # after_tool_call intercepts save_memory and saves
         await memory_mw.after_tool_call(
             state={"thread_id": "test-user"},
-            tool_name="SaveMemory",
+            tool_name="save_memory",
             tool_args=tool_args,
             result="Memory saved",
         )
@@ -135,7 +135,7 @@ async def demo_save_memory_tool():
         # Verify memory was saved
         user_memory = store.load_user_memory("default")
         assert "Python" in user_memory
-        print("✅ SaveMemory tool correctly saved memory via after_tool_call")
+        print("✅ save_memory tool correctly saved memory via after_tool_call")
 
 
 async def demo_auto_extraction():

@@ -39,12 +39,24 @@ class AgentBuilder:
             middleware_chain: MiddlewareChain for before/after hooks.
         """
         self.llm = llm
-        self.tools = tools or []
-        self._tool_map = {t.name: t for t in self.tools}
-        if self.tools:
-            self.llm = self.llm.bind_tools(self.tools)
         self.checkpointer = checkpointer
         self.middleware_chain = middleware_chain
+
+        # Store original tools for LLM binding
+        self._raw_tools = tools or []
+
+        # Wrap sandbox-aware tools for sandbox execution
+        from ..sandbox.tools import wrap_tool_for_sandbox
+        self._tool_map = {}
+        for tool in self._raw_tools:
+            wrapped = wrap_tool_for_sandbox(tool)
+            if wrapped is not None:
+                self._tool_map[wrapped.name] = wrapped
+            else:
+                self._tool_map[tool.name] = tool
+
+        if self._raw_tools:
+            self.llm = self.llm.bind_tools(self._raw_tools)
 
     def build(self) -> StateGraph:
         """Build and return the compiled StateGraph.
@@ -169,7 +181,7 @@ class AgentBuilder:
             dict: Update to merge into state (adds messages).
         """
         # Build system prompt with available tools
-        tool_names = [t.name for t in self.tools]
+        tool_names = [t.name for t in self._raw_tools]
         sandbox = state.sandbox
         thread_id = sandbox.thread_id if sandbox else None
 
@@ -229,64 +241,26 @@ class AgentBuilder:
         return {"messages": results}
 
     async def _execute_in_sandbox(self, sandbox, tool, tool_call):
-        """Execute tool call inside Docker container via safe python subprocess."""
-        import base64
+        """Execute tool call inside Docker container.
 
+        If the tool implements SandboxTool protocol, use its get_sandbox_command()
+        to build the container command. Otherwise fall back to local execution.
+        """
         from ..sandbox import Sandbox, get_sandbox_provider
-        from ..sandbox.path import translate_and_validate
 
         tool_name = tool_call["name"]
         args = tool_call["args"]
 
-        # All tools operate on virtual paths, translate to physical
-        file_path = args.get("file_path", "")
-        physical_path = translate_and_validate(file_path, sandbox.thread_id) if file_path else ""
-
-        # Build safe commands
-        # read_file, ls: python with argv (no shell interpolation)
-        # write_file: python with base64-encoded args (no shell interpolation)
-        # glob: python with base64-encoded args (no shell interpolation)
-        # grep: shell command with -e (pattern is literal, not regex/shell expansion)
-
-        if tool_name == "read_file":
-            # Safe: python reads file, path as direct argument (no shell)
-            cmd_str = f"python3 -c \"import sys; print(open(sys.argv[1]).read())\" {physical_path}"
-
-        elif tool_name == "write_file":
-            content = args.get("content", "")
-            encoded_content = base64.b64encode(content.encode("utf-8")).decode("ascii")
-            encoded_path = base64.b64encode(physical_path.encode("utf-8")).decode("ascii")
-            # Safe: all args are base64-encoded, no shell interpolation possible
-            cmd_str = f"python3 -c \"import base64,os,sys; p=base64.b64decode(sys.argv[1]).decode(); os.makedirs(os.path.dirname(p) or '.',exist_ok=True); open(p,'wb').write(base64.b64decode(sys.argv[2]))\" {encoded_path} {encoded_content}"
-
-        elif tool_name == "ls":
-            # Safe: python lists directory, path as direct argument
-            cmd_str = f"python3 -c \"import os; [print(f) for f in os.listdir(sys.argv[1])]\" {physical_path}"
-
-        elif tool_name == "glob":
-            pattern = args.get("pattern", "*")
-            encoded_path = base64.b64encode(physical_path.encode("utf-8")).decode("ascii")
-            encoded_pat = base64.b64encode(pattern.encode("utf-8")).decode("ascii")
-            # Safe: args are base64-encoded, no shell interpolation
-            cmd_str = f"python3 -c \"import base64,os,fnmatch; p=base64.b64decode(sys.argv[1]).decode(); pat=base64.b64decode(sys.argv[2]).decode(); [print(os.path.join(r,f)) for r,_,fs in os.walk(p) for f in fs if fnmatch.fnmatch(f,pat)]\" {encoded_path} {encoded_pat}"
-
-        elif tool_name == "grep":
-            pattern = args.get("pattern", "")
-            recursive = args.get("recursive", True)
-            rec_flag = "-r" if recursive else ""
-            # Safe: -e makes pattern a literal (not regex/shell), path validated
-            cmd_str = f"grep {rec_flag} -n -e {repr(pattern)} {physical_path}"
-
-        elif tool_name == "bash":
-            command = args.get("command", "")
-            timeout = args.get("timeout", 30)
-            if timeout > 120:
-                timeout = 120
-            # Execute bash command - container has network=none, read-only rootfs for safety
-            cmd_str = f"bash -c {repr(command)}"
-
+        # Check if tool provides its own sandbox command
+        if hasattr(tool, "get_sandbox_command"):
+            cmd_obj = tool.get_sandbox_command(args, sandbox.thread_id)
+            if cmd_obj is None:
+                # Tool wants local execution
+                return await tool.ainvoke(args)
+            cmd_str = cmd_obj.cmd
         else:
-            return f"Unknown tool: {tool_name}"
+            # Tool doesn't implement SandboxTool - execute locally
+            return await tool.ainvoke(args)
 
         # Provider stored in context by SandboxMiddleware
         provider = get_sandbox_provider(sandbox.thread_id)
@@ -303,6 +277,7 @@ class AgentBuilder:
         if run_result.returncode != 0:
             return f"Error: {run_result.stderr}"
         return run_result.stdout
+
 
     def _should_continue(self, state: ThreadState) -> Literal["continue", "end"]:
         """Route to tools if LLM called tools, otherwise end."""

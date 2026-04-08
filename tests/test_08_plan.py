@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from harness.plan import TodoItem, TodoStatus
-from harness.tools import WriteTodo, ListTodos, CompleteTodo
+from harness.tools import write_todo, list_todos, complete_todo
 from harness.middlewares import TodoListMiddleware
 from harness.memory import MemoryStore
 
@@ -114,32 +114,32 @@ class TestPlanTools:
     """Test Plan mode tools."""
 
     def test_write_todo_tool_exists(self):
-        """WriteTodo tool can be imported."""
-        assert WriteTodo is not None
-        assert WriteTodo.name == "WriteTodo"
+        """write_todo tool can be imported."""
+        assert write_todo is not None
+        assert write_todo.name == "write_todo"
 
     def test_write_todo_signature(self):
-        """WriteTodo tool has expected parameters."""
-        assert "content" in WriteTodo.args_schema.model_fields
-        assert "status" in WriteTodo.args_schema.model_fields
-        assert "priority" in WriteTodo.args_schema.model_fields
+        """write_todo tool has expected parameters."""
+        assert "content" in write_todo.args_schema.model_fields
+        assert "status" in write_todo.args_schema.model_fields
+        assert "priority" in write_todo.args_schema.model_fields
 
     def test_write_todo_execution(self):
-        """WriteTodo tool returns formatted output."""
-        result = WriteTodo.invoke({"content": "Test task", "status": "pending"})
+        """write_todo tool returns formatted output."""
+        result = write_todo.invoke({"content": "Test task", "status": "pending"})
         assert "Test task" in result
         assert "[ ] Test task" in result
         assert "todo-" in result
 
     def test_complete_todo_tool_exists(self):
-        """CompleteTodo tool can be imported."""
-        assert CompleteTodo is not None
-        assert CompleteTodo.name == "CompleteTodo"
+        """complete_todo tool can be imported."""
+        assert complete_todo is not None
+        assert complete_todo.name == "complete_todo"
 
     def test_list_todos_tool_exists(self):
-        """ListTodos tool can be imported."""
-        assert ListTodos is not None
-        assert ListTodos.name == "ListTodos"
+        """list_todos tool can be imported."""
+        assert list_todos is not None
+        assert list_todos.name == "list_todos"
 
 
 if __name__ == "__main__":

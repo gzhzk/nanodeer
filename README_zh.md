@@ -60,10 +60,18 @@ nanodeer/
 │   │   └── types.py         # TodoItem, TodoStatus, TODOS_SECTION_TEMPLATE
 │   ├── tools/               # 能力扩展（绑定到 LLM）
 │   │   ├── __init__.py
-│   │   ├── base.py          # NanoDeerTool 基类
-│   │   ├── file.py         # read_file, write_file, ls, glob, grep, bash
-│   │   ├── memory.py        # SaveMemory（被 MemoryMiddleware 拦截）
-│   │   └── plan.py         # WriteTodo, ListTodos, CompleteTodo
+│   │   ├── base.py         # NanoDeerTool 基类
+│   │   ├── file.py         # read_file, write_file
+│   │   ├── list_dir.py     # ls: 列出目录
+│   │   ├── search.py       # glob, grep: 文件搜索
+│   │   ├── shell.py        # bash: shell 执行
+│   │   ├── fetch_url.py    # fetch_url: HTTP GET + HTML 解析
+│   │   ├── web_search.py   # web_search: DuckDuckGo 搜索
+│   │   ├── read_image.py   # read_image: 读图供 vision LLM 分析
+│   │   ├── exec_python.py  # exec_python: 在沙箱执行 Python 代码
+│   │   ├── invoke_skill.py # invoke_skill: 调用 Skill
+│   │   ├── memory.py       # save_memory
+│   │   └── plan.py         # write_todo, list_todos, complete_todo
 │   ├── config.py            # YAML 配置加载器
 │   └── __init__.py
 ├── src/app/                  # 应用接口（FastAPI、飞书规划中）
@@ -111,14 +119,15 @@ NanoDeer
 - **文件上传**：UploadsMiddleware 将用户上传文件注入 memory context
 - **上下文压缩**：CompressionMiddleware 通过 LLM 摘要防止 context overflow
 - **数据分析支持**：预装 pandas、matplotlib、openpyxl，支持 Excel/CSV 数据分析
-- **网页抓取支持**：预装 requests、beautifulsoup4、lxml，支持多站抓取和结构化解析
+- **网页抓取支持**：内置 fetch_url 和 web_search 工具，支持网页内容获取和搜索
+- **图像理解**：image_understand 工具读取图片并返回 base64，供 vision LLM 分析
 
 ## 示例
 
 | 示例 | 说明 | 运行 |
 |------|------|------|
 | 01_basic_llm | 创建 Agent 并对话（无工具）。展示消息如何流经 LangGraph。 | `python -m examples.01_basic_llm` |
-| 02_basic_tool | Agent 使用全部 6 个工具：read_file, write_file, ls, glob, grep, bash。读文件、列目录、搜内容、按模式查找、运行 bash 命令。 | `python -m examples.02_basic_tool` |
+| 02_basic_tool | Agent 使用全部 15 个工具：read_file, write_file, ls, glob, grep, bash, fetch_url, web_search, read_image, exec_python, invoke_skill, save_memory, write_todo, list_todos, complete_todo。 | `python -m examples.02_basic_tool` |
 | 03_middleware_security | MiddlewareChain 钩子顺序演示。SecurityMiddleware 阻止路径遍历和危险命令。 | `python -m examples.03_middleware_security` |
 | 04_sandbox_mock | 虚拟路径 ↔ 物理路径翻译演示。`validate_path` 阻止 `../` 和系统文件。无需 Docker。 | `python -m examples.04_sandbox_mock` |
 | 05_sandbox_real | **需要 Docker。** 完整沙箱生命周期：获取容器 → 在容器内运行工具 → 释放容器。 | `python -m examples.05_sandbox_real` |

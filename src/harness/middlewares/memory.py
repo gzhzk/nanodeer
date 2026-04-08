@@ -117,7 +117,7 @@ class MemoryMiddleware(Middleware):
             tool_args: Arguments passed to the tool.
             result: Tool execution result.
         """
-        if tool_name != "SaveMemory":
+        if tool_name != "save_memory":
             return
 
         # Extract memory content and category from tool call
