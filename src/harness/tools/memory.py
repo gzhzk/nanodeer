@@ -4,7 +4,7 @@ from langchain_core.tools import tool
 
 
 @tool
-def SaveMemory(content: str, category: str = "general") -> str:
+def save_memory(content: str, category: str = "general") -> str:
     """Save important information to the memory system.
 
     Use this to remember key information across sessions, such as:

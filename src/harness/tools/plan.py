@@ -6,7 +6,7 @@ from ..plan.types import TodoItem, TodoStatus
 
 
 @tool
-def WriteTodo(content: str, status: str = "pending", priority: int = 0) -> str:
+def write_todo(content: str, status: str = "pending", priority: int = 0) -> str:
     """Add or update a todo item for task tracking.
 
     Use this to track complex multi-step tasks and their progress.
@@ -32,7 +32,7 @@ def WriteTodo(content: str, status: str = "pending", priority: int = 0) -> str:
 
 
 @tool
-def ListTodos() -> str:
+def list_todos() -> str:
     """List all current todo items.
 
     Returns a formatted list of all todos with their status.
@@ -45,7 +45,7 @@ def ListTodos() -> str:
 
 
 @tool
-def CompleteTodo(todo_id: str) -> str:
+def complete_todo(todo_id: str) -> str:
     """Mark a todo item as completed.
 
     Args:
