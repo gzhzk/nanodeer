@@ -5,6 +5,7 @@ Content is base64-encoded to avoid shell injection.
 """
 
 import base64
+import subprocess
 
 from langchain_core.tools import tool
 
@@ -19,7 +20,6 @@ def read_file(file_path: str) -> str:
     Returns:
         File content as string, or error message.
     """
-    import subprocess
     result = subprocess.run(
         ["cat", file_path],
         capture_output=True,

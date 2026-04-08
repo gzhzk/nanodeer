@@ -91,6 +91,7 @@ class AgentBuilder:
         if not self.middleware_chain:
             return await self._compiled.ainvoke(initial_state)
 
+        result = None
         try:
             await self.middleware_chain.before_agent_start(initial_state)
             result = await self._compiled.ainvoke(initial_state)
@@ -100,7 +101,8 @@ class AgentBuilder:
                 await self.middleware_chain.on_error(initial_state, e)
             raise
         finally:
-            await self.middleware_chain.after_agent_end(result)
+            if result is not None:
+                await self.middleware_chain.after_agent_end(result)
 
     async def stream(self, initial_state: ThreadState):
         """Stream agent responses (async generator).

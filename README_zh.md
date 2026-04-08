@@ -2,7 +2,11 @@
 
 [English](./README.md) | 中文
 
-**NanoDeer** 是一个轻量级 **AI Agent Harness** 框架，融合了 Claude Code 的核心交互设计、DeerFlow 的分层架构、OpenClaw 的工具生态和 NanoClaw 的沙箱隔离思路，基于 Python + LangGraph 构建。核心模块包括 **Agent 状态机、中间件链、沙箱隔离、工具系统、记忆系统、子 Agent 协作等**，适合想要一个轻量化、可扩展、可持续演进的 Agent 底座的开发者或团队。
+🚀 **NanoDeer** 是一款为进化而生的轻量级 **AI Agent Harness** 框架。
+
+其设计灵感深度源自 **Claude Code** 的交互哲学与 **DeerFlow** 的分层架构，并在此基础上，通过融合 **OpenClaw** 的工具生态与 **NanoClaw** 的沙箱隔离思想，构建起了一套属于开发者的“Agent 操作系统”。
+
+基于 **Python + LangGraph** 构建，NanoDeer 并不满足于简单的对话，而是通过精密的状态机编排、可插拔的中间件链以及原生 Docker 沙箱，为开发者提供了一个安全、可观测且高度可扩展的工程化底座。
 
 ## 状态
 

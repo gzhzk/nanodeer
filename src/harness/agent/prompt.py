@@ -59,16 +59,30 @@ You are {agent_name}, a lightweight AI super agent built with NanoDeer.
 
 
 def get_tools_section(tools: list[str]) -> str:
-    """Generate tools section for system prompt."""
+    """Generate tools section for system prompt.
+
+    Note: LangChain @tool decorator converts snake_case to PascalCase,
+    so we match on PascalCase names (ReadFile, WriteFile, etc.).
+    """
     if not tools:
         return "No tools available."
 
     tool_descriptions = {
-        "read_file": "Read file contents. Args: file_path (str)",
-        "write_file": "Write content to file. Args: file_path (str), content (str)",
-        "ls": "List directory contents. Args: file_path (str)",
-        "glob": "Find files matching pattern. Args: file_path (str), pattern (str)",
-        "grep": "Search for pattern in files. Args: file_path (str), pattern (str), recursive (bool)",
+        "ReadFile": "Read file contents. Args: file_path (str)",
+        "WriteFile": "Write content to file. Args: file_path (str), content (str)",
+        "Ls": "List directory contents. Args: file_path (str)",
+        "Glob": "Find files matching pattern. Args: file_path (str), pattern (str)",
+        "Grep": "Search for pattern in files. Args: file_path (str), pattern (str), recursive (bool)",
+        "Bash": "Execute shell command. Args: command (str), timeout (int, optional)",
+        "FetchUrl": "Fetch and parse web page. Args: url (str), timeout (int, optional)",
+        "WebSearch": "Search the web via DuckDuckGo. Args: query (str), num_results (int, optional)",
+        "ReadImage": "Describe an image. Args: image_path (str), description_request (str, optional)",
+        "ExecPython": "Execute Python code. Args: code (str), timeout (int, optional)",
+        "InvokeSkill": "Load a skill workflow. Args: skill_name (str)",
+        "SaveMemory": "Save information to memory. Args: content (str), memory_type (str, optional)",
+        "WriteTodo": "Create a task. Args: content (str), priority (int, optional)",
+        "ListTodos": "List all tasks. No args.",
+        "CompleteTodo": "Mark task done. Args: content (str)",
     }
 
     lines = []

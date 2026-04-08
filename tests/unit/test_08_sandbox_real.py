@@ -1,7 +1,4 @@
-"""Test 05 (Real): Sandbox -真实Docker容器E2E测试.
-
-需要 Docker daemon 运行。测试真实容器创建、执行、销毁。
-"""
+"""Unit tests for sandbox in real Docker environment, using the nanodeer/sandbox image."""
 import os
 import uuid
 
