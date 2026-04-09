@@ -112,8 +112,8 @@ class TestTodoListMiddlewareMock:
         with tempfile.TemporaryDirectory() as tmpdir:
             store = MemoryStore(root=Path(tmpdir))
 
-            # Pre-save some todos
-            store.save_todos("user1", "project1", [
+            # Pre-save some todos (same user_id as TodoListMiddleware uses)
+            store.save_todos("nanodeer-shared", "project1", [
                 {"content": "Task 1", "status": "pending"},
                 {"content": "Task 2", "status": "completed"},
             ])
@@ -139,7 +139,7 @@ class TestTodoListMiddlewareMock:
             middleware = TodoListMiddleware(store, project_slug="project1")
 
             result = {
-                "thread_id": "user1",
+                "thread_id": "nanodeer-shared",
                 "todos": [
                     {"content": "New task", "status": "pending"},
                 ],
@@ -147,7 +147,7 @@ class TestTodoListMiddlewareMock:
 
             await middleware.after_agent_end(result)
 
-            loaded = store.load_todos("user1", "project1")
+            loaded = store.load_todos("nanodeer-shared", "project1")
             assert len(loaded) == 1
             assert loaded[0]["content"] == "New task"
 

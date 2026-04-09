@@ -238,22 +238,27 @@ class TestPlanTools:
         from harness.tools.plan import list_todos
         assert list_todos.name == "list_todos"
 
-    def test_list_todos_returns_placeholder(self):
-        """ListTodos returns placeholder for middleware to replace."""
-        from harness.tools.plan import list_todos
+    def test_list_todos_returns_stored_todos(self):
+        """ListTodos returns real todos from storage."""
+        from harness.tools.plan import list_todos, write_todo
+
+        # Write a todo first
+        write_todo.invoke({"content": "Test task", "status": "pending"})
+
+        # Now list_todos should return real data
         result = list_todos.invoke({})
-        assert "[TODOS_PLACEHOLDER]" in result
+        assert "[ ]" in result or "[x]" in result or "[>]" in result, f"Expected status icon, got: {result}"
 
     def test_complete_todo_exists(self):
         """CompleteTodo tool exists."""
         from harness.tools.plan import complete_todo
         assert complete_todo.name == "complete_todo"
 
-    def test_complete_todo_marks_done(self):
-        """CompleteTodo returns placeholder for middleware."""
+    def test_complete_todo_returns_not_found_for_unknown_id(self):
+        """CompleteTodo returns not-found message for unknown todo ID."""
         from harness.tools.plan import complete_todo
         result = complete_todo.invoke({"todo_id": "todo-123"})
-        assert "[COMPLETE_PLACEHOLDER:todo-123]" in result
+        assert "not found" in result
 
 
 class TestAllToolsImported:
