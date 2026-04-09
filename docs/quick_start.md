@@ -2,7 +2,49 @@
 
 5 分钟跑起你的第一个 NanoDeer Agent。
 
-## 1. 安装依赖
+## 方式一：API Server（推荐用于应用集成）
+
+### 1. 安装
+
+```bash
+pip install nanodeer-ai
+# 或源码安装
+cd /home/kai/workspace/nanodeer
+pip install -e .
+```
+
+### 2. 配置
+
+在项目根目录创建 `.env`：
+
+```bash
+MINIMAX_API_KEY=sk-api-xxx
+MINIMAX_BASE_URL=https://api.minimaxi.com/anthropic
+```
+
+### 3. 启动
+
+```bash
+nanodeer serve
+# 默认监听 http://0.0.0.0:20264
+# 访问 http://localhost:20264/docs 查看 Swagger UI
+```
+
+### 4. 调用
+
+```bash
+curl -X POST http://localhost:20264/run/ \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "用一句话介绍你自己"}'
+```
+
+详细说明 → [tutorials/10_api_server.md](tutorials/10_api_server.md)
+
+---
+
+## 方式二：Python SDK（用于二次开发）
+
+### 1. 安装依赖
 
 ```bash
 pip install langchain langchain-anthropic docker
@@ -78,6 +120,7 @@ README.md
 
 ## 下一步
 
+- HTTP API 接入外部应用 → [tutorials/10_api_server.md](tutorials/10_api_server.md)
 - 理解 Agent 如何工作 → [tutorials/01_agent.md](tutorials/01_agent.md)
 - 了解所有可用工具 → [tutorials/02_tools.md](tutorials/02_tools.md)
 - 理解完整架构 → [guides/architecture.md](guides/architecture.md)

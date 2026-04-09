@@ -10,7 +10,7 @@
 
 ## 状态
 
-**开发中** — 核心框架已通过 196 个测试用例验证。
+**开发中** — 核心框架已通过 194 个测试用例验证（需 Docker 环境的集成测试除外）。
 
 ## 快速开始
 
@@ -42,9 +42,11 @@ pytest tests/integration/ -v        # 集成测试
 
 ## 项目结构
 
+> **Harness 架构与各层职责**：[src/harness/README.md](src/harness/README.md)
+
 ```
 nanodeer/
-├── src/harness/              # 核心 Agent 框架
+├── src/harness/              # 核心 Agent 框架（详见 harness/README.md）
 │   ├── agent/                # 状态机 + 构建器
 │   │   ├── builder.py        # AgentBuilder：LangGraph 图构造
 │   │   ├── prompt.py         # System prompt 动态拼装
@@ -57,8 +59,7 @@ nanodeer/
 │   │   ├── plan.py           # TodoListMiddleware：加载/保存 todos
 │   │   ├── sandbox.py        # 获取/释放 Docker 容器
 │   │   ├── security.py       # 路径遍历 + 危险命令验证
-│   │   ├── thread_data.py   # Thread 级共享数据初始化
-│   │   └── uploads.py        # 将用户上传文件注入 memory context
+│   │   ├── uploads.py        # [未注册] 处理用户上传文件
 │   ├── sandbox/              # Docker 容器隔离
 │   │   ├── __init__.py       # Sandbox, SandboxProvider, SandboxTool 协议
 │   │   ├── docker.py         # DockerSandboxProvider：生命周期管理
@@ -72,7 +73,7 @@ nanodeer/
 │   ├── skills/               # Skills 系统
 │   │   ├── loader.py         # SkillLoader：加载 .md 文件
 │   │   └── impl/             # Skill 实现（.md 文件）
-│   ├── tools/                # 15 个内置工具
+│   ├── tools/                # 18 个内置工具
 │   │   ├── file.py           # ReadFile, WriteFile
 │   │   ├── list_dir.py       # Ls
 │   │   ├── search.py         # Glob, Grep
@@ -102,14 +103,16 @@ nanodeer/
 
 ## 架构
 
+> **详细分层说明**：[src/harness/README.md](src/harness/README.md)
+
 ```
 NanoDeer
 ├── Harness（核心框架）
 │   ├── Agent          # 状态机 + 构建器（LangGraph）
 │   ├── Router         # 模式检测（Direct/ReAct/PlanExecute）
-│   ├── Middlewares    # ThreadData, Sandbox, Security, Memory, Plan, Uploads, Compression
+│   ├── Middlewares    # Sandbox → SandboxAudit → Security → Memory → Todo → Loop → Subagent → Compression
 │   ├── Sandbox        # Docker 容器隔离
-│   ├── Tools          # 15 个内置工具
+│   ├── Tools          # 16 个内置工具（纯执行）
 │   ├── Memory         # 文件系统跨会话记忆
 │   ├── Plan           # TodoList 任务追踪
 │   └── Skills         # 可复用工作流
@@ -121,11 +124,11 @@ NanoDeer
 - **Agent 状态机**：基于 LangGraph 的状态管理
 - **Router 模式检测**：Direct（直接回答）、ReAct（标准推理+工具）、PlanExecute（规划后执行）
 - **沙箱隔离**：Docker 容器实现安全执行
-- **中间件链**：可插拔拦截器（ThreadData, Sandbox, Security, Memory, Plan, Uploads, Compression）
+- **中间件链**：可插拔拦截器（Sandbox, SandboxAudit, Security, Memory, Todo, Loop, Subagent, Compression）
 - **记忆系统**：基于文件的双维度记忆（用户 + 项目）
 - **Plan 模式**：TodoList 任务追踪
 - **Skills 系统**：从 .md 文件加载可复用工作流
-- **15 个内置工具**：文件、搜索、Shell、Python、Web、图片、记忆、Plan、Skill
+- **18 个内置工具**：文件、搜索、Shell、Python、Web、图片、记忆、Plan、Subagent、Skill
 
 ## 测试与示例
 
@@ -149,11 +152,13 @@ sandbox:
 
 ## 设计原则
 
-1. **隔离优于权限**：安全来自沙箱，而非检查
-2. **单一职责**：每个中间件只做一件事
-3. **逆序清理**：after_* 钩子按逆序执行
-4. **渐进扩展**：Skills 按需加载，非全量注入
+1. **中间件链有序，每节只做一件事**：每个中间件职责单一，链顺序决定执行顺序
+2. **工具只管执行，横切全部交给中间件**：工具返回结果；所有横切关注点（存储/审计/日志）通过 `after_tool_call`
+3. **State 持久化走 checkpointer**：LangGraph reducer + checkpointer 自动处理持久化；`after_agent_end` 是备份，非主力
+4. **逆序清理**：`after_*` 钩子按逆序注册顺序执行
+5. **隔离优于权限**：安全来自沙箱，而非检查
+6. **渐进扩展**：Skills 按需加载，非全量注入
 
 ## License
 
-MIT License
+本项目采用 [MIT License](LICENSE) 开源发布。

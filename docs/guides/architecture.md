@@ -1,47 +1,33 @@
-# 整体架构
-
-NanoDeer 采用分层架构，核心是 **Harness**（挽具），负责连接 LLM 和外部世界。
+# 架构总览
 
 ## 架构全景
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         用户请求                                  │
-└─────────────────────────────┬───────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      FastAPI App (待实现)                         │
-│                   SSE 流式响应 / REST API                         │
-└─────────────────────────────┬───────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    Harness (核心框架)                             │
-│                                                               │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │              MiddlewareChain (中间件链)                   │   │
-│  │  before_agent_start() → before_tool_call() → ...        │   │
-│  │  after_tool_call() ← after_agent_end() ← ...            │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                              │                                  │
-│                              ▼                                  │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │              AgentBuilder (LangGraph 状态机)              │   │
-│  │                                                           │   │
-│  │     START → Agent(LLM) → [tool_calls?] → Tools → ...    │   │
-│  │                         ↓无               ↓有               │   │
-│  │                        END ←──────────────────────        │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                              │                                  │
-└──────────────────────────────┼──────────────────────────────────┘
-                               │
-              ┌─────────────────┼─────────────────┐
-              ▼                 ▼                 ▼
-       ┌────────────┐   ┌────────────┐   ┌────────────┐
-       │   Tools    │   │  Sandbox   │   │   Memory   │
-       │  (工具集)   │   │  (隔离执行)  │   │  (记忆)     │
-       └────────────┘   └────────────┘   └────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                     NanoEngine                              │
+│              组装 LLM + 工具 + 中间件链                      │
+│              暴露 run() / stream() API                     │
+└─────────────────────────┬───────────────────────────────────┘
+                          │
+┌─────────────────────────▼───────────────────────────────────┐
+│                    AgentBuilder                              │
+│               定义 LangGraph StateGraph                      │
+│               ainvoke_with_hooks() 执行                      │
+└─────────────────────────┬───────────────────────────────────┘
+                          │
+          ┌───────────────┼───────────────┐
+          ▼               ▼               ▼
+      ┌────────┐    ┌──────────┐   ┌──────────┐
+      │ Router │    │  Tools   │   │Middlewares│
+      │模式检测│    │ 16个工具  │   │ 8个中间件 │
+      └────────┘    └──────────┘   └──────────┘
+                          │
+          ┌───────────────┼───────────────┬───────────────┐
+          ▼               ▼               ▼               ▼
+     ┌─────────┐    ┌──────────┐   ┌──────────┐   ┌─────────┐
+     │Sandbox  │    │  Memory  │   │  Skills  │   │Subagents│
+     │沙箱双路径│    │文件存储  │   │md技能文件│   │并行执行 │
+     └─────────┘    └──────────┘   └──────────┘   └─────────┘
 ```
 
 ## 模块关系
@@ -49,19 +35,23 @@ NanoDeer 采用分层架构，核心是 **Harness**（挽具），负责连接 L
 ```
 Harness
 ├── agent/
-│   ├── builder.py      # AgentBuilder - 状态机 + 工具执行
-│   ├── state.py        # ThreadState - 状态数据结构
-│   └── prompt.py       # System Prompt 模板
+│   ├── builder.py      # AgentBuilder - LangGraph 状态机
+│   ├── state.py        # ThreadState - 状态字段 + Reducer
+│   ├── router.py       # Router - 模式检测（DIRECT/REACT/PLAN）
+│   └── prompt.py       # build_lead_agent_prompt() 动态组装
 │
 ├── middlewares/
-│   ├── base.py         # MiddlewareChain - 钩子链
-│   ├── thread_data.py  # ThreadDataMiddleware - 目录结构
+│   ├── base.py         # MiddlewareChain + Middleware 抽象
 │   ├── sandbox.py      # SandboxMiddleware - 容器生命周期
-│   ├── security.py      # SecurityMiddleware - 路径/命令校验
+│   ├── sandbox_audit.py # SandboxAuditMiddleware - bash 风险分类
+│   ├── security.py     # SecurityMiddleware - 路径/命令校验
 │   ├── memory.py       # MemoryMiddleware - 记忆加载/保存
 │   ├── plan.py         # TodoListMiddleware - 任务追踪
-│   ├── uploads.py      # UploadsMiddleware - 文件上传
-│   └── compression.py  # CompressionMiddleware - 上下文压缩
+│   ├── loop_detection.py # LoopDetectionMiddleware - 循环检测
+│   ├── subagent.py     # SubagentMiddleware - 子代理协调
+│   ├── compression.py  # CompressionMiddleware - 上下文压缩
+│   ├── thread_data.py  # ThreadDataMiddleware - 目录结构（未注册）
+│   └── uploads.py      # UploadsMiddleware - 上传处理（未注册）
 │
 ├── tools/
 │   ├── file.py         # ReadFile, WriteFile
@@ -73,75 +63,85 @@ Harness
 │   ├── read_image.py   # ReadImage
 │   ├── exec_python.py  # ExecPython
 │   ├── invoke_skill.py # InvokeSkill
-│   ├── memory.py       # SaveMemory
-│   └── plan.py         # WriteTodo, ListTodos, CompleteTodo
+│   ├── memory.py       # SaveMemory, LoadMemory
+│   ├── plan.py         # WriteTodo, ListTodos, CompleteTodo
+│   └── subagent.py     # SpawnSubagent, GetSubagentResults
 │
 ├── sandbox/
-│   ├── __init__.py     # SandboxProvider 抽象 + SandboxCommand
-│   ├── docker.py       # DockerSandboxProvider 实现
+│   ├── __init__.py     # SandboxProvider 抽象 + SandboxInfo
+│   ├── docker.py       # DockerSandboxProvider
+│   ├── local.py        # LocalSandboxProvider（fallback）
 │   ├── path.py         # 路径翻译 + 安全校验
-│   └── tools.py        # 工具的沙箱命令封装
+│   └── tools.py        # 10 个 SandboxToolWrapper 封装
 │
 ├── memory/
-│   ├── types.py        # MemoryEntry 数据类
-│   ├── storage.py      # MemoryStore 文件存储
-│   └── extractor.py    # MemoryExtractor LLM 提取
+│   ├── types.py        # MemoryEntry
+│   ├── storage.py      # MemoryStore - 文件读写
+│   └── extractor.py    # MemoryExtractor - LLM 提取
 │
 ├── skills/
-│   ├── loader.py       # SkillLoader 加载器
-│   └── impl/           # 具体 Skills (code_project.md, ...)
+│   ├── loader.py       # SkillLoader
+│   └── impl/           # 技能 .md 文件
 │
-└── config.py           # YAML 配置 + Provider 注册
+├── subagents/
+│   ├── runner.py       # run_subagent / run_subagents_in_parallel
+│   └── types.py        # SubagentType
+│
+├── plan/
+│   └── types.py        # TodoItem, TodoStatus
+│
+├── engine.py           # NanoEngine - 总装车间
+├── client.py           # NanoClient - 同步封装
+└── config.py           # HarnessConfig - YAML 配置
 ```
 
 ## 数据流
 
-### 1. 请求入口
+### 1. 入口
 
 ```python
-state = ThreadState(
-    messages=[HumanMessage(content="帮我分析这个Excel")],
-    thread_id="user-001",
-)
-result = await builder.ainvoke_with_hooks(state)
+from harness import NanoClient
+client = NanoClient()
+result = client.chat("帮我分析这个项目")
 ```
 
-### 2. Middleware 拦截 (before_agent_start)
+内部调用链：`NanoClient.chat()` → `NanoEngine.run()` → `AgentBuilder.ainvoke_with_hooks()`
+
+### 2. Middleware before_*（正序）
+
+| 顺序 | 中间件 | 职责 |
+|------|--------|------|
+| 1 | SandboxMiddleware | 获取容器，初始化沙箱 |
+| 2 | SandboxAuditMiddleware | — |
+| 3 | SecurityMiddleware | — |
+| 4 | MemoryMiddleware | 加载记忆到 state.memory_context |
+| 5 | TodoListMiddleware | 加载 todos 到 state.todos |
+| 6 | LoopDetectionMiddleware | — |
+| 7 | SubagentMiddleware | 初始化 subagent 任务列表 |
+| 8 | CompressionMiddleware | >20 条消息则压缩 |
+
+### 3. LangGraph 执行循环
 
 ```
-ThreadDataMiddleware      → 创建 /workspace/{thread_id}/ 目录
-SandboxMiddleware         → 获取 Docker 容器
-SecurityMiddleware        → 校验路径安全
-MemoryMiddleware          → 加载历史记忆到 memory_context
-TodoListMiddleware        → 加载待办任务到 todos
-UploadsMiddleware         → 处理用户上传文件
-CompressionMiddleware      → 压缩过长对话历史
+plan_node（仅 PLAN_EXECUTE 模式）
+    ↓ phase="executing"
+agent_node → (有 tool_calls?) → tools_node → agent_node → ...
+    ↓无工具调用                              ↓有工具调用
+   END ←────────────────────────────────────────────
 ```
 
-### 3. Agent 执行循环
+### 4. Middleware after_*（逆序）
 
-```
-Agent(LLM)                    # 调用 LLM 思考
-    ↓ tool_calls?
-    ├─ 无 → END
-    └─ 有 → Tools            # 执行工具
-              ↓
-          Sandbox            # 沙箱内执行（安全隔离）
-              ↓
-          Agent(LLM)         # 返回结果，继续思考
-              ↓
-          ... (循环直到结束)
-```
-
-### 4. Middleware 清理 (after_agent_end)
-
-```
-CompressionMiddleware       → 保存压缩后的对话
-TodoListMiddleware           → 保存任务状态
-MemoryMiddleware             → 自动提取记忆并保存
-SandboxMiddleware           → 释放容器
-ThreadDataMiddleware         → 清理临时数据
-```
+| 顺序 | 中间件 | 职责 |
+|------|--------|------|
+| 8 | CompressionMiddleware | 压缩记录 |
+| 7 | SubagentMiddleware | 并行执行子代理 |
+| 6 | LoopDetectionMiddleware | — |
+| 5 | TodoListMiddleware | 备份 todos 到文件 |
+| 4 | MemoryMiddleware | LLM 提取保存记忆 |
+| 3 | SecurityMiddleware | — |
+| 2 | SandboxAuditMiddleware | — |
+| 1 | SandboxMiddleware | 释放容器 |
 
 ## 核心设计原则
 
@@ -151,7 +151,8 @@ ThreadDataMiddleware         → 清理临时数据
 | **单一职责** | 每个 Middleware 只管一件事 |
 | **逆序清理** | after_* 钩子逆序执行，确保资源按序释放 |
 | **隔离即安全** | 所有操作在沙箱内，宿主机不受影响 |
-| **渐进扩展** | Checkpointer/Sandbox 都支持多实现 |
+| **工具=纯执行** | 工具无文件 I/O，存储全走 Middleware |
+| **Router 自动模式** | 关键词检测 → LangGraph 条件边决定 |
 
 ## 扩展点
 
@@ -160,211 +161,5 @@ ThreadDataMiddleware         → 清理临时数据
 | Checkpointer | MemorySaver | SQLite, PostgreSQL |
 | Sandbox | Docker | Kubernetes, 远程 Docker |
 | Memory | 文件存储 | Redis, PostgreSQL |
-| Tools | 15 个内置 | MCP 协议接入 |
-
-## 相关文档
-
-- 深入理解 Agent → [tutorials/01_agent.md](../tutorials/01_agent.md)
-- 理解 Middleware → [tutorials/04_middleware.md](../tutorials/04_middleware.md)
-- 沙箱内部原理 → [sandbox_internals.md](sandbox_internals.md)
-# 教程 9：整体架构 — 模块如何协作
-
-## 1. 架构全景
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                        AgentBuilder                         │
-│                     (编排整个流程)                           │
-│                                                              │
-│  ainvoke_with_hooks(initial_state)                           │
-│         │                                                    │
-│         ▼                                                    │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │              MiddlewareChain (中间件链)               │   │
-│  │  before_agent_start() → before_tool_call() → ...     │   │
-│  └─────────────────────────────────────────────────────┘   │
-│         │                                                    │
-│         ▼                                                    │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │              LangGraph (状态机)                        │   │
-│  │       START → Agent → Tools → Agent → END             │   │
-│  └─────────────────────────────────────────────────────┘   │
-│         │                                                    │
-│         ▼                                                    │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │              MiddlewareChain (逆序清理)              │   │
-│  │  after_tool_call() ← after_agent_end() ← ...        │   │
-│  └─────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 2. 模块关系
-
-```
-AgentBuilder
-    │
-    ├── ThreadState (状态数据)
-    │       │
-    │       ├── messages (对话历史)
-    │       ├── todos (任务列表)
-    │       ├── memory_context (记忆)
-    │       └── sandbox (沙箱信息)
-    │
-    ├── MiddlewareChain (中间件链)
-    │       │
-    │       ├── ThreadDataMiddleware (目录结构)
-    │       ├── UploadsMiddleware (处理上传文件)
-    │       ├── CompressionMiddleware (压缩长对话)
-    │       ├── SecurityMiddleware (安全检查)
-    │       ├── SandboxMiddleware (沙箱管理)
-    │       ├── MemoryMiddleware (记忆加载)
-    │       └── TodoListMiddleware (任务追踪)
-    │
-    └── Tools (工具集)
-            │
-            ├── ReadFile (读文件)
-            ├── WriteFile (写文件)
-            └── BashCommand (执行命令)
-```
-
----
-
-## 3. 执行流程详解
-
-### 3.1 请求入口
-
-```python
-# 用户发起请求
-initial_state = ThreadState(
-    messages=[HumanMessage(content="帮我读取文件")],
-    thread_id="user-001",
-)
-
-# Agent 执行
-result = await builder.ainvoke_with_hooks(initial_state)
-```
-
-### 3.2 before_agent_start
-
-```
-MiddlewareChain.before_agent_start()
-    │
-    ├── ThreadDataMiddleware → 创建目录
-    ├── UploadsMiddleware → 处理上传文件
-    ├── CompressionMiddleware → 检查/压缩长对话
-    ├── SecurityMiddleware → 初始化
-    ├── SandboxMiddleware → 准备容器
-    ├── MemoryMiddleware → 加载记忆
-    └── TodoListMiddleware → 加载任务
-```
-
-### 3.3 Agent 执行
-
-```
-Agent Node (调用 LLM)
-    │
-    ├── 有 tool_calls？
-    │     ├── YES → Tool Executor → 返回结果
-    │     └── NO → 结束
-    │
-    └── 返回消息
-```
-
-### 3.4 after_agent_end
-
-```
-MiddlewareChain.after_agent_end()（逆序清理）
-    │
-    ├── TodoListMiddleware → 保存任务
-    ├── MemoryMiddleware → 保存记忆
-    ├── SandboxMiddleware → 释放容器
-    ├── SecurityMiddleware → 清理
-    ├── CompressionMiddleware → 压缩记录
-    └── ThreadDataMiddleware → 收尾
-```
-
----
-
-## 4. 核心设计思想
-
-### 4.1 Agent 只做决策
-
-```
-Agent = 大脑（决策）
-Harness = 四肢（执行）
-```
-
-Agent 负责思考"要做什么"，Harness 负责"怎么做"。
-
-### 4.2 中间件链式拦截
-
-```
-请求 → 中间件1 → 中间件2 → Agent → 响应
-        ↑                           ↓
-        └─── 逆序清理 ←─────────────┘
-```
-
-### 4.3 沙箱隔离
-
-```
-用户请求 → Agent 思考 → 工具在沙箱执行 → 结果返回
-                ↓
-         即使出问题也不影响真实系统
-```
-
-### 4.4 记忆注入
-
-```
-记忆文件 → MemoryMiddleware → state.memory_context → System Prompt
-```
-
-Agent 本身不知道有记忆，记忆是 Harness 注入的。
-
----
-
-## 5. 数据流
-
-```
-用户输入
-    ↓
-ThreadState.messages + memory_context
-    ↓
-Agent (LLM 调用)
-    ↓
-tool_calls? ─Yes→ Tool Executor (在沙箱里)
-    ↓                      ↓
-    No                  结果
-    ↓                      ↓
-返回结果            Agent 组织回答
-    ↓
-用户看到回复
-```
-
----
-
-## 6. 扩展点
-
-| 扩展点 | 如何做 |
-|--------|--------|
-| 添加新工具 | 创建类，用 `@tool` 装饰 |
-| 添加新中间件 | 继承 `Middleware` |
-| 添加新 Provider | 配置 `config.yaml` |
-| 自定义持久化 | 实现 CheckpointSaver |
-
----
-
-## 7. 常见问题
-
-**Q: 为什么用 LangGraph？**
-A: 管理复杂状态流转，支持循环和条件分支。
-
-**Q: 中间件可以跳过吗？**
-A: 可以，在 `MiddlewareChain` 里不注册它。
-
-**Q: 如何调试？**
-A: 在中间件或工具里加 print，或用 IDE 断点。
-
-**Q: 能不用沙箱吗？**
-A: 可以去掉 SandboxMiddleware，但工具会直接在真实系统执行。
+| Tools | 17 个内置 | MCP 协议接入 |
+| Provider | MiniMax | OpenAI, Anthropic |

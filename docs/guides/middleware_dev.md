@@ -127,18 +127,20 @@ class ValidatePathMiddleware(Middleware):
                 raise ValueError(f"危险路径: {path}")
 ```
 
-## 内置 Middleware
+## 内置 Middleware（8 个已注册）
 
 | Middleware | before_agent_start | before_tool_call | after_tool_call | after_agent_end |
 |------------|-------------------|------------------|-----------------|-----------------|
-| ThreadDataMiddleware | 创建目录结构 | - | - | - |
 | SandboxMiddleware | acquire 容器 | - | - | release 容器 |
+| SandboxAuditMiddleware | - | bash 风险分类 | - | - |
 | SecurityMiddleware | - | 校验路径/命令 | - | - |
-| MemoryMiddleware | 加载记忆 | - | 保存记忆到 store | 保存记忆 |
-| TodoListMiddleware | 加载 todos | - | - | 保存 todos |
-| UploadsMiddleware | 处理上传 | - | - | - |
-| CompressionMiddleware | 压缩对话 | - | - | - |
+| MemoryMiddleware | 加载记忆 | 拦截 save_memory | - | LLM 提取保存 |
+| TodoListMiddleware | 加载 todos | 拦截 write/complete/list_todos | - | 备份到文件 |
+| LoopDetectionMiddleware | - | 检测重复 | - | - |
 | SubagentMiddleware | 初始化任务列表 | - | 收集任务/替换占位符 | 并行执行 subagent |
+| CompressionMiddleware | >20 条压缩 | - | - | - |
+
+未注册（保留但未接入）：ThreadDataMiddleware、UploadsMiddleware
 
 ## 最佳实践
 

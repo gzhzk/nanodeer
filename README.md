@@ -10,7 +10,7 @@ Built on **Python and LangGraph**, NanoDeer transcends simple chat interfaces. B
 
 ## Status
 
-**In development** — Core framework validated with 196 passing tests.
+**In development** — Core framework validated with 194 passing tests.
 
 ## Quick Start
 
@@ -42,9 +42,11 @@ pytest tests/integration/ -v        # Integration tests
 
 ## Project Structure
 
+> **Harness architecture & layer responsibilities**: [src/harness/README.md](src/harness/README.md)
+
 ```
 nanodeer/
-├── src/harness/              # Core Agent harness
+├── src/harness/              # Core Agent harness (see harness/README.md)
 │   ├── agent/                # State machine + builder
 │   │   ├── builder.py        # AgentBuilder: LangGraph graph construction
 │   │   ├── prompt.py        # System prompt dynamic assembly
@@ -52,13 +54,15 @@ nanodeer/
 │   │   └── router.py        # Router: mode detection (Direct/ReAct/Plan)
 │   ├── middlewares/          # Intercept chain (before/after hooks)
 │   │   ├── base.py          # Middleware, MiddlewareChain
-│   │   ├── compression.py   # Compress long history via LLM
+│   │   ├── compression.py   # Compress long history via LLM (registered, lazy LLM)
+│   │   ├── loop_detection.py # Detect & break repetitive tool calls
 │   │   ├── memory.py        # Load memory + intercept SaveMemory
-│   │   ├── plan.py          # TodoListMiddleware: load/save todos
+│   │   ├── plan.py          # TodoListMiddleware: todos via state + reducer
 │   │   ├── sandbox.py       # Acquire/release Docker container
-│   │   ├── security.py      # Path traversal + dangerous command validation
-│   │   ├── thread_data.py   # Thread-level shared data init
-│   │   └── uploads.py       # Process user uploads into memory context
+│   │   ├── sandbox_audit.py # Bash command risk classification
+│   │   ├── security.py      # Path traversal validation
+│   │   ├── subagent.py      # Parallel subagent execution
+│   │   └── uploads.py       # [not registered] Processes user-uploaded files
 │   ├── sandbox/              # Docker container isolation
 │   │   ├── __init__.py      # Sandbox, SandboxProvider, SandboxTool protocol
 │   │   ├── docker.py        # DockerSandboxProvider: lifecycle
@@ -72,7 +76,7 @@ nanodeer/
 │   ├── skills/              # Skills system
 │   │   ├── loader.py        # SkillLoader: load .md files
 │   │   └── impl/            # Skill implementations (.md files)
-│   ├── tools/               # 15 built-in tools
+│   ├── tools/               # 18 built-in tools
 │   │   ├── file.py          # ReadFile, WriteFile
 │   │   ├── list_dir.py      # Ls
 │   │   ├── search.py        # Glob, Grep
@@ -102,30 +106,55 @@ nanodeer/
 
 ## Architecture
 
+> **Detailed layer breakdown**: [src/harness/README.md](src/harness/README.md)
+
 ```
 NanoDeer
 ├── Harness (core framework)
 │   ├── Agent          # State machine + builder (LangGraph)
 │   ├── Router         # Mode detection (Direct/ReAct/PlanExecute)
-│   ├── Middlewares    # ThreadData, Sandbox, Security, Memory, Plan, Uploads, Compression, Subagent
+│   ├── Middlewares    # Sandbox → SandboxAudit → Security → Memory → Todo → Loop → Subagent → Compression
 │   ├── Sandbox        # Docker container isolation
-│   ├── Tools          # 15 built-in tools
+│   ├── Tools          # 16 built-in tools (pure execution)
 │   ├── Memory         # File-based cross-session memory
 │   ├── Plan           # TodoList task tracking
 │   └── Skills         # Reusable workflows
 └── App (interface)    # FastAPI (planned)
 ```
 
+## Middleware Chain (8 middlewares, ordered)
+
+```
+before_agent_start → [forward order]
+  1. SandboxMiddleware      Container lifecycle (acquire/release Docker)
+  2. SandboxAuditMiddleware Bash command risk classification (HIGH/MEDIUM)
+  3. SecurityMiddleware     Path validation for file tools
+  4. MemoryMiddleware       Load memory into state.memory_context
+  5. TodoListMiddleware     Load todos into state.todos
+  6. LoopDetectionMiddleware Detect & break repetitive tool calls
+  7. SubagentMiddleware     Collect & execute parallel subagents
+  8. CompressionMiddleware  LLM summarization when history > 20 messages
+
+after_agent_end ← [reverse order]
+  → Compression → Subagent → Loop → Todo → Memory → Security → SandboxAudit → Sandbox
+```
+
+**Design principles:**
+- **Middleware only intercepts**: Tools are pure execution units. All storage/persistence flows through middleware `after_tool_call` into `state` fields, then LangGraph's reducer + checkpointer handles persistence.
+- **`state.todos` reducer**: `todos` field uses `merge_todos` (replace semantics) — tool writes are authoritative.
+- **LLM lazy injection**: Middlewares needing LLM (`CompressionMiddleware`, `SubagentMiddleware`) receive it via `set_llm()` after engine creates the model.
+- **`after_agent_end(result)`**: Builder passes the **post-execution state** (`result`), not `initial_state`. `TodoListMiddleware.after_agent_end` uses this as a backup file write.
+
 ## Core Features
 
 - **Agent State Machine**: LangGraph-powered state management
 - **Router**: Mode detection (Direct/ReAct/PlanExecute)
 - **Sandbox Isolation**: Docker containers for secure execution
-- **Middleware Chain**: Pluggable interceptors (ThreadData, Sandbox, Security, Memory, Plan, Uploads, Compression, Subagent)
+- **Middleware Chain**: Pluggable interceptors (Sandbox, SandboxAudit, Security, Memory, Todo, Loop, Subagent, Compression)
 - **Memory System**: File-based cross-session memory with user + project dimensions
 - **Plan Mode**: TodoList task tracking with WriteTodo/CompleteTodo tools
 - **Skills System**: Reusable workflows loaded from .md files
-- **15 Built-in Tools**: File, Search, Shell, Python, Web, Image, Memory, Plan, Skill
+- **18 Built-in Tools**: File, Search, Shell, Python, Web, Image, Memory, Plan, Subagent, Skill
 - **Subagent System**: Parallel task execution via asyncio.gather
 
 ## Test Suite
@@ -150,11 +179,13 @@ sandbox:
 
 ## Design Principles
 
-1. **Isolation over Permission**: Security through sandboxing
-2. **Single Responsibility**: Each middleware does one thing
-3. **Reverse Cleanup**: after_* hooks run in reverse order
-4. **Progressive Disclosure**: Skills loaded on-demand, not all at once
+1. **Middleware chain is ordered, each does one thing**: Each middleware has a single clear responsibility; chain order determines execution order
+2. **Tools are pure execution, middleware handles all cross-cutting concerns**: Tools return results; all cross-cutting concerns (storage/audit/logging) go through `after_tool_call`
+3. **State persistence via checkpointer**: LangGraph reducer + checkpointer handles persistence automatically; `after_agent_end` is a backup, not primary
+4. **Reverse cleanup**: `after_*` hooks run in reverse registration order
+5. **Isolation over permission**: Security through sandboxing
+6. **Progressive disclosure**: Skills loaded on-demand, not all at once
 
 ## License
 
-MIT License
+This project is open source and available under the [MIT License](LICENSE).

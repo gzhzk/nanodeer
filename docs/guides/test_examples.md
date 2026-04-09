@@ -10,7 +10,7 @@
 |------|----------|
 | test_01_agent_state | ThreadState, SandboxInfo 数据结构 |
 | test_02_agent_prompt | System prompt 生成（工具/记忆/todos） |
-| test_03_tools | 全部 15 个工具及其功能 |
+| test_03_tools | 全部 18 个工具及其功能 |
 | test_04_middleware_chain | MiddlewareChain 钩子执行顺序（正序/逆序） |
 | test_05_memory_store | MemoryStore 文件存储 |
 | test_06_plan | TodoItem, TodoStatus 任务追踪 |
@@ -56,7 +56,7 @@ pytest tests/unit/test_01_agent_state.py -v
 |------|------|
 | 01_agent_state | ThreadState 和 SandboxInfo 数据结构 |
 | 02_agent_prompt | System prompt 生成（工具/记忆/todos） |
-| 03_tools | 全部 15 个工具及其用法 |
+| 03_tools | 全部 18 个工具及其用法 |
 | 04_middleware_chain | 中间件钩子执行顺序（正序/逆序） |
 | 05_memory_store | MemoryStore 文件存储 |
 | 06_plan | TodoItem 和 TodoStatus 任务追踪 |

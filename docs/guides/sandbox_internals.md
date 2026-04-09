@@ -1,108 +1,157 @@
 # 沙箱内部实现
 
-理解 NanoDeer 如何通过 Docker 实现安全隔离。
+NanoDeer 用 Docker 容器做安全隔离，确保 LLM 执行的代码不会影响宿主机。
+
+## 为什么需要沙箱？
+
+LLM 执行的是**不可信代码**——用户可能让 Agent 跑 `rm -rf /` 或格式化磁盘。沙箱确保：
+- 删错了只丢容器里的数据，宿主机不受影响
+- 网络访问可控（可禁网）
+- 文件系统只写 `/workspace/{thread_id}/`
 
 ## 核心组件
 
 ```
 sandbox/
-├── __init__.py      # 抽象基类 + SandboxCommand
-├── docker.py        # DockerSandboxProvider
-├── path.py          # 路径翻译 + 安全校验
-└── tools.py         # 工具的沙箱命令封装
+├── __init__.py      # SandboxProvider 抽象 + Sandbox + SandboxCommand
+├── docker.py        # DockerSandboxProvider 实现
+├── local.py         # LocalSandboxProvider（无 Docker 时的 fallback）
+├── path.py          # translate_and_validate() 路径翻译
+└── tools.py         # 10 个 SandboxToolWrapper 子类
 ```
 
-## SandboxProvider 抽象
+### 抽象接口
 
 ```python
 class SandboxProvider(ABC):
-    """沙箱提供者接口"""
+    async def acquire(self, thread_id: str) -> Sandbox:  # 获取容器
+    async def release(self, sandbox: Sandbox) -> None:    # 释放容器
+    async def run(self, sandbox: Sandbox, cmd: str) -> RunResult:  # 执行命令
 
-    async def acquire(self, thread_id: str) -> Sandbox:
-        """获取沙箱，返回沙箱信息"""
+@dataclass
+class Sandbox:
+    thread_id: str
+    container_id: str
+    working_dir: str
 
-    async def release(self, sandbox: Sandbox) -> None:
-        """释放沙箱"""
-
-    async def run(self, sandbox: Sandbox, command: str) -> RunResult:
-        """在沙箱内执行命令"""
-```
-
-## SandboxCommand
-
-工具在沙箱内执行的命令封装：
-
-```python
 @dataclass
 class SandboxCommand:
-    cmd: str           # 执行的命令
-    timeout: int = 30  # 超时时间
-    env: dict | None = None  # 环境变量
+    cmd: str
+    timeout: int = 30
 ```
+
+## 双执行路径
+
+```
+_tool_executor_node 收到工具调用
+    │
+    ├─ 有沙箱（state.sandbox.status == "ready"）
+    │     tool.get_sandbox_command(args, thread_id) → SandboxCommand
+    │     provider.run(container, cmd_str) → Docker 容器内执行
+    │
+    └─ 无沙箱（本地 fallback）
+          tool.ainvoke() → subprocess.run() → 宿主机执行
+```
+
+**两种工具**：
+- **SandboxToolWrapper 包装的工具**（有 `get_sandbox_command`）→ 走容器路径
+- **原始工具**（无 `get_sandbox_command`）→ 走本地 subprocess
+
+## 工具命令封装（10 个包装器）
+
+每个包装器把工具调用转化为容器内的安全 Python 命令：
+
+| 包装器 | 容器内命令 | 安全措施 |
+|--------|-----------|---------|
+| ReadFileSandboxTool | `python3 -c "print(open(...).read())"` | 路径验证，参数非 shell 特殊字符 |
+| WriteFileSandboxTool | `python3 -c "import base64,os,sys; ..."` | **base64 编码路径和内容**，防注入 |
+| LsSandboxTool | `python3 -c "import os; print(os.listdir(...))"` | 路径验证 |
+| GlobSandboxTool | `python3 -c "import base64,os,fnmatch; ..."` | base64 编码 pattern |
+| GrepSandboxTool | `grep -e pattern path` | `-e` Literal 模式，无 shell 展开 |
+| BashSandboxTool | `bash -c {shlex.quote(command)}` | `shlex.quote()` 转义 |
+| FetchUrlSandboxTool | `python3 -c "import base64,urllib.request,bs4; ..."` | base64 编码 URL |
+| WebSearchSandboxTool | `python3 -c "import base64,urllib.parse,bs4; ..."` | base64 编码查询词 |
+| ReadImageSandboxTool | `python3 -c "import base64,sys; ..."` | base64 编码路径和请求 |
+| ExecPythonSandboxTool | `python3 -c "import base64,sys; exec(...)"` | base64 编码代码，防注入 |
+
+### WriteFile 封装详解（最典型）
+
+```python
+# Agent 调用：write_file(file_path="/mnt/user-data/a.txt", content="hello")
+
+# 1. 路径翻译
+physical_path = "/workspace/abc123/user-data/a.txt"
+
+# 2. base64 编码参数
+encoded_path = base64.b64encode(physical_path.encode()).decode()   # "L3dvcmtzpaceLw..."
+encoded_content = base64.b64encode(b"hello").decode()               # "aGVsbG8="
+
+# 3. 容器内命令（参数全部 base64，无 shell 注入）
+cmd = (
+    'python3 -c "import base64,os,sys; '
+    'p=base64.b64decode(sys.argv[1]).decode(); '
+    'os.makedirs(os.path.dirname(p) or \".\",exist_ok=True); '
+    'open(p,\"wb\").write(base64.b64decode(sys.argv[2]))" '
+    f'{encoded_path} {encoded_content}'
+)
+
+# 4. 执行
+result = await provider.run(container, cmd)
+```
+
+**为什么用 base64？** 原始内容直接拼进命令会被 shell 解析，`base64` 确保内容被当作数据而非命令。
 
 ## 路径翻译
 
 ```
-Agent 视角（虚拟路径）
-/mnt/user-data/workspace/code.py
-        ↓ translate_and_validate()
-容器内路径
-/workspace/{thread_id}/workspace/code.py
+虚拟路径（Agent 看到）                 容器内物理路径
+/mnt/user-data/workspace/file.py  →  /workspace/{thread_id}/workspace/file.py
 ```
-
-**安全校验规则**：
 
 ```python
 def translate_and_validate(virtual_path: str, thread_id: str) -> str:
-    # 1. 必须以 /mnt/user-data 开头
-    # 2. 规范化路径，消除 ../
-    # 3. 检查黑名单（/etc/passwd, /root/.ssh 等）
-    # 4. 映射到容器内路径
+    # 1. 先检查原始路径是否含 ".."
+    if ".." in virtual_path:
+        return None  # 禁止路径穿越
+
+    # 2. normpath 解析 ../
+    physical = normpath(virtual_path)
+
+    # 3. 必须以 /mnt/user-data 开头
+    if not physical.startswith("/mnt/user-data"):
+        return None
+
+    # 4. 黑名单
+    for blocked in ["/etc/passwd", "/etc/shadow", "/root/.ssh", "/.ssh"]:
+        if physical.startswith(blocked):
+            return None
+
+    # 5. 映射到容器内路径
+    return f"/workspace/{thread_id}" + physical[len("/mnt/user-data"):]
 ```
 
-## 工具命令封装
+## 生命周期
 
-每个工具在沙箱内执行时，需要封装成安全命令。
+```
+before_agent_start（正序）
+    └→ SandboxMiddleware:
+         sandbox = await provider.acquire(thread_id)
+         state.sandbox = SandboxInfo(status="ready", container_id=...)
+         set_sandbox_provider(thread_id, provider)
 
-### ReadFile
+... LangGraph 执行循环 ...
 
-```python
-# 原始：读取文件内容
-# 沙箱内：
-python3 -c "import sys; print(open(sys.argv[1]).read())" {physical_path}
+after_agent_end（逆序）
+    └→ SandboxMiddleware:
+         await provider.release(sandbox)      先释放容器
+         clear_sandbox_provider(thread_id)    再清上下文
 ```
 
-### WriteFile
+**逆序原因**：获取时正序（先容器，再锁），释放时逆序（先锁，后容器），防止死锁。
 
-```python
-# 原始：写入文件
-# 沙箱内（base64 编码防注入）：
-python3 -c "import base64,os,sys; p=base64.b64decode(sys.argv[1]).decode();
-            os.makedirs(os.path.dirname(p) or '.',exist_ok=True);
-            open(p,'wb').write(base64.b64decode(sys.argv[2]))" {encoded_path} {encoded_content}
-```
+## Provider 上下文存储
 
-### ExecPython
-
-```python
-# 原始：执行 Python 代码
-# 沙箱内（base64 编码防注入）：
-python3 -c "import base64,sys,tracemalloc; c=base64.b64decode(sys.argv[1]).decode();
-            tracemalloc.start(); exec(c); tracemalloc.stop()" {encoded_code}
-```
-
-## Docker 配置
-
-| 配置 | 值 | 作用 |
-|------|-----|------|
-| `auto_remove` | True | 容器停止自动删除 |
-| `network_mode` | bridge/none/host | 网络隔离级别 |
-| `read_only` | True | 根文件系统只读 |
-| `tmpfs` | /tmp | 内存文件系统 |
-
-## Context 共享机制
-
-SandboxProvider 不能序列化进 ThreadState，用模块级 dict 共享：
+SandboxProvider 不能序列化进 ThreadState，用模块级 dict：
 
 ```python
 # sandbox/__init__.py
@@ -115,48 +164,34 @@ def get_sandbox_provider(thread_id):
     return _sandbox_context.get(thread_id)
 
 def clear_sandbox_provider(thread_id):
-    del _sandbox_context[thread_id]
+    _sandbox_context.pop(thread_id, None)
 ```
 
-## 执行流程
+被 `SandboxMiddleware.before_agent_start` 写入，被 `AgentBuilder._execute_in_sandbox` 读取。
 
-```python
-# 1. SandboxMiddleware.before_agent_start
-sandbox = await provider.acquire(thread_id)
-set_sandbox_provider(thread_id, provider)
+## Docker 配置
 
-# 2. AgentBuilder._execute_in_sandbox
-provider = get_sandbox_provider(thread_id)
-cmd_obj = tool.get_sandbox_command(args, thread_id)
-result = await provider.run(sandbox, cmd_obj.cmd)
-
-# 3. SandboxMiddleware.after_agent_end
-await provider.release(sandbox)
-clear_sandbox_provider(thread_id)
+```yaml
+sandbox:
+  image: enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:latest
+  replicas: 3
+  container_prefix: "nanodeer-sandbox"
+  network_mode: "bridge"  # bridge=有网络, none=无网络, host=宿主机网络
 ```
 
-## 安全设计
+容器启动参数：
+- `auto_remove=True`：容器停止自动删除
+- `read_only=True`：根文件系统只读
+- `tmpfs /tmp`：内存文件系统
 
-1. **容器级隔离**：恶意代码无法逃逸到宿主机
-2. **只读根文件系统**：防止写入系统目录
-3. **base64 编码参数**：防止 shell 注入
-4. **shlex.quote() 转义**：Bash 命令使用 `shlex.quote()` 正确转义用户输入
-5. **路径白名单**：只允许 `/mnt/user-data/` 路径，**先检查 `..` 再 normpath**
-6. **timeout**：防止死循环占用资源
-7. **network_mode**：可选网络隔离（`none`=无网络）
+## 安全设计总结
 
-### 路径安全校验顺序
-
-```
-1. 检查原始路径是否包含 ".."（在 normpath 之前，防止绕过）
-2. normpath 解析相对路径
-3. 检查是否以 /mnt/user-data 开头
-4. 检查黑名单（/etc/passwd, /root/.ssh）
-```
-
-### Bash 命令安全
-
-所有 bash 命令通过 `shlex.quote()` 转义：
-```python
-cmd = f"bash -c {shlex.quote(command)}"
-```
+| 措施 | 作用 |
+|------|------|
+| 容器隔离 | 恶意代码无法逃逸到宿主机 |
+| 只读根文件系统 | 防止写入系统目录 |
+| base64 编码参数 | 防止 shell 注入 |
+| shlex.quote() | Bash 命令正确转义 |
+| 路径白名单 | 只允许 /mnt/user-data/ |
+| timeout | 防止死循环占用资源 |
+| network_mode | 可选网络隔离 |

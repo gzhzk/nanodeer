@@ -1,4 +1,4 @@
-# NanoDeer 文档
+# NanoDeer 文档说明
 
 ## 目录结构
 
@@ -16,7 +16,9 @@ docs/
 │   ├── 05_memory.md            # 记忆系统（双维度+注入流程）
 │   ├── 06_skills.md             # Skills 系统（格式+加载+调用）
 │   ├── 07_provider.md           # Provider 配置（12种模型）
-│   └── 08_plan.md               # 任务规划（TodoList）
+│   ├── 08_plan.md               # 任务规划（TodoList）
+│   ├── 09_subagents.md         # 子代理并行（多 Agent 协作）
+│   └── 10_api_server.md         # HTTP API Server（FastAPI + 定时任务）
 │
 ├── guides/                     # 开发者指南
 │   ├── architecture.md         # 整体架构
@@ -38,10 +40,12 @@ docs/
 | 场景 | 推荐文档 |
 |------|---------|
 | 刚接触，想快速跑起来 | [quick_start.md](quick_start.md) |
+| HTTP API 接入外部应用 | [tutorials/10_api_server.md](tutorials/10_api_server.md) |
 | 理解核心概念 | [concepts.md](concepts.md) |
 | 新手跟着做 | [tutorials/01_agent.md](tutorials/01_agent.md) |
 | 理解整体架构 | [guides/architecture.md](guides/architecture.md) |
 | 扩展开发 | [guides/middleware_dev.md](guides/middleware_dev.md) |
+| 接入 IM 通讯工具 | `src/app/channels/`（待开发，参考 nanobot） |
 | 遇到问题 | [guides/troubleshooting.md](guides/troubleshooting.md) |
 
 ## 文档层次
