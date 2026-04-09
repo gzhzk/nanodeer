@@ -22,7 +22,7 @@ class SubagentMiddleware(Middleware):
 
     def __init__(
         self,
-        llm: BaseChatModel,
+        llm: BaseChatModel | None = None,
         tools: list[BaseTool] | None = None,
         max_concurrent: int = 3,
         timeout: int = 900,
@@ -30,15 +30,26 @@ class SubagentMiddleware(Middleware):
         """Initialize SubagentMiddleware.
 
         Args:
-            llm: LLM to use for subagent execution.
+            llm: LLM to use for subagent execution. Can be None (lazy init).
             tools: Available tools for subagents.
             max_concurrent: Maximum concurrent subagents (default 3).
             timeout: Timeout per subagent in seconds (default 15 min).
         """
-        self.llm = llm
+        self._llm = llm
         self.tools = tools or []
         self.max_concurrent = max_concurrent
         self.timeout = timeout
+
+    @property
+    def llm(self) -> BaseChatModel:
+        """Lazy LLM access."""
+        if self._llm is None:
+            raise RuntimeError("SubagentMiddleware.llm not set: pass llm to __init__ or set_llm()")
+        return self._llm
+
+    def set_llm(self, llm: BaseChatModel) -> None:
+        """Set the LLM after middleware construction."""
+        self._llm = llm
 
     async def before_agent_start(self, state: Any) -> None:
         """Initialize subagent tracking in state."""
@@ -83,6 +94,10 @@ class SubagentMiddleware(Middleware):
 
     async def after_agent_end(self, state: Any) -> None:
         """Execute pending subagents in parallel after agent finishes."""
+        if self._llm is None:
+            # LLM not set — cannot execute subagents
+            return
+
         pending = getattr(state, "pending_subagent_tasks", [])
         if not pending:
             return
@@ -113,7 +128,12 @@ class SubagentMiddleware(Middleware):
             })
 
         # Execute in parallel
-        results = await run_subagents_in_parallel(specs, self.llm, self.timeout)
+        results = await run_subagents_in_parallel(
+            specs,
+            self.llm,
+            timeout=self.timeout,
+            max_iterations=10,
+        )
 
         # Store results
         existing = getattr(state, "subagent_results", [])

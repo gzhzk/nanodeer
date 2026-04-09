@@ -63,8 +63,10 @@ class MemoryMiddleware(Middleware):
         else:
             thread_id = getattr(state, "thread_id", None) or "default"
 
-        # Load combined memory context
-        memory_context = self.memory_store.load(thread_id, self.project_slug)
+        # Use a fixed user_id so memories persist across sessions (not per-thread)
+        # thread_id changes per request, but _MEMORY_USER_ID is constant
+        from ..tools.memory import _MEMORY_USER_ID
+        memory_context = self.memory_store.load(_MEMORY_USER_ID, self.project_slug)
 
         # Store in state for builder to read
         if isinstance(state, dict):
@@ -72,16 +74,23 @@ class MemoryMiddleware(Middleware):
         else:
             state.memory_context = memory_context  # type: ignore
 
-    async def after_agent_end(self, result: dict) -> None:
+    async def after_agent_end(self, state: Any) -> None:
         """Extract and save memories after agent ends.
 
         Args:
-            result: Final state dict from agent execution (contains 'messages').
+            state: Current ThreadState (or dict) from agent execution.
         """
         if not self.auto_extract or self.extractor is None:
             return
 
-        messages = result.get("messages", [])
+        # Import here to avoid circular dependency
+        from ..tools.memory import _MEMORY_USER_ID
+
+        # Extract messages from state (ThreadState or dict)
+        if isinstance(state, dict):
+            messages = state.get("messages", [])
+        else:
+            messages = getattr(state, "messages", [])
         if not messages:
             return
 
@@ -92,14 +101,14 @@ class MemoryMiddleware(Middleware):
         for mem in extracted:
             if mem.category == "user":
                 self.memory_store.save_user_memory(
-                    user_id="default",
+                    user_id=_MEMORY_USER_ID,
                     content=mem.content,
                     name=mem.name,
                     description=mem.description,
                 )
             else:
                 self.memory_store.save_project_memory(
-                    user_id="default",
+                    user_id=_MEMORY_USER_ID,
                     project_slug=self.project_slug,
                     content=mem.content,
                     name=mem.name,
@@ -109,7 +118,10 @@ class MemoryMiddleware(Middleware):
     async def after_tool_call(
         self, state: Any, tool_name: str, tool_args: dict, result: str
     ) -> str:
-        """Intercept SaveMemory tool calls to save memories.
+        """Intercept save_memory: update state.memory_context via reducer.
+
+        File persistence is handled separately by MemoryExtractor in after_agent_end.
+        This keeps memory_context in sync with LangGraph state.
 
         Args:
             state: Current ThreadState (or dict).
@@ -118,33 +130,53 @@ class MemoryMiddleware(Middleware):
             result: Tool execution result.
 
         Returns:
-            The result unchanged (memory saving has no visible effect).
+            The result unchanged.
         """
         if tool_name != "save_memory":
             return result
 
-        # Extract memory content and category from tool call
         content = tool_args.get("content", "")
-        category = tool_args.get("category", "general")
-
         if not content:
             return result
 
-        # Map category string to memory type
+        # Update state.memory_context through LangGraph reducer
+        # (merge_memory_context: replace semantics)
+        from ..tools.memory import _MEMORY_USER_ID
+
+        project = tool_args.get("project", "default")
+        category = tool_args.get("category", "general")
+
+        # Load existing memory to accumulate
+        if category in ("user", "feedback"):
+            existing = self.memory_store.load_user_memory(_MEMORY_USER_ID)
+        else:
+            existing = self.memory_store.load_project_memory(_MEMORY_USER_ID, project)
+
+        # Build updated memory context string
+        separator = "\n---\n" if existing else ""
+        updated = (existing + separator + content) if existing else content
+
+        if isinstance(state, dict):
+            state["memory_context"] = updated
+        else:
+            state.memory_context = updated  # type: ignore
+
+        # Also write accumulated content to file immediately for cross-session visibility
+        snippet = content[:40].replace("\n", " ")
         if category in ("user", "feedback"):
             self.memory_store.save_user_memory(
-                user_id="default",
-                content=content,
-                name=f"Manual save: {content[:30]}...",
+                user_id=_MEMORY_USER_ID,
+                content=updated,
+                name=f"[{category}] {snippet}...",
                 description=f"User saved: {category}",
             )
         else:
-            # project, api, style, decision -> project memory
             self.memory_store.save_project_memory(
-                user_id="default",
-                project_slug=self.project_slug,
-                content=content,
-                name=f"Manual save: {content[:30]}...",
+                user_id=_MEMORY_USER_ID,
+                project_slug=project,
+                content=updated,
+                name=f"[{category}] {snippet}...",
                 description=f"User saved: {category}",
             )
+
         return result

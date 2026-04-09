@@ -33,8 +33,14 @@ BLACKLISTED_PATHS: list[str] = [
 class SecurityMiddleware(Middleware):
     """Validates tool inputs before execution (path traversal, dangerous commands)."""
 
-    def __init__(self, strict: bool = True):
-        self.strict = strict
+    def __init__(self, mode: str = "default"):
+        """Initialize SecurityMiddleware.
+
+        Args:
+            mode: Security mode — "strict" enables blocking,
+                  anything else is non-strict (warning only).
+        """
+        self.strict = mode == "strict"
 
     async def before_tool_call(
         self, state: ThreadState, tool_name: str, tool_args: dict
@@ -43,6 +49,10 @@ class SecurityMiddleware(Middleware):
         # All file tools operate on virtual paths - validate them all
         if tool_name in ("read_file", "write_file", "ls", "glob", "grep"):
             await self._validate_file_tool(tool_args)
+
+        # Bash commands: validate for dangerous patterns
+        if tool_name == "bash":
+            await self._validate_bash_command(tool_args)
 
     async def _validate_file_tool(self, tool_args: dict) -> None:
         """Validate file path."""

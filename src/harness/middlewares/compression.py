@@ -27,25 +27,41 @@ class CompressionMiddleware(Middleware):
 
     def __init__(
         self,
-        llm: BaseChatModel,
+        llm: BaseChatModel | None = None,
         threshold: int | None = None,
         keep_recent: int | None = None,
     ):
         """Initialize compression middleware.
 
         Args:
-            llm: LLM to use for summarization.
+            llm: LLM to use for summarization. Can be None (lazy init).
             threshold: Trigger compression when messages exceed this count.
                       Default 20.
             keep_recent: Always keep last N messages. Default 5.
         """
-        self.llm = llm
+        self._llm = llm
         self.threshold = threshold or self.DEFAULT_THRESHOLD
         self.keep_recent = keep_recent or self.KEEP_RECENT
 
+    @property
+    def llm(self) -> BaseChatModel:
+        """Lazy LLM access."""
+        if self._llm is None:
+            raise RuntimeError("CompressionMiddleware.llm not set: pass llm to __init__ or set_llm()")
+        return self._llm
+
+    def set_llm(self, llm: BaseChatModel) -> None:
+        """Set the LLM after middleware construction."""
+        self._llm = llm
+
     async def before_agent_start(self, state: ThreadState) -> None:
         """Compress messages if history is too long."""
-        messages = state.messages
+        # Handle both ThreadState and dict (some callers pass dict)
+        if isinstance(state, dict):
+            messages = state.get("messages", [])
+        else:
+            messages = state.messages
+
         if len(messages) <= self.threshold:
             return
 
@@ -77,8 +93,13 @@ class CompressionMiddleware(Middleware):
             summary = "[Summary failed - original messages preserved]"
 
         # Replace old messages with summary
-        state.messages = [
+        compressed = [
             SystemMessage(
                 content=f"[Earlier conversation summarized: {summary}]"
             )
         ] + recent
+
+        if isinstance(state, dict):
+            state["messages"] = compressed
+        else:
+            state.messages = compressed
