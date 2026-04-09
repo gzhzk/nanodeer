@@ -1,12 +1,13 @@
 """Agent state definitions."""
 
-from typing import Annotated, Literal
+from typing import Annotated
 
 from langchain_core.messages import BaseMessage
 from langgraph.graph import add_messages
 from pydantic import BaseModel, Field
 
 from .router import AgentMode
+from ..sandbox import SandboxInfo  # SandboxInfo lives in sandbox/ layer
 
 
 # class Artifact(BaseModel):
@@ -20,11 +21,30 @@ from .router import AgentMode
 #
 #     If re-enabled, merge_artifacts should use Artifact objects
 #     with id-based deduplication.
-#     """
+# """
 #     id: str
 #     type: str  # "file", "image", "code"
 #     content: str
 #     path: str | None = None
+
+
+def merge_todos(left: list[dict] | None, right: list[dict] | None) -> list[dict]:
+    """Replace semantics: tool writes are authoritative, right wins.
+
+    Each write_todo/complete_todo call produces a complete new todo list.
+    The latest update is always authoritative.
+    """
+    return right if right is not None else (left or [])
+
+
+def merge_memory_context(left: str | None, right: str | None) -> str | None:
+    """Replace semantics: latest memory context wins.
+
+    memory_context is loaded fresh from file on before_agent_start.
+    Middleware updates it after save_memory calls; LangGraph reducer
+    merges the update into state.
+    """
+    return right if right is not None else left
 
 
 def merge_artifacts(
@@ -50,16 +70,12 @@ def merge_artifacts(
     return list(dict.fromkeys(left + right))
 
 
-class SandboxInfo(BaseModel):
-    """Sandbox execution context for a thread.
+from typing import Literal
 
-    Represents a sandboxed execution environment (always Docker container).
-    Must be acquired before any tool execution; never nullable.
-    """
-    thread_id: str
-    container_id: str | None = None  # Filled after container is created
-    status: Literal["acquiring", "ready", "released"] = "acquiring"
-    working_dir: str | None = None  # Physical path inside container
+
+def merge_phase(left: Literal["planning", "executing"] | None, right: Literal["planning", "executing"] | None) -> Literal["planning", "executing"]:
+    """Phase transitions forward only: planning → executing. Never goes back."""
+    return right if right is not None else (left or "executing")
 
 
 class ThreadState(BaseModel):
@@ -68,7 +84,7 @@ class ThreadState(BaseModel):
     Fields:
         messages: Conversation history (input/output).
         artifacts: Tool execution artifact identifiers (plain strings, following DeerFlow).
-        sandbox: Sandbox execution context (thread_id, sandbox_type, working_dir).
+        sandbox: Sandbox execution context (thread_id, container_id, status, working_dir).
         uploaded_files: User uploaded file paths.
         thread_id: Thread unique identifier.
         needs_clarification: Whether agent needs user clarification.
@@ -85,7 +101,8 @@ class ThreadState(BaseModel):
     thread_id: str | None = Field(default=None)
     needs_clarification: bool = Field(default=False)
     pending_subagent_tasks: list[str] = Field(default_factory=list)
-    memory_context: str | None = Field(default=None)
-    todos: list[dict] = Field(default_factory=list)  # Plan mode task tracking
+    memory_context: Annotated[str | None, merge_memory_context] = Field(default=None)
+    todos: Annotated[list[dict], merge_todos] = Field(default_factory=list)  # Plan mode task tracking
     mode: AgentMode = Field(default=AgentMode.REACT)  # Execution mode (Direct/ReAct/PlanExecute)
+    phase: Annotated[Literal["planning", "executing"], merge_phase] = Field(default="executing")  # Plan mode: planning → executing
     subagent_results: list[dict] = Field(default_factory=list)  # Subagent execution results

@@ -16,6 +16,7 @@ async def run_subagent(
     tools: list[BaseTool],
     llm: BaseChatModel,
     timeout: int = 900,
+    max_iterations: int = 10,
 ) -> dict[str, Any]:
     """Run a subagent task asynchronously.
 
@@ -29,6 +30,7 @@ async def run_subagent(
         tools: List of tools available to this subagent.
         llm: LLM to use for this subagent.
         timeout: Timeout in seconds (default 15 minutes).
+        max_iterations: Max ReAct loop iterations (default 10).
 
     Returns:
         Dict with subagent_id, status, output, artifacts, error.
@@ -58,7 +60,6 @@ Guidelines:
         ]
 
         # Simple ReAct loop
-        max_iterations = 10
         for _ in range(max_iterations):
             response = await llm_with_tools.ainvoke(messages)
 
@@ -143,6 +144,7 @@ async def run_subagents_in_parallel(
     subagent_specs: list[dict[str, Any]],
     llm: BaseChatModel,
     timeout: int = 900,
+    max_iterations: int = 10,
 ) -> list[dict[str, Any]]:
     """Run multiple subagents in parallel using asyncio.gather.
 
@@ -150,6 +152,7 @@ async def run_subagents_in_parallel(
         subagent_specs: List of dicts with keys: subagent_id, name, task, tools
         llm: LLM to use for all subagents
         timeout: Timeout per subagent in seconds
+        max_iterations: Max ReAct iterations per subagent (default 10)
 
     Returns:
         List of result dicts
@@ -164,6 +167,7 @@ async def run_subagents_in_parallel(
                 tools=spec.get("tools", []),
                 llm=llm,
                 timeout=timeout,
+                max_iterations=max_iterations,
             )
         )
         tasks.append(task)

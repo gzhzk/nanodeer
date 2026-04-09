@@ -1,6 +1,7 @@
 """Lead Agent builder using LangGraph."""
 
 from typing import Annotated, Literal
+import logging
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage, SystemMessage, ToolMessage
@@ -8,6 +9,8 @@ from langchain_core.tools import BaseTool
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
+
+logger = logging.getLogger(__name__)
 
 from .state import ThreadState
 from .prompt import build_lead_agent_prompt
@@ -46,6 +49,9 @@ class AgentBuilder:
         # Store original tools for LLM binding
         self._raw_tools = tools or []
 
+        # Lazily import Router to avoid circular dependency
+        self._router = None
+
         # Wrap sandbox-aware tools for sandbox execution
         from ..sandbox.tools import wrap_tool_for_sandbox
         self._tool_map = {}
@@ -68,7 +74,23 @@ class AgentBuilder:
         graph = StateGraph(ThreadState)
         graph.add_node("agent", self._agent_node)
         graph.add_node("tools", self._tool_executor_node)
-        graph.add_edge(START, "agent")
+        graph.add_node("plan", self._plan_node)
+
+        # PLAN mode: start with planning node, then agent loop
+        # OTHER modes: start directly with agent
+        graph.add_conditional_edges(
+            START,
+            self._entry_point,
+            {
+                "plan": "plan",
+                "agent": "agent",
+            }
+        )
+
+        # After planning: go to agent (executing phase)
+        graph.add_edge("plan", "agent")
+
+        # Normal loop: agent → tools → agent
         graph.add_conditional_edges(
             "agent",
             self._should_continue,
@@ -78,6 +100,7 @@ class AgentBuilder:
             }
         )
         graph.add_edge("tools", "agent")
+
         if self.checkpointer:
             self._compiled = graph.compile(checkpointer=self.checkpointer)
         else:
@@ -103,7 +126,15 @@ class AgentBuilder:
             raise
         finally:
             if result is not None:
-                await self.middleware_chain.after_agent_end(initial_state)
+                try:
+                    await self.middleware_chain.after_agent_end(result)
+                except Exception as e:
+                    logger.error(f"Middleware after_agent_end failed: {e}")
+                    # 保证第一个中间件（SandboxMiddleware）仍能释放容器
+                    try:
+                        await self.middleware_chain.middlewares[0].after_agent_end(result)
+                    except Exception as e2:
+                        logger.error(f"Sandbox cleanup also failed: {e2}")
 
     async def stream(self, initial_state: ThreadState):
         """Stream agent responses (async generator).
@@ -123,11 +154,23 @@ class AgentBuilder:
         if self.middleware_chain:
             await self.middleware_chain.before_agent_start(initial_state)
 
-        async for msg in self._compiled.astream(initial_state):
-            yield msg
-
-        if self.middleware_chain:
-            await self.middleware_chain.after_agent_end(initial_state)
+        last_state = initial_state
+        try:
+            async for msg in self._compiled.astream(initial_state):
+                # Track the latest state snapshot from astream
+                if isinstance(msg, dict):
+                    last_state = msg
+                yield msg
+        finally:
+            if self.middleware_chain:
+                try:
+                    await self.middleware_chain.after_agent_end(last_state)
+                except Exception as e:
+                    logger.error(f"Stream middleware cleanup failed: {e}")
+                    try:
+                        await self.middleware_chain.middlewares[0].after_agent_end(last_state)
+                    except Exception as e2:
+                        logger.error(f"Sandbox cleanup also failed: {e2}")
 
     async def run(self, initial_state: ThreadState) -> dict:
         """Multi-turn continuous conversation (async generator).
@@ -174,6 +217,64 @@ class AgentBuilder:
         if self.middleware_chain:
             await self.middleware_chain.after_agent_end(state)
 
+    def _entry_point(self, state: ThreadState) -> Literal["plan", "agent"]:
+        """Route to plan node or agent node based on execution mode.
+
+        PLAN_EXECUTE mode: go to plan node first for dedicated planning turn.
+        Other modes: go directly to agent node.
+        """
+        if state.mode == AgentMode.PLAN_EXECUTE:
+            return "plan"
+        return "agent"
+
+    async def _plan_node(self, state: ThreadState) -> dict:
+        """Planning node: first turn in PLAN_EXECUTE mode.
+
+        Runs a dedicated planning turn where the agent creates todos.
+        After this node completes, state.phase transitions to "executing"
+        and the normal agent loop takes over.
+
+        Returns:
+            dict: Update to merge into state (sets phase, adds messages).
+        """
+        # Transition to planning phase
+        updates: dict = {"phase": "planning"}
+
+        # Auto-detect PLAN mode if not already set
+        if state.mode != AgentMode.PLAN_EXECUTE:
+            from langchain_core.messages import HumanMessage
+            if self._router is None:
+                from .router import router
+                self._router = router
+            if state.messages and isinstance(state.messages[0], HumanMessage):
+                detected = self._router.detect(state.messages[0].content)
+                if detected == AgentMode.PLAN_EXECUTE:
+                    updates["mode"] = AgentMode.PLAN_EXECUTE
+
+        tool_names = [t.name for t in self._raw_tools]
+        sandbox = state.sandbox
+        thread_id = sandbox.thread_id if sandbox else None
+
+        # Build planning-specific system prompt
+        planning_prompt = (
+            "You are in PLAN mode: First create a detailed todo list to accomplish the task.\n"
+            "Use WriteTodo to create each step. Be specific about what needs to be done.\n"
+            "After creating all todos, respond with a summary of your plan.\n\n"
+            f"Available tools: {', '.join(tool_names)}\n"
+            f"Thread: {thread_id or 'default'}\n"
+        )
+
+        system_message = SystemMessage(content=planning_prompt)
+        messages = [system_message] + list(state.messages)
+
+        response = await self.llm.ainvoke(messages)
+        updates["messages"] = [response]
+
+        # After planning node, transition to executing phase
+        updates["phase"] = "executing"
+
+        return updates
+
     async def _agent_node(self, state: ThreadState) -> dict:
         """Agent node: calls the LLM with system prompt injected.
 
@@ -183,6 +284,19 @@ class AgentBuilder:
         Returns:
             dict: Update to merge into state (adds messages).
         """
+        # Auto-detect mode from first user message if still at REACT default
+        # (REACT = 0 is the default enum value, so check by ordinal to avoid
+        # confusion with explicit REACT mode choices)
+        if state.mode == AgentMode.REACT and len(state.messages) == 1:
+            from langchain_core.messages import HumanMessage
+            first_msg = state.messages[0]
+            if isinstance(first_msg, HumanMessage):
+                if self._router is None:
+                    from .router import router
+                    self._router = router
+                detected = self._router.detect(first_msg.content)
+                state.mode = detected
+
         # Build system prompt with available tools
         tool_names = [t.name for t in self._raw_tools]
         sandbox = state.sandbox
@@ -243,7 +357,7 @@ class AgentBuilder:
                 name=tc["name"],
                 content=str(result),
             ))
-        return {"messages": results}
+        return {"messages": results, "todos": state.todos}
 
     async def _execute_in_sandbox(self, sandbox, tool, tool_call):
         """Execute tool call inside Docker container.
@@ -290,7 +404,7 @@ class AgentBuilder:
         Respects execution mode:
         - DIRECT: Skip tool loop entirely
         - REACT: Normal tool loop
-        - PLAN_EXECUTE: Currently same as REACT (plan prompt injection)
+        - PLAN_EXECUTE: Planning phase runs first (_plan_node), then normal loop
         """
         from langchain_core.messages import AIMessage
 
