@@ -8,7 +8,7 @@ from .web_search import web_search
 from .read_image import read_image
 from .exec_python import exec_python
 from .invoke_skill import invoke_skill
-from .memory import save_memory
+from .memory import save_memory, load_memory
 from .plan import write_todo, list_todos, complete_todo
 from .subagent import spawn_subagent, get_subagent_results
 
@@ -37,6 +37,7 @@ __all__ = [
     "invoke_skill",
     # memory
     "save_memory",
+    "load_memory",
     # plan
     "write_todo",
     "list_todos",
