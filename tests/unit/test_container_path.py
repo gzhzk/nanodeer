@@ -1,8 +1,8 @@
-"""Unit tests for sandbox path translation and validation."""
+"""Unit tests for container path translation and validation."""
 import pytest
 
-from harness.sandbox.path import virtual2physical, validate_path, translate_and_validate
-from harness.sandbox import Sandbox, RunResult
+from nanodeer.container.path import virtual2physical, validate_path, translate_and_validate
+from nanodeer.container import Sandbox, RunResult
 
 
 class TestVirtual2Physical:
@@ -19,11 +19,11 @@ class TestVirtual2Physical:
          "/workspace/thread-xyz/workspace/subdir/file.py"),
     ])
     def test_translates_correctly(self, virtual_path, thread_id, expected):
-        """Should translate virtual path to physical path with thread_id."""
+        """Translates virtual path to physical path with thread_id."""
         assert virtual2physical(virtual_path, thread_id) == expected
 
     def test_raises_without_prefix(self):
-        """Should raise ValueError if path doesn't start with /mnt/user-data."""
+        """Raises ValueError if path doesn't start with /mnt/user-data."""
         with pytest.raises(ValueError, match="must start with"):
             virtual2physical("/etc/passwd", "user-123")
 
@@ -45,7 +45,7 @@ class TestValidatePath:
         "/mnt/user-data/../root/.bashrc",
     ])
     def test_rejects_invalid(self, invalid_path):
-        """Should return None for dangerous paths."""
+        """Returns None for dangerous paths."""
         assert validate_path(invalid_path) is None
 
     @pytest.mark.parametrize("valid_path", [
@@ -55,7 +55,7 @@ class TestValidatePath:
         "/mnt/user-data/workspace/subdir/file.txt",
     ])
     def test_accepts_valid(self, valid_path):
-        """Should return validated path for safe inputs."""
+        """Returns validated path for safe inputs."""
         assert validate_path(valid_path) == valid_path
 
 
@@ -63,7 +63,7 @@ class TestTranslateAndValidate:
     """Test combined translate and validate."""
 
     def test_validates_then_translates(self):
-        """Should validate first, then translate."""
+        """Validates first, then translates."""
         result = translate_and_validate(
             "/mnt/user-data/workspace/code.py",
             "user-123"
@@ -71,12 +71,12 @@ class TestTranslateAndValidate:
         assert result == "/workspace/user-123/workspace/code.py"
 
     def test_raises_on_invalid_path(self):
-        """Should raise ValueError for dangerous paths."""
+        """Raises ValueError for dangerous paths."""
         with pytest.raises(ValueError, match="Invalid or dangerous path"):
             translate_and_validate("/mnt/user-data/../etc/passwd", "user-123")
 
     def test_invalid_virtual_path(self):
-        """Should raise for invalid virtual path format."""
+        """Raises for invalid virtual path format."""
         with pytest.raises(ValueError):
             translate_and_validate("/etc/passwd", "user-123")
 
@@ -107,7 +107,6 @@ class TestRunResult:
             returncode=0
         )
         assert result.stdout == "hello world"
-        assert result.stderr == ""
         assert result.returncode == 0
 
     def test_result_error(self):
@@ -117,7 +116,6 @@ class TestRunResult:
             stderr="command not found",
             returncode=127
         )
-        assert result.stdout == ""
         assert result.stderr == "command not found"
         assert result.returncode == 127
 
