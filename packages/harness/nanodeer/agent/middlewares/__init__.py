@@ -1,16 +1,16 @@
 """Harness middlewares - intercept and modify agent execution pipeline."""
 
 from .base import Middleware, MiddlewareChain
-from .clarification import ClarificationMiddleware
-from .compression import CompressionMiddleware
-from .loop_detection import LoopDetectionMiddleware
-from .memory import MemoryMiddleware
-from .plan import PlanMiddleware
-from .sandbox import SandboxMiddleware
-from .security import SecurityMiddleware
-from .subagent import SubagentMiddleware
-from .title import TitleMiddleware
-from .uploads import UploadsMiddleware
+from .clarification_middleware import ClarificationMiddleware
+from .compression_middleware import CompressionMiddleware
+from .loop_detection_middleware import LoopDetectionMiddleware
+from .memory_middleware import MemoryMiddleware
+from .sandbox_middleware import SandboxMiddleware
+from .security_middleware import SecurityMiddleware
+from .subagent_middleware import SubagentMiddleware
+from .thread_data_middleware import ThreadDataMiddleware
+from .title_middleware import TitleMiddleware
+from .uploads_middleware import UploadsMiddleware
 
 __all__ = [
     "Middleware",
@@ -18,10 +18,10 @@ __all__ = [
     "SandboxMiddleware",
     "SecurityMiddleware",
     "MemoryMiddleware",
-    "PlanMiddleware",
     "ClarificationMiddleware",
     "CompressionMiddleware",
     "SubagentMiddleware",
+    "ThreadDataMiddleware",
     "LoopDetectionMiddleware",
     "TitleMiddleware",
     "UploadsMiddleware",

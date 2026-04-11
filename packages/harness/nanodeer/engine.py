@@ -24,7 +24,7 @@ from langchain_core.messages import HumanMessage
 
 from .agent.state import ThreadState
 from .config import HarnessConfig
-from .agent.builder import create_nanodeer_agent, RuntimeFeatures
+from .agent.factory import create_nanodeer_agent, RuntimeFeatures
 
 logger = logging.getLogger(__name__)
 
@@ -59,23 +59,27 @@ class StreamEvent:
 
 
 def _create_llm(config: HarnessConfig, model_name: str | None = None) -> BaseChatModel:
-    """Create a ChatModel from HarnessConfig."""
+    """Create a ChatModel from HarnessConfig.
+
+    Supports any Anthropic-compatible provider (MiniMax, DeepSeek, Moonshot, etc.)
+    by using ChatAnthropic with the provider's API base URL.
+    """
     from langchain_anthropic import ChatAnthropic
 
     prov_cfg = config.agents.defaults
     provider = prov_cfg.provider
     name = model_name or prov_cfg.model
 
-    if "/" in name:
+    if "/" in name and name.count("/") == 1:
         provider, name = name.split("/", 1)
 
     pcfg = config.get_provider_config(provider)
-    api_key = pcfg.api_key if pcfg else ""
-    api_base = pcfg.api_base if pcfg else None
+    if pcfg is None:
+        raise ValueError(f"Provider '{provider}' not found in config.yaml. "
+                          f"Add a [{provider}] section with api_key and api_base.")
 
-    if not api_key:
-        import os
-        api_key = os.environ.get(f"{provider.upper()}_API_KEY", "") or os.environ.get("ANTHROPIC_API_KEY", "")
+    api_key = pcfg.api_key
+    api_base = pcfg.api_base
 
     return ChatAnthropic(
         model=name,
@@ -146,8 +150,7 @@ class NanoEngine:
         state = ThreadState(
             thread_id=thread_id,
             messages=[HumanMessage(content=prompt)],
-            uploaded_files=uploaded_files or [],
-            memory_context=system_hint or None,
+            metadata={"uploaded_files": uploaded_files or [], "memory_context": system_hint or ""},
         )
 
         agent = self._get_agent()
@@ -170,8 +173,7 @@ class NanoEngine:
         state = ThreadState(
             thread_id=thread_id,
             messages=[HumanMessage(content=prompt)],
-            uploaded_files=uploaded_files or [],
-            memory_context=system_hint or None,
+            metadata={"uploaded_files": uploaded_files or [], "memory_context": system_hint or ""},
         )
 
         agent = self._get_agent()

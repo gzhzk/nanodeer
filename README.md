@@ -14,7 +14,7 @@ NanoDeer distills these patterns — state machine, middleware chain, sandbox is
 
 ## Status
 
-**In development** — Core framework with 211 tests.
+**In development** — core framework stable.
 
 ## Background
 
@@ -40,7 +40,38 @@ python -m examples.integration.10_agent_builder
 pytest tests/ -v
 ```
 
-## Project Structure
+## Architecture
+
+### Signal-Driven Design
+
+NanoDeer follows a **signal-driven architecture** where middlewares communicate through explicit signals in `ThreadState.next_action`:
+
+```
+next_action = "process"        → continue to tools
+next_action = "wait_for_clarification" → route to END (pause for user)
+next_action = "end"           → route to END (terminate)
+```
+
+This replaces the old pattern of injecting HumanMessages or stripping tool_calls to control flow.
+
+### Layered Responsibilities
+
+| Layer | Responsibility |
+|-------|----------------|
+| **Modules** | Feed data to the context (data layer) |
+| **Middlewares** | Guard the environment and direct traffic (control layer) |
+| **Builder** | Feed data to the LLM (execution layer) |
+| **LangGraph** | Follow signals to navigate (routing layer) |
+
+### Two-Node LangGraph
+
+```
+START → llm → [next_action?] → tools → llm → ... → END
+                     ↓ (wait_for_clarification | end)
+                    END
+```
+
+### Project Structure
 
 ```
 nanodeer/
@@ -48,25 +79,56 @@ nanodeer/
 │   ├── main.py               # FastAPI entry point
 │   ├── runner.py             # Wraps NanoEngine for HTTP
 │   ├── api/                  # REST endpoints
-│   ├── channels/             # IM platform integrations (reserved)
 │   └── config.py
 │
 ├── packages/harness/         # Agent harness (framework package)
 │   └── nanodeer/
-│       ├── agent/            # Core agent (state machine + builder)
-│       │   ├── builder.py    # LangGraph graph construction
-│       │   ├── state.py      # ThreadState schema
+│       ├── agent/
+│       │   ├── state.py      # ThreadState — single data bus
+│       │   ├── builder.py    # LangGraph graph assembly (< 80 lines)
+│       │   ├── factory.py    # NanoDeerFactory — assembles middlewares
 │       │   ├── prompt.py     # System prompt assembly
-│       │   ├── middlewares/   # Intercept chain (sandbox, memory, plan, ...)
-│       │   └── memory/       # L2/L3 tiered memory
-│       ├── container/        # Docker container isolation
-│       ├── tools/            # 16 built-in tools
+│       │   ├── memory/       # L2 episodic + L3 distilled
+│       │   │   ├── storage.py
+│       │   │   ├── extractor.py
+│       │   │   └── types.py
+│       │   └── middlewares/  # 10 interceptors
+│       │       ├── base.py                # Middleware + MiddlewareChain
+│       │       ├── thread_data.py         # Per-thread directory init
+│       │       ├── sandbox.py             # Docker container lifecycle
+│       │       ├── security.py            # Path validation
+│       │       ├── memory.py              # L2/L3 memory injection
+│       │       ├── clarification.py       # ask_clarification signal
+│       │       ├── loop_detection.py      # Repetitive call guard
+│       │       ├── compression.py         # Token count compression
+│       │       ├── uploads.py             # User file upload handling
+│       │       ├── title.py               # Thread title generation
+│       │       └── subagent.py            # Parallel subagent execution
+│       ├── container/        # Docker sandbox isolation
+│       │   ├── docker.py     # DockerSandboxProvider
+│       │   ├── local.py      # LocalSandboxProvider fallback
+│       │   ├── path.py       # Virtual ↔ physical path translation
+│       │   └── tools.py      # Tool sandbox wrapper
+│       ├── tools/            # 20 built-in tools
+│       │   ├── file.py       # read_file, write_file
+│       │   ├── list_dir.py   # ls
+│       │   ├── search.py     # glob, grep
+│       │   ├── shell.py      # bash
+│       │   ├── git.py
+│       │   ├── web_search.py
+│       │   ├── fetch_url.py
+│       │   ├── read_image.py
+│       │   ├── exec_python.py
+│       │   ├── memory.py     # save_memory, load_memory
+│       │   ├── plan.py       # write_todo, list_todos, complete_todo
+│       │   ├── subagent.py   # spawn_subagent, get_subagent_results
+│       │   ├── invoke_skill.py
+│       │   └── ask_clarification.py
 │       ├── skills/           # Markdown skill workflows
-│       ├── subagents/        # Parallel subagent execution
-│       ├── plan/             # TodoItem types
-│       ├── client.py         # Embedded Python client
-│       ├── engine.py         # Async agent engine
-│       └── config.py         # YAML config loader
+│       │   └── loader.py
+│       ├── client.py
+│       ├── engine.py
+│       └── config.py
 │
 ├── sandbox/                  # Docker sandbox image
 ├── tests/                    # Test suite
@@ -76,79 +138,87 @@ nanodeer/
 └── pyproject.toml
 ```
 
-## Architecture
+## Module Design
 
-```
-NanoDeer
-├── App Layer               # FastAPI REST API + IM channels (reserved)
-└── Harness (framework)    # Pure agent, no HTTP awareness
-    ├── Agent              # LangGraph StateGraph + prompt
-    ├── Middlewares       # Ordered intercept chain
-    ├── Tools             # Pure execution units
-    ├── Container           # Docker container isolation
-    ├── Memory            # L2/L3 tiered memory
-    ├── Plan              # TodoList task tracking
-    ├── Skills            # On-demand .md workflows
-    └── Subagents         # Parallel task delegation
-```
+**Builder (agent/builder.py)**
+Two-node LangGraph: `llm` (LLM call) and `tools` (execute tool calls). `_should_continue` only checks `state.next_action` — no direct tool_calls inspection. RuntimeFeatures are NOT imported here; all feature gates are handled by the Factory.
 
-## Module Design Considerations
+**Factory (agent/factory.py)**
+`NanoDeerFactory` assembles the `MiddlewareChain` based on `RuntimeFeatures`. Returns a clean `AgentBuilder` with all middlewares wired. The Builder itself has zero feature knowledge.
 
-**Agent (builder.py + state.py)**
-LangGraph StateGraph with two node types: Agent (LLM call) and Tools (execute tool calls). ThreadState is the single data bus — every middleware reads/writes it, the prompt is assembled from it. The model decides tool usage autonomously; no mode routing.
+**Middleware Chain (agent/middlewares/)**
+10 interceptors with 5 hooks: `before_llm`, `after_llm`, `before_tools`, `after_tools`, `after_tools_all`. Each middleware does one thing — sandbox lifecycle, path validation, memory injection, loop detection, compression, title generation, etc.
 
-**Middleware Chain (middlewares/)**
-Ordered interceptors with 4 hooks: `before_agent_start` (forward), `after_agent_end` (reverse), `before_tool_call` (forward), `after_tool_call` (forward). Each middleware does one thing: sandbox lifecycle, path validation, memory injection, todo loading, loop detection, compression, title generation, etc. Middlewares do not call LLM or tools directly.
+**ThreadState (agent/state.py)**
+Single data bus flowing through LangGraph. Key fields:
+- `messages` — conversation history
+- `sandbox` — container reference
+- `thread_data` — per-thread paths
+- `title` — conversation title
+- `artifacts` — generated artifact paths
+- `next_action` — control signal (`"process"` | `"wait_for_clarification"` | `"end"`)
+- `metadata` — middleware blackboard (`memory_context`, `uploaded_files`, etc.)
 
 **Container / Sandbox (container/)**
-Every thread gets its own Docker container. Host runs the LLM; container executes commands via `docker exec`. Virtual paths (`/mnt/user-data/...`) translate to `/workspace/{thread_id}/...` inside container. Two providers: `DockerSandboxProvider` (default, network configurable) and `LocalSandboxProvider` (subprocess fallback). Security middleware audits bash commands before execution.
+Every thread gets its own Docker container. Virtual paths (`/mnt/user-data/...`) translate to `/workspace/{thread_id}/...` inside container. Two providers: `DockerSandboxProvider` (default) and `LocalSandboxProvider` (subprocess fallback).
 
 **Memory (agent/memory/)**
-Three tiers: L1 (current session, in context), L2 (daily episodic logs, `~/.nanodeer/memory/episodic/`), L3 (distilled long-term memory, `~/.nanodeer/memory/MEMORY.md`). MemoryMiddleware loads L3 + recent episodic into `state.memory_context` before agent starts; saves episodic and triggers distillation after agent ends.
-
-**Plan / Todos (plan/)**
-TodoItem dataclass with status (pending/in_progress/completed), priority, and auto-generated ID. PlanMiddleware intercepts `write_todo`/`complete_todo`/`list_todos` tool calls to keep `state.todos` in sync with file storage.
-
-**Skills (skills/)**
-Markdown files with YAML frontmatter (name, description, tools, prompt). Loaded by SkillLoader at startup. invoke_skill tool returns the full skill prompt + metadata. Skills are workflows, not code.
-
-**Subagents (subagents/)**
-Parallel task delegation. Agent calls `spawn_subagent` to register tasks, `get_subagent_results` to collect outputs. SubagentMiddleware collects pending tasks and executes them in parallel (max 3 concurrent) after agent ends.
+Three tiers:
+- **L1**: Current session (in context, implicit)
+- **L2**: Daily episodic logs (`~/.nanodeer/memory/episodic/{date}.md`)
+- **L3**: Distilled long-term memory (`~/.nanodeer/memory/MEMORY.md`)
 
 **Tools (tools/)**
-Pure execution units wrapped as LangChain `@tool`. Two categories: sandbox-aware tools (file, bash, ls, glob, grep) run inside Docker container; external tools (web search, fetch, Python exec, git) run on host. Every tool returns a string; storage/audit/compression is handled by middleware.
+Pure execution units wrapped as LangChain `@tool`. Two categories: sandbox-aware tools (file, bash, ls, glob, grep) run inside Docker container; external tools (web search, fetch, Python exec, git) run on host.
 
 ## Middleware Chain
 
-Ordered interceptors between LLM and tool execution:
+10 interceptors with 5 hooks:
 
 ```
-before_agent_start → [forward]
-  1. SandboxMiddleware       Acquire/release Docker container
-  2. SecurityMiddleware      Path validation for file tools
-  3. MemoryMiddleware        Load L3 + episodic into state.memory_context
-  4. PlanMiddleware          Load todos into state.todos
-  5. LoopDetectionMiddleware  Break repetitive tool call loops
-  6. SubagentMiddleware      Collect & execute parallel subagents
-  7. ClarificationMiddleware  Pause for user input
-  8. TitleMiddleware         Generate thread title
-  9. CompressionMiddleware   Summarize long history
- 10. UploadsMiddleware       Process user uploads
+before_llm  (forward order)
+  → ThreadDataMiddleware      Initialize per-thread directories
+  → SandboxMiddleware        Acquire Docker container (once)
+  → UploadsMiddleware        Process uploaded files
+  → MemoryMiddleware         Inject L2/L3 memory_context
+  → CompressionMiddleware    Compress if token count exceeds threshold
+  → LoopDetectionMiddleware  Record tool call patterns
 
-after_agent_end ← [reverse]
-  → Uploads → Compression → Title → Clarification → Subagent → Loop → Plan → Memory → Security → Sandbox
+after_llm   (reverse order)
+  ← TitleMiddleware          Generate thread title
+  ← ClarificationMiddleware  Set next_action="wait_for_clarification" if needed
+
+before_tools  (forward order)
+  → SandboxMiddleware        Audit bash commands (HIGH risk → next_action="end")
+  → SecurityMiddleware       Validate file paths (invalid → next_action="end")
+  → SubagentMiddleware      Collect spawn_subagent calls (enforce concurrency limit)
+
+after_tools  (reverse order)
+  ← MemoryMiddleware         Intercept save_memory tool calls
+  ← SubagentMiddleware       Execute pending subagents, inject results
+
+after_tools_all  (reverse order)
+  ← SandboxMiddleware        Atomic container release (always, regardless of success/failure)
 ```
+
+### Signal Convention
+
+| Signal | Who Sets | Effect |
+|--------|----------|--------|
+| `next_action = "process"` | Default | Continue to tools |
+| `next_action = "wait_for_clarification"` | ClarificationMiddleware | Route to END |
+| `next_action = "end"` | LoopDetection / Security / Sandbox | Route to END |
 
 ## Tools
 
-20 built-in tools, all pure functions returning strings. Storage, audit, and persistence handled by middleware.
+20 built-in tools, all pure functions returning strings. Cross-cutting concerns handled by middleware.
 
 **File & Shell** (sandbox-aware — run inside Docker container)
 | Tool | Description |
 |------|-------------|
 | `read_file` | Read file content from virtual path |
-| `write_file` | Write content to virtual path (base64-encoded) |
-| `ls` | List directory contents (`ls -la`) |
+| `write_file` | Write content to virtual path |
+| `ls` | List directory contents |
 | `glob` | Find files matching glob pattern |
 | `grep` | Search for regex pattern in files |
 | `bash` | Execute bash command in container |
@@ -156,49 +226,73 @@ after_agent_end ← [reverse]
 **External** (run on host — network available)
 | Tool | Description |
 |------|-------------|
-| `git` | Git operations: status, diff, log, add, commit, push, pull, branch, checkout, clone |
+| `git` | Git operations |
 | `fetch_url` | Fetch web page, extract clean text |
 | `web_search` | Search via DuckDuckGo HTML |
-| `read_image` | Read image file, return base64 for vision model |
+| `read_image` | Read image file, return base64 for vision |
 | `exec_python` | Execute arbitrary Python code locally |
 
-**Memory & Plan** (pure execution, persistence via middleware)
+**Memory**
 | Tool | Description |
 |------|-------------|
-| `save_memory` | Save content to L3 memory (intercepted by MemoryMiddleware) |
+| `save_memory` | Save content to L3 memory |
 | `load_memory` | Load L3 + recent episodic from memory store |
-| `write_todo` | Create todo item with status/priority (intercepted by PlanMiddleware) |
+
+**Plan**
+| Tool | Description |
+|------|-------------|
+| `write_todo` | Create todo item with status/priority |
 | `list_todos` | List all current todos |
 | `complete_todo` | Mark todo as completed by ID |
 
-**Agent Coordination**
+**Subagent**
+| Tool | Description |
+|------|-------------|
+| `spawn_subagent` | Register parallel subagent task |
+| `get_subagent_results` | Collect results from completed subagents |
+
+**Skills & Clarification**
 | Tool | Description |
 |------|-------------|
 | `invoke_skill` | Load and return skill workflow from `.md` file |
-| `spawn_subagent` | Register parallel subagent task (executed by SubagentMiddleware) |
-| `get_subagent_results` | Collect results from completed subagents |
-| `ask_clarification` | Pause execution, ask user for input (intercepted by ClarificationMiddleware) |
+| `ask_clarification` | Pause execution, ask user for input |
 
 ## Core Patterns
 
-**Middleware**: Horizontal interceptor with 4 hooks (`before_agent_start`, `before_tool_call`, `after_tool_call`, `after_agent_end`). Reads/writes ThreadState but does not modify the LLM or tools directly.
+**Signal-Driven Flow**: Middlewares set `state.next_action` instead of injecting messages or stripping tool_calls. LangGraph routes based on this explicit signal.
 
-**ThreadState**: Single data bus flowing through LangGraph — `messages`, `memory_context`, `todos`, `sandbox`, `subagent_results`, etc.
+**Middleware**: Horizontal interceptor with hooks. Reads/writes ThreadState but does not modify LLM or tools directly.
 
-**ReAct Loop**: Agent node (LLM call) → Tools node (execute) → loop until no tool calls remain.
+**ThreadState**: Single data bus — all modules read/write it; prompt is assembled from it.
 
-**Memory Tiers**:
-- L1: Current session messages (implicit context window)
-- L2: Daily episodic logs (`~/.nanodeer/memory/episodic/{date}.md`)
-- L3: Distilled long-term memory (`~/.nanodeer/memory/MEMORY.md`)
+**ReAct Loop**: Agent node (LLM call) → Tools node (execute) → loop until `next_action != "process"`.
+
+**Memory Tiers**: L1 (current messages), L2 (daily episodic), L3 (distilled long-term).
 
 ## Design Principles
 
-1. **Middleware intercepts, tools execute**: Tools are pure functions. All cross-cutting concerns (storage, audit, compression) go through middleware hooks.
-2. **State flows through ThreadState**: All modules read/write ThreadState; prompt is assembled from it.
-3. **Reverse cleanup**: `after_*` hooks run in reverse registration order.
-4. **Sandbox isolation over permission**: Security through Docker containers, not allowlists.
-5. **App/Harness split**: `app/` knows about `harness`, but `harness` knows nothing about `app`.
+1. **Signal over surgery**: Use `state.next_action` to control flow, not message injection or tool call stripping.
+2. **Middleware intercepts, tools execute**: Tools are pure functions. All cross-cutting concerns go through middleware hooks.
+3. **Factory assembles, Builder executes**: Builder has zero feature knowledge; Factory handles all feature gates.
+4. **Atomic sandbox release**: Container released in `after_tools_all`, not `after_llm`.
+5. **Existence-based rendering**: Prompt sections only rendered when data is present.
+6. **App/Harness split**: `app/` knows about `harness`, but `harness` knows nothing about `app`.
+
+## Acknowledgments
+
+To my mother — for her silent support and endless patience, which made this possible.
+
+To my mentor — for opening the door to Agent and Harness Engineering, and encouraging me to explore.
+
+[Claude Code](https://claude.com/product/claude-code) — my best coding companion, supercharging my AI workflow, and showing me that a product can be both powerful and elegant.
+
+[DeerFlow](https://github.com/bytedance/deer-flow) — for showing me what an enterprise-grade Agent framework truly looks like.
+
+[OpenClaw](https://github.com/openclaw/openclaw) — for the layered memory and IM channel inspiration.
+
+[NanoClaw](https://github.com/qwibitai/nanoclaw) — for the Docker sandbox isolation pattern.
+
+[MiniMax](https://www.minimaxi.com/) — for providing the MiniMax-M2.7 model service that powers this project.
 
 ## License
 

@@ -3,10 +3,15 @@
 Each thread gets its own sandbox (Docker container). Sandboxes are acquired
 before use and released when done. Provider is stored in module-level context
 (because it can't be serialized into ThreadState).
+
+Note: SandboxState and ThreadDataState are defined in agent/state.py and re-exported
+here for convenience.
 """
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Protocol
+
+from ..agent.state import SandboxState, ThreadDataState
 
 
 @dataclass
@@ -94,26 +99,3 @@ def get_sandbox_provider(thread_id: str) -> "SandboxProvider | None":
 def clear_sandbox_provider(thread_id: str) -> None:
     """Remove sandbox provider for a thread."""
     _sandbox_context.pop(thread_id, None)
-
-
-# ---------------------------------------------------------------------------
-# SandboxInfo — agent-level handle stored in ThreadState
-# ---------------------------------------------------------------------------
-# Moved from agent/state.py — SandboxInfo is a handle (not a Sandbox instance),
-# describing the sandbox context for a thread. The actual Sandbox object lives
-# in the sandbox/ layer and is managed by SandboxMiddleware.
-# ---------------------------------------------------------------------------
-from pydantic import BaseModel, Field
-
-
-class SandboxInfo(BaseModel):
-    """Sandbox execution context for a thread.
-
-    This is stored in ThreadState so the agent graph knows whether a sandbox
-    has been acquired and what container to use. The actual container
-    lifecycle is managed by SandboxMiddleware via SandboxProvider.
-    """
-    thread_id: str
-    container_id: str | None = None  # Filled after container is created
-    status: Literal["acquiring", "ready", "released"] = "acquiring"
-    working_dir: str | None = None  # Physical path inside container
