@@ -14,7 +14,7 @@ from .base import Middleware
 class TitleMiddleware(Middleware):
     """Auto-generates thread title from first user message.
 
-    Triggered after first agent response (after_agent_end when thread is new).
+    Triggered after first agent response (after_llm when thread is new).
     Uses LLM to generate a short, descriptive title (≤50 chars).
     """
 
@@ -35,7 +35,7 @@ class TitleMiddleware(Middleware):
     def set_llm(self, llm: BaseChatModel) -> None:
         self._llm = llm
 
-    async def after_agent_end(self, state: Any) -> None:
+    async def after_llm(self, state: Any) -> None:
         """Generate title from first user message after first turn."""
         if self._llm is None:
             return

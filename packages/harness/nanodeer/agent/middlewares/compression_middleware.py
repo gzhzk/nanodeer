@@ -1,7 +1,8 @@
 """CompressionMiddleware - summarizes long conversation history.
 
-Prevents context overflow by compressing old messages when history grows too long.
-Keeps recent messages intact, summarizes older ones.
+Prevents context overflow by compressing old messages when total tokens
+reach ~70% of the model's context window. Uses the LLM's built-in
+get_num_tokens_from_messages() for accurate token counting.
 """
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
@@ -12,36 +13,39 @@ from .base import Middleware
 
 
 class CompressionMiddleware(Middleware):
-    """Compresses long conversation history via summarization.
+    """Compresses conversation history via summarization when context is near limit.
 
-    Triggered when total messages exceed threshold.
-    Summarizes all but the last N messages, replacing them with a single
-    summary message to prevent context overflow.
+    Uses token-based triggering (not message count) — triggers when total
+    tokens reach `context_window * compression_ratio`. Always keeps the last
+    N messages intact and summarizes everything before that.
+
+    Compression only runs once per compression cycle to avoid repeated summarization
+    of the same content.
     """
 
-    # How many messages to always keep (most recent)
+    # Fallback: how many messages to keep when token counting is unavailable
     KEEP_RECENT = 5
-
-    # When to trigger compression (total message count)
-    DEFAULT_THRESHOLD = 20
 
     def __init__(
         self,
         llm: BaseChatModel | None = None,
-        threshold: int | None = None,
+        context_window: int = 204800,
+        compression_ratio: float = 0.7,
         keep_recent: int | None = None,
     ):
         """Initialize compression middleware.
 
         Args:
             llm: LLM to use for summarization. Can be None (lazy init).
-            threshold: Trigger compression when messages exceed this count.
-                      Default 20.
+            context_window: Model context window in tokens (default 204800 = MiniMax-M2.7).
+            compression_ratio: Trigger compression at this fraction of context (default 0.7).
             keep_recent: Always keep last N messages. Default 5.
         """
         self._llm = llm
-        self.threshold = threshold or self.DEFAULT_THRESHOLD
+        self.context_window = context_window
+        self.compression_ratio = compression_ratio
         self.keep_recent = keep_recent or self.KEEP_RECENT
+        self._threshold = int(context_window * compression_ratio)
 
     @property
     def llm(self) -> BaseChatModel:
@@ -54,15 +58,26 @@ class CompressionMiddleware(Middleware):
         """Set the LLM after middleware construction."""
         self._llm = llm
 
-    async def before_agent_start(self, state: ThreadState) -> None:
-        """Compress messages if history is too long."""
-        # Handle both ThreadState and dict (some callers pass dict)
+    async def before_llm(self, state: ThreadState) -> None:
+        """Compress messages if token count exceeds threshold."""
+        # Handle both ThreadState and dict
         if isinstance(state, dict):
             messages = state.get("messages", [])
         else:
             messages = state.messages
 
-        if len(messages) <= self.threshold:
+        # Skip if already compressed this cycle
+        if getattr(state, "__compressed", False):
+            return
+
+        # Count tokens using the LLM's built-in method
+        try:
+            total_tokens = self.llm.get_num_tokens_from_messages(list(messages))
+        except Exception:
+            # Fallback to message count if token counting fails
+            total_tokens = len(messages) * 200  # rough estimate
+
+        if total_tokens <= self._threshold:
             return
 
         # Keep recent messages intact
@@ -82,14 +97,13 @@ class CompressionMiddleware(Middleware):
         summarize_prompt = (
             "Summarize this conversation concisely, preserving key facts, "
             "decisions, and any important context:\n\n"
-            f"{conversation[:8000]}"  # Truncate to avoid LLM limits
+            f"{conversation[:8000]}"
         )
 
         try:
             response = await self.llm.ainvoke([HumanMessage(content=summarize_prompt)])
             summary = response.content if hasattr(response, "content") else str(response)
         except Exception:
-            # If summarization fails, keep original messages
             summary = "[Summary failed - original messages preserved]"
 
         # Replace old messages with summary
@@ -101,5 +115,7 @@ class CompressionMiddleware(Middleware):
 
         if isinstance(state, dict):
             state["messages"] = compressed
+            state["__compressed"] = True
         else:
             state.messages = compressed
+            state.__dict__["__compressed"] = True

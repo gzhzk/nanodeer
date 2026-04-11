@@ -1,9 +1,7 @@
-"""LoopDetectionMiddleware — prevents infinite tool call loops.
+"""LoopDetectionMiddleware — detects repetitive tool call loops.
 
-Detects repetitive tool calls using MD5 hash of (tool_name + sorted args).
-Thread-safe with per-thread locks.
-
-Reference: DeerFlow LoopDetectionMiddleware.
+Sets next_action="end" when hard limit is reached, causing the graph
+to route to END without stripping tool_calls.
 """
 
 import asyncio
@@ -22,14 +20,14 @@ logger = logging.getLogger(__name__)
 
 
 class LoopDetectionMiddleware(Middleware):
-    """Detects and breaks repetitive tool call loops.
+    """Detects and breaks repetitive tool call loops via next_action signal.
 
     Uses a sliding window hash of tool calls (name + args, order-independent).
     Thread-safe with per-thread locks.
 
     Args:
         warn_threshold: Inject warning HumanMessage after N identical calls.
-        hard_limit: Strip tool_calls after M identical calls (forces end).
+        hard_limit: Set next_action="end" after M identical calls.
         window_size: Max tool calls to track per thread.
         max_threads: Max threads before LRU eviction.
     """
@@ -46,7 +44,6 @@ class LoopDetectionMiddleware(Middleware):
         self.window_size = window_size
         self.max_threads = max_threads
 
-        # thread_id -> OrderedDict[hash, count], plus access order tracking
         self._history: dict[str, list[tuple[str, int]]] = {}
         self._locks: dict[str, asyncio.Lock] = {}
 
@@ -56,10 +53,7 @@ class LoopDetectionMiddleware(Middleware):
         return self._locks[thread_id]
 
     def _hash_tool_calls(self, tool_calls: list[dict]) -> str:
-        """Hash tool calls in order-independent way.
-
-        Sorts by (name, sorted_args) so same calls in different order → same hash.
-        """
+        """Hash tool calls in order-independent way."""
         normalized = [
             {"name": tc.get("name", ""), "args": tc.get("args", {})}
             for tc in tool_calls
@@ -72,14 +66,13 @@ class LoopDetectionMiddleware(Middleware):
 
     def _get_history(self, thread_id: str) -> list[tuple[str, int]]:
         if thread_id not in self._history:
-            # LRU: evict oldest if at capacity
             if len(self._history) >= self.max_threads:
                 oldest = next(iter(self._history))
                 del self._history[oldest]
             self._history[thread_id] = []
         return self._history[thread_id]
 
-    async def before_tool_call(
+    async def before_tools(
         self, state: ThreadState, tool_name: str, tool_args: dict
     ) -> None:
         """Check for repetitive tool calls before execution."""
@@ -89,7 +82,6 @@ class LoopDetectionMiddleware(Middleware):
             history = self._get_history(thread_id)
             current_hash = self._hash_tool_calls([{"name": tool_name, "args": tool_args}])
 
-            # Find existing entry
             found_idx = None
             for i, (h, _) in enumerate(history):
                 if h == current_hash:
@@ -97,10 +89,8 @@ class LoopDetectionMiddleware(Middleware):
                     break
 
             if found_idx is None:
-                # New tool call — add to history
                 history.append((current_hash, 1))
             else:
-                # Repeat — increment count
                 old_hash, old_count = history[found_idx]
                 history[found_idx] = (old_hash, old_count + 1)
                 count = old_count + 1
@@ -111,54 +101,24 @@ class LoopDetectionMiddleware(Middleware):
                 )
 
                 if count == self.warn_threshold:
-                    # Inject warning as HumanMessage (not SystemMessage — avoids
-                    # Anthropic "multiple non-consecutive system messages" error)
                     warning = (
                         f"⚠️ Warning: The tool `{tool_name}` has been called "
                         f"{count} times with identical arguments. "
                         f"Consider a different approach or stopping to avoid a loop."
                     )
-                    self._inject_human_message(state, warning)
+                    self._inject_warning(state, warning)
 
                 elif count >= self.hard_limit:
-                    # Hard stop — strip tool_calls from last AI message
-                    self._strip_tool_calls(state)
+                    state.next_action = "end"
                     logger.warning(
-                        f"LoopDetection: hard limit reached, stripped tool_calls "
+                        f"LoopDetection: hard limit reached, setting next_action=end "
                         f"thread={thread_id} tool={tool_name} count={count}"
                     )
 
-            # Trim window to window_size (keep most recent)
             if len(history) > self.window_size:
                 history[:] = history[-self.window_size:]
 
-    def _inject_human_message(self, state: ThreadState, content: str) -> None:
-        """Inject a HumanMessage into the state's messages list."""
+    def _inject_warning(self, state: ThreadState, content: str) -> None:
+        """Inject a HumanMessage warning without blocking execution."""
         if hasattr(state, "messages"):
             state.messages.append(HumanMessage(content=content))
-
-    def _strip_tool_calls(self, state: ThreadState) -> None:
-        """Strip tool_calls from the last AIMessage in state.messages.
-
-        This causes _should_continue to return "end" on next iteration,
-        breaking the tool call loop.
-        """
-        if not hasattr(state, "messages"):
-            return
-
-        for msg in reversed(state.messages):
-            if isinstance(msg, AIMessage) and msg.tool_calls:
-                # Create new AIMessage without tool_calls
-                stripped = AIMessage(
-                    content=msg.content,
-                    tool_calls=[],  # type: ignore
-                    id=msg.id,
-                    name=msg.name,
-                    usage_metadata=getattr(msg, "usage_metadata", None),
-                )
-                # Replace in place
-                for i, m in enumerate(state.messages):
-                    if m is msg:
-                        state.messages[i] = stripped
-                        break
-                break

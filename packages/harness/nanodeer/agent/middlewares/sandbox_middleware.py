@@ -1,16 +1,12 @@
 """SandboxMiddleware - manages container lifecycle and audits bash commands.
 
-Merged from SandboxMiddleware + SandboxAuditMiddleware.
-- before_agent_start: acquire container + register provider in context
-- before_tool_call: audit bash commands for dangerous patterns
-- after_agent_end: release container + clear context
-- on_error: release container (cleanup)
+- before_llm: acquire container once (skip if already acquired)
+- before_tools: audit bash commands for dangerous patterns
+- after_tools_all: atomic release (regardless of tool success/failure)
 """
 import logging
 import re
 import shlex
-
-from langchain_core.messages import AIMessage, HumanMessage
 
 from nanodeer.agent.state import ThreadState
 from nanodeer.config import get_config
@@ -21,7 +17,6 @@ from .base import Middleware
 
 logger = logging.getLogger(__name__)
 
-# Risk-level command patterns (from merged SandboxAuditMiddleware)
 _HIGH_RISK_PATTERNS: list[re.Pattern] = [
     re.compile(r"^\s*>\s*/etc/passwd", re.IGNORECASE),
     re.compile(r"^\s*>\s*/etc/shadow", re.IGNORECASE),
@@ -41,7 +36,7 @@ _HIGH_RISK_PATTERNS: list[re.Pattern] = [
 _MEDIUM_RISK_PATTERNS: list[re.Pattern] = [
     re.compile(r"chmod\s+777\b", re.IGNORECASE),
     re.compile(r"chmod\s+000\b", re.IGNORECASE),
-    re.compile(r"chmod\s+\+w\s+/etc", re.IGNORECASE),
+    re.compile(r"chmod\s+000\b", re.IGNORECASE),
     re.compile(r"\bpip\s+install\b", re.IGNORECASE),
     re.compile(r"\bapt-get\s+install\b", re.IGNORECASE),
     re.compile(r"\bapt\s+install\b", re.IGNORECASE),
@@ -58,10 +53,9 @@ _MEDIUM_RISK_PATTERNS: list[re.Pattern] = [
 class SandboxMiddleware(Middleware):
     """Manages Docker sandbox lifecycle + audits bash commands.
 
-    - before_agent_start: acquire container + register provider
-    - before_tool_call: audit bash commands for dangerous patterns
-    - after_agent_end: release container + clear context
-    - on_error: release container (cleanup)
+    - before_llm: acquire container once (skip if already acquired)
+    - before_tools: audit bash commands for dangerous patterns
+    - after_tools_all: atomic release
     """
 
     def __init__(self, provider: SandboxProvider | None = None):
@@ -72,21 +66,24 @@ class SandboxMiddleware(Middleware):
             network_mode=self.config.sandbox.network_mode,
         )
 
-    async def before_agent_start(self, state: ThreadState) -> None:
-        """Acquire sandbox container before agent starts."""
-        if not state.thread_id:
-            raise ValueError("SandboxMiddleware requires thread_id")
+    async def before_llm(self, state: ThreadState) -> None:
+        """Acquire sandbox container (only once)."""
+        if state.sandbox and state.sandbox.container_id:
+            return  # already acquired
 
-        sandbox = await self.provider.acquire(state.thread_id)
+        if not state.thread_data or not state.thread_data.thread_id:
+            raise ValueError("SandboxMiddleware requires thread_data with thread_id")
 
-        state.sandbox.thread_id = state.thread_id
+        sandbox = await self.provider.acquire(state.thread_data.thread_id)
+
+        state.sandbox.thread_id = state.thread_data.thread_id
         state.sandbox.container_id = sandbox.container_id
         state.sandbox.working_dir = sandbox.working_dir
         state.sandbox.status = "ready"
 
-        set_sandbox_provider(state.thread_id, self.provider)
+        set_sandbox_provider(state.thread_data.thread_id, self.provider)
 
-    async def before_tool_call(
+    async def before_tools(
         self, state: ThreadState, tool_name: str, tool_args: dict
     ) -> None:
         """Audit bash commands for dangerous patterns before execution."""
@@ -98,20 +95,20 @@ class SandboxMiddleware(Middleware):
             return
 
         risk, detail = self._classify(command)
-        thread_id = getattr(state, "thread_id", None) or "default"
 
         if risk == "HIGH":
             logger.warning(
-                f"SandboxMiddleware: HIGH_RISK blocked thread={thread_id} "
-                f"command={command[:80]!r}"
+                f"SandboxMiddleware: HIGH_RISK blocked command={command[:80]!r}"
             )
-            self._inject_error(state, command, detail)
+            state.next_action = "end"
         elif risk == "MEDIUM":
             logger.warning(
-                f"SandboxMiddleware: MEDIUM_RISK warning thread={thread_id} "
-                f"command={command[:80]!r}"
+                f"SandboxMiddleware: MEDIUM_RISK warning command={command[:80]!r}"
             )
-            self._inject_warning(state, command, detail)
+
+    async def after_tools_all(self, state: ThreadState) -> None:
+        """Atomic release after all tools finish."""
+        await self._release_if_needed(state)
 
     def _classify(self, command: str) -> tuple[str, str]:
         """Classify bash command risk level. Returns (HIGH|MEDIUM|LOW, detail)."""
@@ -130,58 +127,6 @@ class SandboxMiddleware(Middleware):
 
         return "LOW", ""
 
-    def _inject_error(self, state: ThreadState, command: str, detail: str) -> None:
-        """Inject error and strip tool_calls to prevent execution."""
-        error_msg = (
-            f"🚫 Command blocked by security policy:\n"
-            f"  Pattern: {detail}\n"
-            f"  Command: {command[:200]}\n"
-            f"  If you believe this is a false positive, contact your administrator."
-        )
-        self._inject_message(state, error_msg, is_error=True)
-
-    def _inject_warning(self, state: ThreadState, command: str, detail: str) -> None:
-        """Inject warning but allow execution to continue."""
-        warning = (
-            f"⚠️ Warning: medium-risk command detected.\n"
-            f"  Pattern: {detail}\n"
-            f"  Command: {command[:200]}\n"
-            f"  This command will be executed but may have side effects."
-        )
-        self._inject_message(state, warning, is_error=False)
-
-    def _inject_message(
-        self, state: ThreadState, content: str, *, is_error: bool
-    ) -> None:
-        """Inject HumanMessage and strip tool_calls from last AIMessage."""
-        if not hasattr(state, "messages"):
-            return
-
-        state.messages.append(HumanMessage(content=content))
-
-        for msg in reversed(state.messages):
-            if isinstance(msg, AIMessage) and msg.tool_calls:
-                stripped = AIMessage(
-                    content=msg.content,
-                    tool_calls=[],  # type: ignore
-                    id=msg.id,
-                    name=msg.name,
-                    usage_metadata=getattr(msg, "usage_metadata", None),
-                )
-                for i, m in enumerate(state.messages):
-                    if m is msg:
-                        state.messages[i] = stripped
-                        break
-                break
-
-    async def after_agent_end(self, state: ThreadState) -> None:
-        """Release sandbox container after agent finishes."""
-        await self._release_if_needed(state)
-
-    async def on_error(self, state: ThreadState, error: Exception) -> None:
-        """Release sandbox on error (cleanup)."""
-        await self._release_if_needed(state)
-
     async def _release_if_needed(self, state: ThreadState) -> None:
         """Release sandbox if acquired."""
         if not state.sandbox or not state.sandbox.container_id:
@@ -192,6 +137,6 @@ class SandboxMiddleware(Middleware):
             await self.provider.release(state.sandbox)
             state.sandbox.status = "released"
         except Exception:
-            pass  # best effort
+            pass
         finally:
             clear_sandbox_provider(thread_id)
