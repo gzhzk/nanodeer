@@ -1,76 +1,65 @@
-"""Agent state definitions."""
+"""Agent state — single source of truth flowing through the LangGraph."""
 
-from enum import Enum
-from typing import Annotated, Literal
+from typing import Annotated, Any
 
 from langchain_core.messages import BaseMessage
 from langgraph.graph import add_messages
 from pydantic import BaseModel, Field
 
-from ..container import SandboxInfo
+
+def merge_todos(existing: list | None, new: list | None) -> list | None:
+    """Reducer for todos — appends new items, avoids None overwrite."""
+    if existing is None:
+        return new or None
+    if new is None:
+        return existing
+    return existing + new
 
 
-class AgentMode(Enum):
-    """Agent execution modes.
-
-    Note: These are kept for state compatibility but mode routing
-    is no longer used — the model decides tool usage autonomously.
-    """
-    DIRECT = "direct"
-    REACT = "react"
-    PLAN_EXECUTE = "plan"
+def merge_artifacts(existing: list[str] | None, new: list[str] | None) -> list[str]:
+    """Reducer for artifacts — merges and deduplicates while preserving order."""
+    if existing is None:
+        return new or []
+    if new is None:
+        return existing
+    return list(dict.fromkeys(existing + new))
 
 
-def merge_todos(left, right):
-    """Right wins - latest todo list is authoritative."""
-    return right if right is not None else (left or [])
+class SandboxState(BaseModel):
+    """Sandbox container reference — lifecycle managed outside the graph."""
+    thread_id: str | None = None
+    container_id: str | None = None
+    working_dir: str | None = None
+    status: str | None = None
 
 
-def merge_memory_context(left, right):
-    """Right wins - latest memory context wins."""
-    return right if right is not None else left
-
-
-def merge_artifacts(left, right):
-    """Merge with deduplication (first-occurrence order)."""
-    if left is None:
-        return right or []
-    if right is None:
-        return left
-    return list(dict.fromkeys(left + right))
-
-
-def merge_phase(left, right):
-    """Forward only: planning → executing."""
-    return right if right is not None else (left or "executing")
+class ThreadDataState(BaseModel):
+    """Per-thread directory structure on host machine."""
+    workspace_path: str | None = None
+    uploads_path: str | None = None
+    outputs_path: str | None = None
 
 
 class ThreadState(BaseModel):
-    """Agent state flowing through LangGraph.
+    """Single source of truth flowing through the LangGraph.
 
     Fields:
-        messages: Conversation history (input/output), [HumanMsg, AIMsg, ToolMsg...].
-        artifacts: Tool execution artifact identifiers (plain strings, following DeerFlow).
-        sandbox: Sandbox execution context (thread_id, container_id, status, working_dir).
-        uploaded_files: User uploaded file paths.
-        thread_id: Thread unique identifier.
-        needs_clarification: Whether agent needs user clarification.
-        pending_subagent_tasks: IDs of pending subagent tasks.
-        memory_context: Injected memory context from long-term storage.
-        todos: Plan mode task tracking list.
-        mode: Execution mode (Direct/ReAct/PlanExecute).
-        phase: Plan mode phase transition (planning → executing).
-        subagent_results: Subagent execution results.
+        messages     — conversation history (LangGraph add_messages reducer)
+        sandbox      — sandbox container reference (not the container itself)
+        thread_data  — per-thread directory paths
+        title        — conversation title
+        todos        — task list (append reducer)
+        artifacts    — generated artifact paths (dedup merge reducer)
+        next_action  — control signal ("process" | "wait_for_clarification" | "end")
+        thread_id    — thread identifier
+        metadata     — middleware blackboard (memory_context, uploaded_files, etc.)
     """
     messages: Annotated[list[BaseMessage], add_messages] = Field(default_factory=list)
+    sandbox: SandboxState | None = None
+    thread_data: ThreadDataState | None = None
+    title: str | None = None
+    todos: Annotated[list | None, merge_todos] = Field(default=None)
     artifacts: Annotated[list[str], merge_artifacts] = Field(default_factory=list)
-    sandbox: SandboxInfo = Field(default_factory=lambda: SandboxInfo(thread_id=""))
-    uploaded_files: list[dict] = Field(default_factory=list)
-    thread_id: str | None = Field(default=None)
-    needs_clarification: bool = Field(default=False)
-    pending_subagent_tasks: list[str] = Field(default_factory=list)
-    memory_context: Annotated[str | None, merge_memory_context] = Field(default=None)
-    todos: Annotated[list[dict], merge_todos] = Field(default_factory=list)
-    mode: AgentMode = Field(default=AgentMode.REACT)
-    phase: Annotated[Literal["planning", "executing"], merge_phase] = Field(default="executing")
-    subagent_results: list[dict] = Field(default_factory=list)
+    next_action: str = "process"
+    thread_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
