@@ -1,4 +1,4 @@
-from .agent import ThreadState, SandboxState, ThreadDataState
+from .agent import ThreadState, SandboxState
 from .agent.builder import AgentBuilder
 from .agent.factory import create_nanodeer_agent, RuntimeFeatures, NanoDeerFactory
 from .config import get_config, HarnessConfig
@@ -12,7 +12,6 @@ __all__ = [
     "AgentBuilder",
     "ThreadState",
     "SandboxState",
-    "ThreadDataState",
     "get_config",
     "HarnessConfig",
     "NanoEngine",

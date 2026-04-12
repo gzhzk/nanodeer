@@ -96,12 +96,12 @@ class AgentsConfig(Base):
 class SandboxConfig(Base):
     """Sandbox configuration."""
 
-    use: str = "nanodeer.container.docker:DockerSandboxProvider"
-    image: str = "enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:latest"
+    use: str = "nanodeer.sandbox.docker:DockerSandboxProvider"
+    image: str = "nanodeer/sandbox:latest"
     replicas: int = 3
     container_prefix: str = "nanodeer-sandbox"
     port: int = 8080
-    network_mode: str = "bridge"  # "bridge"=有网络(默认), "none"=无网络, "host"=宿主机网络
+    network_mode: str = "none"  # "none"=无网络(安全), "bridge"=有网络, "host"=宿主机网络
 
 
 class SubagentsConfig(Base):
