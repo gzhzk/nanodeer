@@ -1,4 +1,8 @@
-"""File search tools inside sandbox."""
+"""File search tools inside sandbox.
+
+Execution is handled by SandboxToolWrapper (glob → GlobSandboxTool,
+grep → GrepSandboxTool).
+"""
 
 from langchain_core.tools import tool
 
@@ -14,15 +18,6 @@ def glob(file_path: str, pattern: str) -> str:
     Returns:
         Matching file paths, one per line.
     """
-    import subprocess
-    result = subprocess.run(
-        ["find", file_path, "-name", pattern],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        return f"Error: {result.stderr}"
-    return result.stdout if result.stdout else "(no matches)"
 
 
 @tool
@@ -37,21 +32,3 @@ def grep(file_path: str, pattern: str, recursive: bool = True) -> str:
     Returns:
         Matching lines with file:line:content format.
     """
-    import subprocess
-    args = ["grep"]
-    if recursive:
-        args.extend(["-r", "-n"])
-    else:
-        args.append("-n")
-    args.extend([pattern, file_path])
-
-    result = subprocess.run(
-        args,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode == 1:
-        return "(no matches)"
-    if result.returncode != 0:
-        return f"Error: {result.stderr}"
-    return result.stdout

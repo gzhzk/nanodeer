@@ -1,8 +1,4 @@
-"""Memory-related tools for NanoDeer.
-
-save_memory is intercepted by MemoryMiddleware for persistence.
-load_memory reads directly from MemoryStore.
-"""
+"""Memory tools - direct MemoryStore integration."""
 
 from langchain_core.tools import tool
 
@@ -19,9 +15,6 @@ def save_memory(content: str, category: str = "general", project: str | None = N
     - Important decisions and patterns
     - Technical constraints or requirements
 
-    NOTE: This tool is intercepted by MemoryMiddleware.after_tool_call
-    which handles the actual persistence.
-
     Args:
         content: The information to remember.
         category: Category for the memory. Options:
@@ -33,11 +26,12 @@ def save_memory(content: str, category: str = "general", project: str | None = N
     Returns:
         Success message with memory details.
     """
-    project_note = f" in project `{project}`" if project else ""
-    return (
-        f"Memory saved ({category}){project_note}.\n"
-        f"Content: {content[:80]}{'...' if len(content) > 80 else ''}"
-    )
+    store = MemoryStore()
+    if project:
+        store.save_project_memory(project, content)
+        return f"Memory saved (project={project}): {content[:80]}{'...' if len(content) > 80 else ''}"
+    store.save_memory(content)
+    return f"Memory saved ({category}): {content[:80]}{'...' if len(content) > 80 else ''}"
 
 
 @tool
@@ -45,18 +39,13 @@ def load_memory(project: str | None = None) -> str:
     """Load memories from the memory system.
 
     Args:
-        project: Project slug to load. Defaults to None (load L3 only).
+        project: Project slug to load. Defaults to None (load L3 + recent episodic).
 
     Returns:
         Formatted memory content, or "(no memory)" if empty.
     """
     store = MemoryStore()
-
     if project:
-        combined = store.load_project_memory(project)
-        if not combined:
-            return f"(no memory for project `{project}`)"
-        return combined
-
-    # Load L3 + recent episodic
-    return store.load()
+        result = store.load_project_memory(project)
+        return result or f"(no memory for project `{project}`)"
+    return store.load() or "(no memory)"

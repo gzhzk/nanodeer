@@ -1,4 +1,7 @@
-"""Directory listing tool."""
+"""Directory listing tool inside sandbox.
+
+Execution is handled by SandboxToolWrapper (ls → LsSandboxTool).
+"""
 
 from langchain_core.tools import tool
 
@@ -13,12 +16,3 @@ def ls(file_path: str) -> str:
     Returns:
         Directory listing (ls -la format).
     """
-    import subprocess
-    result = subprocess.run(
-        ["ls", "-la", file_path],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        return f"Error: {result.stderr}"
-    return result.stdout
