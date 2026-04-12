@@ -15,10 +15,10 @@ class DockerSandboxProvider(SandboxProvider):
 
     def __init__(
         self,
-        image: str = "enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:latest",
+        image: str = "nanodeer/sandbox:latest",
         container_prefix: str = "nanodeer-sandbox",
         base_url: str | None = None,
-        network_mode: str = "bridge",
+        network_mode: str = "none",
     ):
         """Initialize Docker provider.
 
@@ -50,11 +50,31 @@ class DockerSandboxProvider(SandboxProvider):
         return self._client
 
     async def acquire(self, thread_id: str) -> Sandbox:
-        """Create ephemeral container for thread."""
+        """Create ephemeral container for thread (reuses existing if already running)."""
         container_name = f"{self.container_prefix}-{thread_id}"
         working_dir = f"/workspace/{thread_id}"
 
         loop = asyncio.get_event_loop()
+
+        # Check if container already exists and is running
+        def _get_existing():
+            try:
+                c = self.client.containers.get(container_name)
+                if c.status == "running":
+                    return c
+                c.remove(force=True)
+            except docker.errors.NotFound:
+                pass
+            return None
+
+        existing = await loop.run_in_executor(None, _get_existing)
+        if existing:
+            return Sandbox(
+                thread_id=thread_id,
+                container_id=existing.id,
+                working_dir=working_dir,
+            )
+
         await loop.run_in_executor(None, self._pull_image)
 
         # Security: read_only rootfs, tmpfs for /tmp; network_mode configurable

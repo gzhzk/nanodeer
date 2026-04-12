@@ -1,21 +1,25 @@
 # NanoDeer Sandbox Image
 # Minimal, ephemeral container for AI Agent tool execution.
-# Network is enabled by default; control via network_mode in config.
+# Security: read-only rootfs, no network, tmpfs for /tmp (configured at runtime)
 
-FROM ubuntu:24.04
+FROM python:3.11-slim
 
 LABEL maintainer="NanoDeer"
 LABEL description="NanoDeer AI Agent Sandbox - Ephemeral execution environment"
-LABEL version="1.2"
+LABEL version="1.3"
 
-# Install essential tools + Python data/web/scrape libs + code quality tools
+# Install essential system tools
 RUN apt-get update && apt-get install -y \
-    python3 python3-pip git jq curl bash vim \
+    git \
+    jq \
+    curl \
+    bash \
+    findutils \
+    coreutils \
     && rm -rf /var/lib/apt/lists/*
 
-# Python packages for data analysis, web scraping, and code quality
-RUN pip3 install --no-cache-dir --break-system-packages \
-    -i https://pypi.tuna.tsinghua.edu.cn/simple \
+# Install Python libraries for data analysis, web scraping, and code quality
+RUN pip install --no-cache-dir --break-system-packages \
     numpy \
     pandas \
     openpyxl \
@@ -27,8 +31,7 @@ RUN pip3 install --no-cache-dir --break-system-packages \
     pylint \
     black \
     mypy \
-    isort \
-    && rm -rf /var/lib/cache/*
+    isort
 
 WORKDIR /workspace
 

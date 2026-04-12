@@ -5,7 +5,7 @@
 ## 特性
 
 - **Ephemeral（临时）**: 容器销毁后无持久化数据，不留痕迹
-- **Minimal（精简）**: 仅包含必要工具，镜像体积小
+- **Minimal（精简）**: 仅包含必要工具，镜像体积小（~200MB）
 - **Secure（安全）**: 只读根文件系统，无网络访问，用户隔离
 
 ## 包含工具
@@ -14,10 +14,10 @@
 |------|------|
 | Shell | bash, coreutils |
 | 文件 | findutils, grep, sed, awk |
-| 网络 | iputils-ping |
+| 网络 | curl, iputils-ping |
 | 文本 | jq |
 | 版本 | git |
-| 归档 | unzip |
+| Python | numpy, pandas, openpyxl, xlrd, matplotlib, beautifulsoup4, requests, lxml, pylint, black, mypy, isort |
 
 ## 目录结构
 
@@ -69,7 +69,7 @@ docker run --rm nanodeer/sandbox:latest echo "hello from sandbox"
 
 ### 安全配置
 
-默认安全配置：
+默认安全配置（由 DockerSandboxProvider 运行时应用）：
 
 - `network_mode: none` - 无网络访问
 - `read_only: true` - 根文件系统只读

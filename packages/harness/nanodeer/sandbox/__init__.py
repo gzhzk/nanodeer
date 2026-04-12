@@ -1,0 +1,55 @@
+"""Sandbox isolation layer - containerized execution for Agent tools.
+
+Each thread gets its own sandbox (Docker container).
+"""
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+
+from ..agent.state import SandboxState
+
+
+@dataclass
+class RunResult:
+    stdout: str
+    stderr: str
+    returncode: int
+
+
+@dataclass
+class Sandbox:
+    thread_id: str
+    container_id: str
+    working_dir: str
+
+
+@dataclass
+class SandboxCommand:
+    cmd: str
+    timeout: int = 30
+
+
+class SandboxProvider(ABC):
+    @abstractmethod
+    async def acquire(self, thread_id: str) -> Sandbox: ...
+
+    @abstractmethod
+    async def release(self, sandbox: Sandbox) -> None: ...
+
+    @abstractmethod
+    async def run(self, sandbox: Sandbox, command: str) -> RunResult: ...
+
+
+# Module-level context (can't serialize Sandbox into ThreadState)
+_sandbox_context: dict[str, Sandbox] = {}
+
+
+def set_sandbox(thread_id: str, sandbox: Sandbox) -> None:
+    _sandbox_context[thread_id] = sandbox
+
+
+def get_sandbox(thread_id: str) -> Sandbox | None:
+    return _sandbox_context.get(thread_id)
+
+
+def clear_sandbox(thread_id: str) -> None:
+    _sandbox_context.pop(thread_id, None)
