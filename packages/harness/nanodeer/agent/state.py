@@ -1,5 +1,6 @@
 """Agent state — single source of truth flowing through the LangGraph."""
 
+from enum import Enum
 from typing import Annotated, Any
 
 from langchain_core.messages import BaseMessage
@@ -7,13 +8,24 @@ from langgraph.graph import add_messages
 from pydantic import BaseModel, Field
 
 
-def merge_todos(existing: list | None, new: list | None) -> list | None:
-    """Reducer for todos — appends new items, avoids None overwrite."""
-    if existing is None:
-        return new or None
-    if new is None:
+class NextAction(str, Enum):
+    """Control signals for LangGraph routing."""
+    PROCESS = "process"
+    WAIT_FOR_CLARIFICATION = "wait_for_clarification"
+    END = "end"
+
+
+def merge_todos(existing: list[dict] | None, new: list[dict] | None) -> list[dict]:
+    """Update or append todos: same id overwrites, otherwise appends."""
+    if not existing:
+        return new or []
+    if not new:
         return existing
-    return existing + new
+
+    result = {item["id"]: item for item in existing}
+    for item in new:
+        result[item["id"]] = item  # same id overwrites
+    return list(result.values())
 
 
 def merge_artifacts(existing: list[str] | None, new: list[str] | None) -> list[str]:
@@ -33,33 +45,24 @@ class SandboxState(BaseModel):
     status: str | None = None
 
 
-class ThreadDataState(BaseModel):
-    """Per-thread directory structure on host machine."""
-    workspace_path: str | None = None
-    uploads_path: str | None = None
-    outputs_path: str | None = None
-
-
 class ThreadState(BaseModel):
     """Single source of truth flowing through the LangGraph.
 
     Fields:
         messages     — conversation history (LangGraph add_messages reducer)
-        sandbox      — sandbox container reference (not the container itself)
-        thread_data  — per-thread directory paths
+        sandbox      — sandbox container reference
         title        — conversation title
-        todos        — task list (append reducer)
+        todos        — task list (id-based merge reducer)
         artifacts    — generated artifact paths (dedup merge reducer)
-        next_action  — control signal ("process" | "wait_for_clarification" | "end")
+        next_action  — control signal (NextAction enum)
         thread_id    — thread identifier
-        metadata     — middleware blackboard (memory_context, uploaded_files, etc.)
+        metadata     — middleware blackboard (paths, memory_context, uploaded_files, etc.)
     """
     messages: Annotated[list[BaseMessage], add_messages] = Field(default_factory=list)
     sandbox: SandboxState | None = None
-    thread_data: ThreadDataState | None = None
     title: str | None = None
-    todos: Annotated[list | None, merge_todos] = Field(default=None)
+    todos: Annotated[list[dict], merge_todos] = Field(default_factory=list)
     artifacts: Annotated[list[str], merge_artifacts] = Field(default_factory=list)
-    next_action: str = "process"
+    next_action: NextAction = NextAction.PROCESS
     thread_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)

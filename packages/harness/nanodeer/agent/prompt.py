@@ -14,8 +14,6 @@ LEAD_AGENT_PROMPT = """<role>
 You are {agent_name}, a lightweight AI super agent built with NanoDeer.
 </role>
 
-{subagent_section}
-
 <tools>
 {tools_section}
 </tools>
@@ -29,6 +27,7 @@ You are {agent_name}, a lightweight AI super agent built with NanoDeer.
 **Command Security:**
 - NEVER: rm -rf /, mkfs, dd, curl | bash, wget | bash
 - Destructive commands require user confirmation
+- Container is isolated — network access is restricted
 </safety_rules>
 
 <working_directory>
@@ -42,11 +41,13 @@ You are {agent_name}, a lightweight AI super agent built with NanoDeer.
 - Same language as user
 </response_style>
 
+{skills_section}
+
 {memory_section}
 
-{todos_section}
+{plan_section}
 
-{subagent_results_section}
+{subagent_section}
 
 <critical_reminders>
 - **Clarification First**: ALWAYS clarify unclear/missing/ambiguous requirements BEFORE starting work
@@ -59,25 +60,26 @@ You are {agent_name}, a lightweight AI super agent built with NanoDeer.
 
 
 _TOOL_DESCRIPTIONS = {
-    "ReadFile": "Read file contents. Args: file_path (str)",
-    "WriteFile": "Write content to file. Args: file_path (str), content (str)",
-    "Ls": "List directory contents. Args: file_path (str)",
-    "Glob": "Find files matching pattern. Args: file_path (str), pattern (str)",
-    "Grep": "Search for pattern in files. Args: file_path (str), pattern (str), recursive (bool)",
-    "Bash": "Execute shell command. Args: command (str), timeout (int, optional)",
-    "FetchUrl": "Fetch and parse web page. Args: url (str), timeout (int, optional)",
-    "WebSearch": "Search the web via DuckDuckGo. Args: query (str), num_results (int, optional)",
-    "ReadImage": "Describe an image. Args: image_path (str), description_request (str, optional)",
-    "ExecPython": "Execute Python code. Args: code (str), timeout (int, optional)",
-    "InvokeSkill": "Load a skill workflow. Args: skill_name (str)",
-    "SaveMemory": "Save information to memory. Args: content (str)",
-    "LoadMemory": "Load memory context. Args: query (str)",
-    "WriteTodo": "Create a task. Args: content (str), priority (int, optional)",
-    "ListTodos": "List all tasks. No args.",
-    "CompleteTodo": "Mark task done. Args: todo_id (str)",
-    "SpawnSubagent": "Create parallel subagent. Args: name (str), task (str)",
-    "GetSubagentResults": "Get subagent results. No args.",
-    "AskClarification": "Ask user for clarification. Args: question (str)",
+    "read_file": "Read file contents. Args: file_path (str)",
+    "write_file": "Write content to file. Args: file_path (str), content (str)",
+    "ls": "List directory contents. Args: file_path (str)",
+    "glob": "Find files matching pattern. Args: file_path (str), pattern (str)",
+    "grep": "Search for pattern in files. Args: file_path (str), pattern (str), recursive (bool)",
+    "bash": "Execute shell command. Args: command (str), timeout (int, optional)",
+    "git": "Git operations: status, diff, log, add, commit, push, pull, branch, checkout, clone",
+    "fetch_url": "Fetch and parse web page. Args: url (str), timeout (int, optional)",
+    "web_search": "Search the web via DuckDuckGo. Args: query (str), num_results (int, optional)",
+    "read_image": "Describe an image. Args: image_path (str), description_request (str, optional)",
+    "exec_python": "Execute Python code. Args: code (str), timeout (int, optional)",
+    "invoke_skill": "Load a skill workflow. Args: skill_name (str)",
+    "save_memory": "Save information to memory. Args: content (str)",
+    "load_memory": "Load memory context. Args: query (str)",
+    "write_todo": "Create a task. Args: content (str), priority (int, optional)",
+    "list_todos": "List all tasks. No args.",
+    "complete_todo": "Mark task done. Args: todo_id (str)",
+    "spawn_subagent": "Create parallel subagent. Args: name (str), task (str)",
+    "get_subagent_results": "Get subagent results. No args.",
+    "ask_clarification": "Ask user for clarification. Args: question (str)",
 }
 
 
@@ -97,24 +99,29 @@ def _format_todos(todos: list | None) -> str:
             content = todo.get("content", "")
             checkbox = "[x]" if status == "completed" else "[>]" if status == "in_progress" else "[ ]"
             lines.append(f"{checkbox} {content}")
-    return "<todos>\n" + "\n".join(lines) + "\n</todos>"
+    return "<plan>\n" + "\n".join(lines) + "\n</plan>"
 
 
-def _format_subagent_results(artifacts: list) -> str:
-    if not artifacts:
-        return ""
-    results = [a for a in artifacts if isinstance(a, dict) and a.get("type") == "subagent"]
-    if not results:
-        return ""
-    lines = ["<subagent_results>"]
-    for r in results:
-        lines.append(f"## {r.get('name', 'subagent')} ({r.get('status', 'unknown')})")
-        lines.append(f"Output: {r.get('output', '')}")
-        if r.get("error"):
-            lines.append(f"Error: {r.get('error')}")
-        lines.append("")
-    lines.append("</subagent_results>")
-    return "\n".join(lines)
+_SUBAGENT_USAGE = """<subagent_usage>
+When you spawn subagents:
+1. Call spawn_subagent with name and task description
+2. Call get_subagent_results to collect outputs (results include status, output, duration)
+3. Subagents run in parallel (max 3 concurrent), each with 15min timeout
+Example:
+  spawn_subagent(name="researcher", task="Research topic X")
+  get_subagent_results() → returns formatted results per subagent
+</subagent_usage>
+"""
+
+
+_SKILLS_USAGE = """<skills>
+NanoDeer supports modular skill workflows stored as Markdown files.
+Use invoke_skill(skill_name) to load a skill, which returns its workflow prompt and metadata.
+Skills can encapsulate multi-step processes, specialized tools, or domain expertise.
+Example:
+  invoke_skill(skill_name="code-review") → returns skill workflow to execute
+</skills>
+"""
 
 
 def build_lead_agent_prompt(state: "ThreadState", tools: list[str] | None = None) -> str:
@@ -123,10 +130,9 @@ def build_lead_agent_prompt(state: "ThreadState", tools: list[str] | None = None
     Existence-based rendering: sections are only rendered when data is present
     in state.metadata["memory_context"].
     """
-    td = state.thread_data
-    virtual_uploads = td.uploads_path if td else "/mnt/user-data/uploads"
-    virtual_workspace = td.workspace_path if td else "/mnt/user-data/workspace"
-    virtual_outputs = td.outputs_path if td else "/mnt/user-data/outputs"
+    virtual_uploads = state.metadata.get("uploads_path", "/mnt/user-data/uploads")
+    virtual_workspace = state.metadata.get("workspace_path", "/mnt/user-data/workspace")
+    virtual_outputs = state.metadata.get("outputs_path", "/mnt/user-data/outputs")
 
     # Existence-based memory section rendering
     memory_context = state.metadata.get("memory_context", "") if state.metadata else ""
@@ -137,13 +143,13 @@ def build_lead_agent_prompt(state: "ThreadState", tools: list[str] | None = None
 
     return LEAD_AGENT_PROMPT.format(
         agent_name="NanoDeer",
-        subagent_section="",
         tools_section=_tools_section(tools or []),
         virtual_uploads=virtual_uploads,
         virtual_workspace=virtual_workspace,
         virtual_outputs=virtual_outputs,
+        skills_section=_SKILLS_USAGE,
         memory_section=memory_section,
-        todos_section=_format_todos(state.todos),
-        subagent_results_section=_format_subagent_results(state.artifacts or []),
+        plan_section=_format_todos(state.todos),
+        subagent_section=_SUBAGENT_USAGE,
         date=date.today().isoformat(),
     )

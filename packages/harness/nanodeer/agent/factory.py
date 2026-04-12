@@ -1,6 +1,6 @@
 """NanoDeerFactory — assembles AgentBuilder with feature-gated MiddlewareChain."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -14,31 +14,28 @@ __all__ = ["RuntimeFeatures", "NanoDeerFactory", "create_nanodeer_agent"]
 @dataclass
 class RuntimeFeatures:
     """Feature gates for NanoDeer agent assembly."""
-    sandbox: bool = True
-    memory: bool = True
-    loop_detection: bool = True
-    compression: bool = True
-    security: bool = True
     uploads: bool = True
+    compression: bool = True
+    sandbox: bool = True
+    security: bool = True
+    loop_detection: bool = True
     clarification: bool = True
-    subagent: bool = True
-    context_window: int = 204800    # Minimax Context Window Length
+    context_window: int = 204800
     compression_ratio: float = 0.7
+    compression_keep_recent: int = 5
+    loop_warn_threshold: int = 3
+    loop_hard_limit: int = 5
 
 
 class NanoDeerFactory:
-    """Factory for assembling NanoDeer agent.
-
-    Assemble the MiddlewareChain based on RuntimeFeatures and return a clean AgentBuilder.
-    """
+    """Assembles NanoDeer agent with MiddlewareChain and Modules."""
 
     def __init__(self, features: RuntimeFeatures):
         self.features = features
 
     def _create_sandbox_provider(self):
-        from ..container.docker import DockerSandboxProvider
-        from ..container.local import LocalSandboxProvider
-
+        from ..sandbox.docker import DockerSandboxProvider
+        from ..sandbox.local import LocalSandboxProvider
         try:
             import docker
             docker.client.from_env().ping()
@@ -46,34 +43,24 @@ class NanoDeerFactory:
         except Exception:
             return LocalSandboxProvider()
 
-    def _assemble_before_llm(self) -> list:
+    def _assemble_before_llm(self, sandbox_provider=None):
         from .middlewares.thread_data_middleware import ThreadDataMiddleware
-        from .middlewares.sandbox_middleware import SandboxMiddleware
         from .middlewares.uploads_middleware import UploadsMiddleware
-        from .middlewares.memory_middleware import MemoryMiddleware
         from .middlewares.compression_middleware import CompressionMiddleware
-        from .middlewares.loop_detection_middleware import LoopDetectionMiddleware
-        from .memory.storage import MemoryStore
 
-        mw = []
-        mw.append(ThreadDataMiddleware())
-        if self.features.sandbox:
-            mw.append(SandboxMiddleware(provider=self._create_sandbox_provider()))
+        mw = [ThreadDataMiddleware()]
         if self.features.uploads:
             mw.append(UploadsMiddleware())
-        if self.features.memory:
-            mw.append(MemoryMiddleware(memory_store=MemoryStore(), auto_extract=False))
         if self.features.compression:
             mw.append(CompressionMiddleware(
                 llm=None,
                 context_window=self.features.context_window,
                 compression_ratio=self.features.compression_ratio,
+                keep_recent=self.features.compression_keep_recent,
             ))
-        if self.features.loop_detection:
-            mw.append(LoopDetectionMiddleware())
         return mw
 
-    def _assemble_after_llm(self) -> list:
+    def _assemble_after_llm(self):
         from .middlewares.clarification_middleware import ClarificationMiddleware
         from .middlewares.title_middleware import TitleMiddleware
 
@@ -83,56 +70,61 @@ class NanoDeerFactory:
         mw.append(TitleMiddleware(llm=None))
         return mw
 
-    def _get_subagent_middleware(self):
-        """Create or reuse SubagentMiddleware instance for this factory."""
-        if not hasattr(self, "_subagent_mw"):
-            from .middlewares.subagent_middleware import SubagentMiddleware
-            self._subagent_mw = SubagentMiddleware(llm=None)
-        return self._subagent_mw
-
-    def _assemble_before_tools(self) -> list:
+    def _assemble_before_tools(self, sandbox_provider=None):
         from .middlewares.sandbox_middleware import SandboxMiddleware
         from .middlewares.security_middleware import SecurityMiddleware
+        from .middlewares.loop_detection_middleware import LoopDetectionMiddleware
 
         mw = []
-        if self.features.sandbox:
-            mw.append(SandboxMiddleware(provider=self._create_sandbox_provider()))
         if self.features.security:
             mw.append(SecurityMiddleware())
-        if self.features.subagent:
-            mw.append(self._get_subagent_middleware())
+        if self.features.sandbox and sandbox_provider:
+            mw.append(SandboxMiddleware(provider=sandbox_provider))
+        if self.features.loop_detection:
+            mw.append(LoopDetectionMiddleware(
+                warn_threshold=self.features.loop_warn_threshold,
+                hard_limit=self.features.loop_hard_limit,
+            ))
         return mw
 
-    def _assemble_after_tools(self) -> list:
-        from .middlewares.memory_middleware import MemoryMiddleware
-        from .memory.storage import MemoryStore
-
-        mw = []
-        if self.features.memory:
-            mw.append(MemoryMiddleware(memory_store=MemoryStore(), auto_extract=False))
-        if self.features.subagent:
-            mw.append(self._get_subagent_middleware())
-        return mw
-
-    def _assemble_after_tools_all(self) -> list:
+    def _assemble_after_tools_all(self, sandbox_provider=None):
         from .middlewares.sandbox_middleware import SandboxMiddleware
-
-        if self.features.sandbox:
-            return [SandboxMiddleware(provider=self._create_sandbox_provider())]
+        if self.features.sandbox and sandbox_provider:
+            return [SandboxMiddleware(provider=sandbox_provider)]
         return []
 
-    def build(self, llm: "BaseChatModel", tools: list["BaseTool"]) -> "CompiledStateGraph":
+    def build(
+        self,
+        llm: "BaseChatModel",
+        tools: list["BaseTool"],
+        *,
+        memory_store=None,
+        subagent_runner=None,
+        plan_loader=None,
+    ):
         from .middlewares import MiddlewareChain
         from .builder import AgentBuilder
 
+        sandbox_provider = self._create_sandbox_provider() if self.features.sandbox else None
+
         chain = MiddlewareChain(
-            before_llm=self._assemble_before_llm(),
+            before_llm=self._assemble_before_llm(sandbox_provider),
             after_llm=self._assemble_after_llm(),
-            before_tools=self._assemble_before_tools(),
-            after_tools=self._assemble_after_tools(),
-            after_tools_all=self._assemble_after_tools_all(),
+            before_tools=self._assemble_before_tools(sandbox_provider),
+            after_tools_all=self._assemble_after_tools_all(sandbox_provider),
         )
-        builder = AgentBuilder(llm=llm, tools=tools, chain=chain)
+        builder = AgentBuilder(
+            llm=llm,
+            tools=tools,
+            chain=chain,
+            sandbox_provider=sandbox_provider,
+            memory_store=memory_store,
+            plan_loader=plan_loader,
+        )
+        if subagent_runner and hasattr(subagent_runner, "set_llm"):
+            subagent_runner.set_llm(llm)
+            from ..subagents import set_runner
+            set_runner(subagent_runner)
         return builder.build()
 
 
@@ -142,9 +134,7 @@ def create_nanodeer_agent(
     *,
     features: RuntimeFeatures | None = None,
 ) -> "CompiledStateGraph":
-    """Create NanoDeer agent with default tools."""
     from .tools import default_tools
-
     feat = features or RuntimeFeatures()
     effective_tools = tools or default_tools()
     return NanoDeerFactory(feat).build(model, effective_tools)
