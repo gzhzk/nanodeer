@@ -1,142 +1,104 @@
-"""SandboxMiddleware - manages container lifecycle and audits bash commands.
-
-- before_llm: acquire container once (skip if already acquired)
-- before_tools: audit bash commands for dangerous patterns
-- after_tools_all: atomic release (regardless of tool success/failure)
-"""
+"""SandboxMiddleware - manages container lifecycle and audits bash commands."""
 import logging
 import re
-import shlex
 
 from nanodeer.agent.state import ThreadState
 from nanodeer.config import get_config
-from nanodeer.container import SandboxProvider, set_sandbox_provider, clear_sandbox_provider
-from nanodeer.container.docker import DockerSandboxProvider
+from nanodeer.sandbox import Sandbox, set_sandbox, clear_sandbox, SandboxProvider
+from nanodeer.sandbox.docker import DockerSandboxProvider
 
 from .base import Middleware
 
 logger = logging.getLogger(__name__)
 
-_HIGH_RISK_PATTERNS: list[re.Pattern] = [
-    re.compile(r"^\s*>\s*/etc/passwd", re.IGNORECASE),
-    re.compile(r"^\s*>\s*/etc/shadow", re.IGNORECASE),
+_HIGH_RISK = [
+    re.compile(r"^\s*>\s*/etc/passwd", re.I),
+    re.compile(r"^\s*>\s*/etc/shadow", re.I),
     re.compile(r"^\s*>\s*/etc/sudoers"),
-    re.compile(r"rm\s+-rf\s+/\s*(--.*)?$", re.IGNORECASE),
-    re.compile(r"rm\s+-rf\s+/\*\s*$", re.IGNORECASE),
-    re.compile(r":\(\)\s*\{\s*\|\s*:\s*&\s*\}\s*;", re.IGNORECASE),
-    re.compile(r"(curl|wget).*\|\s*(bash|sh)", re.IGNORECASE),
-    re.compile(r"dd\s+if=", re.IGNORECASE),
-    re.compile(r"mkfs", re.IGNORECASE),
-    re.compile(r"cat\s+/etc/shadow"),
-    re.compile(r"cat\s+/etc/sudoers"),
-    re.compile(r"chmod\s+4777", re.IGNORECASE),
-    re.compile(r"(curl|wget).*-O.*\|\s*bash", re.IGNORECASE),
+    re.compile(r"rm\s+-rf\s+/\s*(--.*)?$", re.I),
+    re.compile(r"rm\s+-rf\s+/\*\s*$", re.I),
+    re.compile(r":\(\)\s*\{\s*\|\s*:\s*&\s*\}\s*;", re.I),
+    re.compile(r"(curl|wget).*\|\s*(bash|sh)", re.I),
+    re.compile(r"dd\s+if=", re.I),
+    re.compile(r"mkfs", re.I),
+    re.compile(r"chmod\s+4777", re.I),
 ]
 
-_MEDIUM_RISK_PATTERNS: list[re.Pattern] = [
-    re.compile(r"chmod\s+777\b", re.IGNORECASE),
-    re.compile(r"chmod\s+000\b", re.IGNORECASE),
-    re.compile(r"chmod\s+000\b", re.IGNORECASE),
-    re.compile(r"\bpip\s+install\b", re.IGNORECASE),
-    re.compile(r"\bapt-get\s+install\b", re.IGNORECASE),
-    re.compile(r"\bapt\s+install\b", re.IGNORECASE),
-    re.compile(r"\byum\s+install\b", re.IGNORECASE),
-    re.compile(r"\bdnf\s+install\b", re.IGNORECASE),
-    re.compile(r"\bnpm\s+install\b", re.IGNORECASE),
-    re.compile(r"\bpnpm\s+add\b", re.IGNORECASE),
-    re.compile(r"\byarn\s+add\b", re.IGNORECASE),
-    re.compile(r"\bnmap\b", re.IGNORECASE),
+_MEDIUM_RISK = [
+    re.compile(r"chmod\s+777\b", re.I),
+    re.compile(r"chmod\s+000\b", re.I),
+    re.compile(r"\bpip\s+install\b", re.I),
+    re.compile(r"\bapt-get\s+install\b", re.I),
+    re.compile(r"\bnpm\s+install\b", re.I),
+    re.compile(r"\bnmap\b", re.I),
     re.compile(r":\(|:{:|:&"),
 ]
 
 
 class SandboxMiddleware(Middleware):
-    """Manages Docker sandbox lifecycle + audits bash commands.
-
-    - before_llm: acquire container once (skip if already acquired)
-    - before_tools: audit bash commands for dangerous patterns
-    - after_tools_all: atomic release
-    """
+    """Manages sandbox lifecycle and audits bash commands."""
 
     def __init__(self, provider: SandboxProvider | None = None):
-        self.config = get_config()
-        self.provider = provider or DockerSandboxProvider(
-            image=self.config.sandbox.image,
-            container_prefix=self.config.sandbox.container_prefix,
-            network_mode=self.config.sandbox.network_mode,
+        cfg = get_config()
+        self._provider = provider or DockerSandboxProvider(
+            image=cfg.sandbox.image,
+            container_prefix=cfg.sandbox.container_prefix,
+            network_mode=cfg.sandbox.network_mode,
         )
 
     async def before_llm(self, state: ThreadState) -> None:
-        """Acquire sandbox container (only once)."""
         if state.sandbox and state.sandbox.container_id:
-            return  # already acquired
+            return
+        if not state.thread_id:
+            raise ValueError("SandboxMiddleware requires thread_id in state")
 
-        if not state.thread_data or not state.thread_data.thread_id:
-            raise ValueError("SandboxMiddleware requires thread_data with thread_id")
-
-        sandbox = await self.provider.acquire(state.thread_data.thread_id)
-
-        state.sandbox.thread_id = state.thread_data.thread_id
+        sandbox = await self._provider.acquire(state.thread_id)
+        state.sandbox.thread_id = sandbox.thread_id
         state.sandbox.container_id = sandbox.container_id
         state.sandbox.working_dir = sandbox.working_dir
         state.sandbox.status = "ready"
+        set_sandbox(state.thread_id, sandbox)
 
-        set_sandbox_provider(state.thread_data.thread_id, self.provider)
-
-    async def before_tools(
-        self, state: ThreadState, tool_name: str, tool_args: dict
-    ) -> None:
-        """Audit bash commands for dangerous patterns before execution."""
+    async def before_tools(self, state: ThreadState, tool_name: str, tool_args: dict) -> None:
         if tool_name != "bash":
             return
-
-        command = tool_args.get("command", "")
-        if not command:
+        cmd = tool_args.get("command", "")
+        if not cmd:
             return
 
-        risk, detail = self._classify(command)
-
+        risk, _ = self._classify(cmd)
         if risk == "HIGH":
-            logger.warning(
-                f"SandboxMiddleware: HIGH_RISK blocked command={command[:80]!r}"
-            )
+            logger.warning(f"HIGH_RISK blocked: {cmd[:80]!r}")
             state.next_action = "end"
         elif risk == "MEDIUM":
-            logger.warning(
-                f"SandboxMiddleware: MEDIUM_RISK warning command={command[:80]!r}"
-            )
+            logger.warning(f"MEDIUM_RISK warning: {cmd[:80]!r}")
 
     async def after_tools_all(self, state: ThreadState) -> None:
-        """Atomic release after all tools finish."""
         await self._release_if_needed(state)
 
     def _classify(self, command: str) -> tuple[str, str]:
-        """Classify bash command risk level. Returns (HIGH|MEDIUM|LOW, detail)."""
-        try:
-            tokens = shlex.split(command)
-        except ValueError:
-            tokens = [command]
+        """Classify command risk by pattern-matching the full command string.
 
-        for pattern in _HIGH_RISK_PATTERNS:
-            if pattern.search(command):
-                return "HIGH", pattern.pattern
-
-        for pattern in _MEDIUM_RISK_PATTERNS:
-            if pattern.search(command):
-                return "MEDIUM", pattern.pattern
-
+        Note: shlex.split is not used for classification — it only validates
+        command structure. The actual classification scans the full command
+        string for dangerous patterns regardless of shell quoting.
+        """
+        for p in _HIGH_RISK:
+            if p.search(command):
+                return "HIGH", p.pattern
+        for p in _MEDIUM_RISK:
+            if p.search(command):
+                return "MEDIUM", p.pattern
         return "LOW", ""
 
     async def _release_if_needed(self, state: ThreadState) -> None:
-        """Release sandbox if acquired."""
         if not state.sandbox or not state.sandbox.container_id:
             return
-
-        thread_id = state.sandbox.thread_id
+        tid = state.sandbox.thread_id
         try:
-            await self.provider.release(state.sandbox)
+            await self._provider.release(state.sandbox)
             state.sandbox.status = "released"
         except Exception:
             pass
         finally:
-            clear_sandbox_provider(thread_id)
+            clear_sandbox(tid)

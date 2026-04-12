@@ -30,21 +30,20 @@ class UploadsMiddleware(Middleware):
 
     async def before_llm(self, state: ThreadState) -> None:
         """Process uploaded files and inject into metadata."""
-        if not state.sandbox or not state.sandbox.thread_id:
+        if not state.thread_id:
             return
 
         uploaded_files = state.metadata.get("uploaded_files", [])
         if not uploaded_files:
             return
 
-        if state.thread_data:
-            uploads_dir = Path(state.thread_data.uploads_path or "")
-            if uploads_dir:
-                uploads_dir.mkdir(parents=True, exist_ok=True)
-        else:
-            user_data = self.base_path / state.sandbox.thread_id / "user-data"
-            uploads_dir = user_data / "uploads"
-            uploads_dir.mkdir(parents=True, exist_ok=True)
+        # Paths already set by ThreadDataMiddleware; just use them
+        virtual_uploads = state.metadata.get("uploads_path", "/mnt/user-data/uploads")
+
+        thread_id = state.thread_id
+        user_data = self.base_path / thread_id / "user-data"
+        uploads_dir = user_data / "uploads"
+        uploads_dir.mkdir(parents=True, exist_ok=True)
 
         uploaded_summaries = []
 
@@ -62,11 +61,6 @@ class UploadsMiddleware(Middleware):
                 except Exception:
                     content = None
 
-            if state.thread_data:
-                virtual_uploads = state.thread_data.uploads_path or "/mnt/user-data/uploads"
-            else:
-                virtual_uploads = "/mnt/user-data/uploads"
-
             file_path = uploads_dir / filename
             if content is not None:
                 file_path.write_text(content, encoding="utf-8")
@@ -74,9 +68,6 @@ class UploadsMiddleware(Middleware):
                 file_path.touch()
 
             virtual_path = f"{virtual_uploads}/{filename}"
-            is_text = mime_type and mime_type.startswith("text/") or filename.endswith(
-                (".txt", ".md", ".py", ".json", ".csv", ".yml", ".yaml", ".xml", ".html", ".css", ".js", ".ts")
-            )
 
             if content is not None and len(content) < 5000:
                 summary = f"[Uploaded file: {filename}]\nPath: {virtual_path}\nContent:\n{content[:1000]}"

@@ -1,7 +1,8 @@
-"""ClarificationMiddleware — checks LLM response for clarification requests.
+"""ClarificationMiddleware — detects clarification intent in LLM response.
 
-Sets next_action="wait_for_clarification" when the model signals it needs
-clarification, causing _should_continue to route to END.
+Detects when the LLM requests clarification (via ask_clarification tool call
+or content patterns) and signals wait_for_clarification to route to END.
+Does NOT intercept tool calls — only observes and sets the next_action signal.
 """
 from langchain_core.messages import AIMessage
 
