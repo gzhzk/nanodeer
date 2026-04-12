@@ -188,6 +188,33 @@ class MemoryStore:
         return "\n\n".join(parts)
 
     # -------------------------------------------------------------------------
+    # Full context (for builder)
+    # -------------------------------------------------------------------------
+
+    def load_full_context(self, project_slug: str = "default") -> str:
+        """Load full memory context: L3 + episodic + project memory.
+
+        Single method to call from builder — combines load() + project memory.
+        """
+        parts = []
+
+        l3 = self.load_memory()
+        if l3:
+            parts.append(f"<memory>\n{l3}\n</memory>")
+
+        recent = self.load_recent_episodic()
+        if recent:
+            parts.append(f"<recent_episodes>\n{recent}\n</recent_episodes>")
+
+        project_mem = self.load_project_memory(project_slug)
+        if project_mem:
+            parts.append(f"<project_memory>\n{project_mem}\n</project_memory>")
+
+        if not parts:
+            return ""
+        return "\n\n".join(parts)
+
+    # -------------------------------------------------------------------------
     # Project memory
     # -------------------------------------------------------------------------
 
@@ -292,6 +319,55 @@ class MemoryStore:
         import json
         todos_file = self._todos_dir() / f"{project_slug}.json"
         todos_file.write_text(json.dumps(todos, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    # -------------------------------------------------------------------------
+    # Builder integration methods
+    # -------------------------------------------------------------------------
+
+    def extract_and_save(self, messages: list) -> None:
+        """Extract key info from conversation and save as episodic.
+
+        Saves the last exchange as episodic for later distillation.
+        LLM-based extraction is async and done by external process.
+        """
+        if not messages:
+            return
+
+        # Save recent exchange as episodic
+        recent = messages[-6:]  # last 6 messages
+        formatted = []
+        for msg in recent:
+            role = type(msg).__name__
+            content = msg.content if hasattr(msg, "content") else str(msg)
+            formatted.append(f"[{role}]: {content[:500]}")
+
+        episodic_content = "\n\n".join(formatted)
+        if episodic_content:
+            self.save_episodic(episodic_content)
+
+    def handle_save_memory(self, tool_args: dict, original_result: str) -> str:
+        """Intercept save_memory tool call and persist to storage.
+
+        Args:
+            tool_args: Tool arguments from save_memory call.
+            original_result: Original tool result to pass through.
+
+        Returns:
+            Original result unchanged.
+        """
+        content = tool_args.get("content", "")
+        if not content:
+            return original_result
+
+        category = tool_args.get("category", "user")
+        project = tool_args.get("project", None)
+
+        if project:
+            self.save_project_memory(project, content)
+        else:
+            self.save_memory(content)
+
+        return original_result
 
     # -------------------------------------------------------------------------
     # Legacy user memory (redirect to MEMORY.md)

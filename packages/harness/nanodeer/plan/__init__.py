@@ -1,5 +1,6 @@
 """NanoDeer Plan Module - task tracking and planning types."""
 
+from .loader import PlanLoader
 from .types import TodoItem, TodoStatus, TODOS_SECTION_TEMPLATE
 
 # Note: Plan tools (WriteTodo, ListTodos, CompleteTodo) moved to harness.tools.plan
@@ -10,4 +11,5 @@ __all__ = [
     "TodoItem",
     "TodoStatus",
     "TODOS_SECTION_TEMPLATE",
+    "PlanLoader",
 ]

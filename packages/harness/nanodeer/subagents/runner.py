@@ -196,3 +196,102 @@ async def run_subagents_in_parallel(
 def generate_subagent_id() -> str:
     """Generate a unique subagent ID."""
     return f"subagent-{uuid.uuid4().hex[:8]}"
+
+
+class SubagentRunner:
+    """Manages subagent lifecycle for builder integration.
+
+    Collects spawn_subagent calls and executes pending subagents
+    when get_subagent_results is called.
+    """
+
+    MAX_CONCURRENT = 3
+    DEFAULT_TIMEOUT = 900  # 15 minutes
+
+    def __init__(
+        self,
+        llm=None,
+        max_concurrent: int | None = None,
+        timeout: int | None = None,
+    ):
+        from langchain_core.language_models import BaseChatModel
+        self._llm = llm
+        self.max_concurrent = max_concurrent or self.MAX_CONCURRENT
+        self.timeout = timeout or self.DEFAULT_TIMEOUT
+
+        # Per-thread pending subagent queue
+        self._pending: dict[str, list[dict[str, Any]]] = {}
+        self._results: dict[str, list[dict[str, Any]]] = {}
+
+    @property
+    def llm(self):
+        if self._llm is None:
+            raise RuntimeError("SubagentRunner.llm not set")
+        return self._llm
+
+    def set_llm(self, llm) -> None:
+        self._llm = llm
+
+    def _get_queue(self, thread_id: str) -> tuple:
+        """Get or create pending/results queues for thread."""
+        if thread_id not in self._pending:
+            self._pending[thread_id] = []
+            self._results[thread_id] = []
+        return self._pending[thread_id], self._results[thread_id]
+
+    def collect_spawn(
+        self,
+        subagent_id: str,
+        name: str,
+        task: str,
+        subagent_type: str = "general",
+        thread_id: str = "default",
+    ) -> None:
+        """Collect a spawn_subagent call into pending queue."""
+        spec = {
+            "subagent_id": subagent_id,
+            "name": name,
+            "task": task,
+            "tools": [],
+        }
+        self._pending[thread_id].append(spec)
+
+    async def get_results(self, thread_id: str = "default") -> str:
+        """Execute pending subagents and return formatted results."""
+        pending, results = self._get_queue(thread_id)
+
+        # Execute all pending subagents in parallel
+        if pending:
+            executed = await run_subagents_in_parallel(
+                subagent_specs=pending,
+                llm=self.llm,
+                timeout=self.timeout,
+                max_iterations=10,
+            )
+            self._results[thread_id].extend(executed)
+            self._pending[thread_id] = []
+
+        if not results:
+            return "[No subagent results available]"
+
+        return self._format_results(results)
+
+    def _format_results(self, results: list[dict[str, Any]]) -> str:
+        """Format subagent results for injection into conversation."""
+        lines = ["<subagent_results>"]
+        for r in results:
+            status = r.get("status", "unknown")
+            name = r.get("name", "subagent")
+            output = r.get("output", "")
+            error = r.get("error", "")
+            duration = r.get("duration_seconds", 0)
+
+            lines.append(f"## {name} ({status}) [{duration:.1f}s]")
+            if error:
+                lines.append(f"Error: {error}")
+            else:
+                lines.append(f"Output: {output[:500]}")
+            lines.append("")
+
+        lines.append("</subagent_results>")
+        return "\n".join(lines)
