@@ -55,6 +55,10 @@ You are {agent_name}, a lightweight AI super agent built with NanoDeer.
 - Be direct and helpful
 </critical_reminders>
 
+{memory_maintenance}
+
+{loop_warning_section}
+
 <current_date>{date}
 """
 
@@ -113,6 +117,14 @@ Example:
 </subagent_usage>
 """
 
+_MEMORY_MAINTENANCE = """<memory_maintenance>
+When you discover genuinely lasting information, use save_memory to persist it:
+- User's working style and preferences
+- Important technical decisions and conventions
+- Long-term project context
+Only save things that are truly durable — not ephemeral task details.
+</memory_maintenance>"""
+
 
 _SKILLS_USAGE = """<skills>
 NanoDeer supports modular skill workflows stored as Markdown files.
@@ -127,19 +139,25 @@ Example:
 def build_lead_agent_prompt(state: "ThreadState", tools: list[str] | None = None) -> str:
     """Build unified agent prompt from state.
 
-    Existence-based rendering: sections are only rendered when data is present
-    in state.metadata["memory_context"].
+    Existence-based rendering: sections are only rendered when data is present.
     """
     virtual_uploads = state.metadata.get("uploads_path", "/mnt/user-data/uploads")
     virtual_workspace = state.metadata.get("workspace_path", "/mnt/user-data/workspace")
     virtual_outputs = state.metadata.get("outputs_path", "/mnt/user-data/outputs")
 
-    # Existence-based memory section rendering
     memory_context = state.metadata.get("memory_context", "") if state.metadata else ""
-    if memory_context:
-        memory_section = f"<memory>\n{memory_context}\n</memory>"
+    memory_section = f"<memory>\n{memory_context}\n</memory>" if memory_context else ""
+
+    loop_warning = state.metadata.get("loop_warning") if state.metadata else None
+    if loop_warning:
+        loop_warning_section = (
+            f"<loop_warning>\n"
+            f"You have called `{loop_warning['tool']}` {loop_warning['count']} times "
+            f"with identical arguments. Try a different approach or stop.\n"
+            f"</loop_warning>"
+        )
     else:
-        memory_section = ""
+        loop_warning_section = ""
 
     return LEAD_AGENT_PROMPT.format(
         agent_name="NanoDeer",
@@ -151,5 +169,7 @@ def build_lead_agent_prompt(state: "ThreadState", tools: list[str] | None = None
         memory_section=memory_section,
         plan_section=_format_todos(state.todos),
         subagent_section=_SUBAGENT_USAGE,
+        memory_maintenance=_MEMORY_MAINTENANCE,
+        loop_warning_section=loop_warning_section,
         date=date.today().isoformat(),
     )

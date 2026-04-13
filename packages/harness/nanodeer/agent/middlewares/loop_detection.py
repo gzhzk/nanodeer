@@ -1,17 +1,15 @@
 """LoopDetectionMiddleware — detects repetitive tool call loops.
 
-Sets next_action="end" when hard limit is reached, causing the graph
-to route to END without stripping tool_calls.
+Sets next_action="end" when hard limit is reached. When warn threshold is
+reached, signals via metadata["loop_warning"] so the prompt layer can inject
+a reminder — keeping the message history clean.
 """
 
 import asyncio
 import hashlib
 import json
 import logging
-from collections import OrderedDict
 from typing import Any
-
-from langchain_core.messages import AIMessage, HumanMessage
 
 from ..state import ThreadState
 from .base import Middleware
@@ -20,16 +18,13 @@ logger = logging.getLogger(__name__)
 
 
 class LoopDetectionMiddleware(Middleware):
-    """Detects and breaks repetitive tool call loops via next_action signal.
+    """Detects and breaks repetitive tool call loops.
 
     Uses a sliding window hash of tool calls (name + args, order-independent).
     Thread-safe with per-thread locks.
 
-    Args:
-        warn_threshold: Inject warning HumanMessage after N identical calls.
-        hard_limit: Set next_action="end" after M identical calls.
-        window_size: Max tool calls to track per thread.
-        max_threads: Max threads before LRU eviction.
+    warn_threshold: set metadata signal for prompt layer to remind LLM
+    hard_limit: set next_action="end" to terminate the graph
     """
 
     def __init__(
@@ -101,14 +96,16 @@ class LoopDetectionMiddleware(Middleware):
                 )
 
                 if count == self.warn_threshold:
-                    warning = (
-                        f"⚠️ Warning: The tool `{tool_name}` has been called "
-                        f"{count} times with identical arguments. "
-                        f"Consider a different approach or stopping to avoid a loop."
-                    )
-                    self._inject_warning(state, warning)
+                    # Signal via metadata — prompt layer reads this and injects
+                    # a reminder into the system prompt. Message history stays clean.
+                    state.metadata["loop_warning"] = {
+                        "tool": tool_name,
+                        "count": count,
+                        "threshold": self.warn_threshold,
+                    }
 
                 elif count >= self.hard_limit:
+                    state.metadata.pop("loop_warning", None)
                     state.next_action = "end"
                     logger.warning(
                         f"LoopDetection: hard limit reached, setting next_action=end "
@@ -117,8 +114,3 @@ class LoopDetectionMiddleware(Middleware):
 
             if len(history) > self.window_size:
                 history[:] = history[-self.window_size:]
-
-    def _inject_warning(self, state: ThreadState, content: str) -> None:
-        """Inject a HumanMessage warning without blocking execution."""
-        if hasattr(state, "messages"):
-            state.messages.append(HumanMessage(content=content))

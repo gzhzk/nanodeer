@@ -19,10 +19,22 @@ from langchain_core.messages import SystemMessage, AIMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langgraph.graph import StateGraph, START, END
 
-from .state import ThreadState
+from .state import NextAction, ThreadState
 from .prompt import build_lead_agent_prompt
 
 __all__ = ["AgentBuilder"]
+
+
+def _format_messages_for_episodic(messages: list) -> str:
+    """Format messages for L2 episodic log. Raw text, no extraction."""
+    parts = []
+    for msg in messages[-6:]:  # last 6 messages
+        role = type(msg).__name__
+        content = msg.content if hasattr(msg, "content") else str(msg)
+        if len(content) > 500:
+            content = content[:500] + "..."
+        parts.append(f"[{role}]: {content}")
+    return "\n\n".join(parts)
 
 
 class AgentBuilder:
@@ -71,13 +83,21 @@ class AgentBuilder:
     async def _llm_node(self, state: ThreadState) -> dict:
         await self._chain.before_llm(state)
 
+        # Session end: write entire conversation to episodic once
+        if self._memory_store and state.next_action == NextAction.END:
+            self._memory_store.append_episodic(
+                _format_messages_for_episodic(state.messages)
+            )
+            await self._chain.after_llm(state)
+            return {"messages": []}
+
         if self._memory_store:
+            # L3 + L2: load for prompt injection
             memory_context = self._memory_store.load()
             project_slug = state.metadata.get("project_slug", "default")
             project_mem = self._memory_store.load_project_memory(project_slug)
             if project_mem:
-                sep = "\n\n" if memory_context else ""
-                memory_context = memory_context + sep + f"<project_memory>\n{project_mem}\n</project_memory>"
+                memory_context = (memory_context + "\n\n" + project_mem) if memory_context else project_mem
             state.metadata["memory_context"] = memory_context
 
         if self._plan_loader:
@@ -89,9 +109,6 @@ class AgentBuilder:
         resp = await self.llm.ainvoke(
             [SystemMessage(content=prompt)] + list(state.messages)
         )
-
-        if self._memory_store:
-            self._memory_store.extract_and_save(state.messages)
 
         if self._plan_loader:
             self._plan_loader.update(state)
