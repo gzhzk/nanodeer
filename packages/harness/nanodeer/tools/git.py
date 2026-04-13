@@ -1,9 +1,15 @@
 """Git operations tool inside sandbox.
 
-Execution is handled by SandboxToolWrapper (git → GitSandboxTool).
+Command assembly (path translation + git op) lives here in the tool layer.
+The sandbox layer is a dumb executor: receives a pre-built command string,
+base64-encodes it, and runs it inside the container.
 """
 
+import shlex
+
 from langchain_core.tools import tool
+
+from ..sandbox.path import validate_path
 
 
 @tool
@@ -37,3 +43,29 @@ def git(
     Returns:
         Git command output or formatted result.
     """
+    # Validate the virtual path but do NOT translate it here.
+    # Thread-specific path translation happens in SandboxExecTool._translate_paths_in_string
+    # using the real thread_id.
+    if path.startswith("/mnt/user-data/"):
+        validated = validate_path(path)
+    else:
+        validated = validate_path("/mnt/user-data/workspace")
+
+    if validated is None:
+        raise ValueError(f"Invalid path: {path}")
+
+    # Use virtual path in command string — SandboxExecTool will replace with physical path
+    if operation == "clone" and file_paths:
+        cmd = f"git clone {shlex.quote(file_paths[0])} {shlex.quote(validated)}"
+    elif operation == "add" and file_paths:
+        cmd = f"git -C {shlex.quote(validated)} add {' '.join(shlex.quote(f) for f in file_paths)}"
+    elif operation == "commit" and message:
+        cmd = f"git -C {shlex.quote(validated)} commit -m {shlex.quote(message)}"
+    elif operation == "checkout" and file_paths:
+        cmd = f"git -C {shlex.quote(validated)} checkout {' '.join(shlex.quote(f) for f in file_paths)}"
+    else:
+        cmd = f"git -C {shlex.quote(validated)} {operation}"
+
+    # SandboxExecTool receives this string, replaces virtual paths with physical paths
+    # using the real thread_id, then base64-encodes and executes.
+    return cmd
