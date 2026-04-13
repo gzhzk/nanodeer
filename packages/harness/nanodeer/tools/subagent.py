@@ -1,12 +1,19 @@
 """Subagent tools - direct SubagentRunner integration."""
 
+from typing import Optional
+
 from langchain_core.tools import tool
 
 from ..subagents import generate_subagent_id, get_runner
 
 
 @tool
-def spawn_subagent(name: str, task: str, subagent_type: str = "general") -> str:
+def spawn_subagent(
+    name: str,
+    task: str,
+    subagent_type: str = "general",
+    thread_id: Optional[str] = None,
+) -> str:
     """Spawn a subagent to execute a task in parallel with other subagents.
 
     Use this when a task can be broken into independent parts that run simultaneously.
@@ -29,19 +36,22 @@ def spawn_subagent(name: str, task: str, subagent_type: str = "general") -> str:
         name=name,
         task=task,
         subagent_type=subagent_type,
-        thread_id="default",
+        thread_id=thread_id or "default",
     )
     return f"Subagent spawned: {subagent_id}\nName: {name}\nTask: {task}\n\nUse get_subagent_results() to collect results."
 
 
 @tool
-async def get_subagent_results() -> str:
+async def get_subagent_results(thread_id: Optional[str] = None) -> str:
     """Get results from all completed subagents.
 
     Executes any pending subagents first, then returns formatted results.
+
+    Args:
+        thread_id: Thread identifier for multi-threaded environments.
 
     Returns:
         Formatted summary of all subagent results.
     """
     runner = get_runner()
-    return await runner.get_results("default")
+    return await runner.get_results(thread_id or "default")

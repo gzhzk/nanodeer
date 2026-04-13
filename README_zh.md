@@ -14,14 +14,14 @@
   - [6 层架构](#6-层架构)
   - [项目结构](#项目结构)
   - [信号驱动设计](#信号驱动设计)
-  - [双节点 LangGraph](#双节点-langgraph)
+  - [ReAct 执行图](#react-执行图)
 - [模块设计](#模块设计)
   - [Layer 1: 数据层 ](#layer-1-threadstate)
-  - [Layer 2: 执行空间层（沙箱）](#layer-2-container)
+  - [Layer 2: 执行空间层（沙箱）](#layer-2-执行空间层沙箱)
   - [Layer 3: 执行层（工具）](#layer-3-tools)
-  - [Layer 4: 包装/拦截层 ](#layer-4-middlewarechain--modules--wrap_tool_for_sandbox)
-  - [Layer 5: 编排层](#layer-5-agentbuilder--nanodeerfactory)
-  - [Layer 6: 应用层](#layer-6-create_nanodeer_agent)
+  - [Layer 4: 拦截层](#layer-4-拦截层)
+  - [Layer 5: 编排层](#layer-5-编排层)
+  - [Layer 6: 应用层](#layer-6-应用层)
 - [工具](#工具)
 - [核心模式](#核心模式)
 - [设计原则](#设计原则)
@@ -60,33 +60,33 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  Layer 6: 应用层                                           │
-│  create_nanodeer_agent                                     │
+│  Layer 6: Application                                       │
+│  create_nanodeer_agent                                      │
 └─────────────────────────────────────────────────────────────┘
                               ▲
 ┌─────────────────────────────────────────────────────────────┐
-│  Layer 5: 编排层                                         │
-│  AgentBuilder + NanoDeerFactory                            │
+│  Layer 5: Orchestration                                     │
+│  AgentBuilder + NanoDeerFactory + prompt                    │
 └─────────────────────────────────────────────────────────────┘
                               ▲
 ┌─────────────────────────────────────────────────────────────┐
-│  Layer 4: 包装/拦截层                                      │
+│  Layer 4: Interception                                       │
 │  MiddlewareChain + Modules + wrap_tool_for_sandbox          │
 └─────────────────────────────────────────────────────────────┘
                               ▲
 ┌─────────────────────────────────────────────────────────────┐
-│  Layer 3: 执行层 (Tools)                                  │
-│  read_file / write_file / bash / git / invoke_skill / ...│
+│  Layer 3: Execution (Tools)                                 │
+│  read_file / write_file / bash / git / invoke_skill / ...   │
 └─────────────────────────────────────────────────────────────┘
                               ▲
 ┌─────────────────────────────────────────────────────────────┐
-│  Layer 2: 执行空间层 (Container)                          │
-│  DockerSandbox / LocalSandbox                             │
+│  Layer 2: Execution Space (Sandbox)                          │
+│  DockerSandbox / LocalSandbox                               │
 └─────────────────────────────────────────────────────────────┘
                               ▲
 ┌─────────────────────────────────────────────────────────────┐
-│  Layer 1: 数据层                                         │
-│  ThreadState                                              │
+│  Layer 1: Data                                              │
+│  ThreadState                                                │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -107,25 +107,25 @@ nanodeer/
 │       │   ├── builder.py    # LangGraph 图组装
 │       │   ├── factory.py    # NanoDeerFactory — 组装中间件
 │       │   ├── prompt.py     # System Prompt 组装
-│       │   ├── memory/       # L2 情景 + L3 蒸馏记忆
+│       │   ├── memory/       # L2 episodic + L3 memory
 │       │   │   ├── storage.py
-│       │   │   ├── extractor.py
 │       │   │   └── types.py
 │       │   └── middlewares/  # 8 个拦截器
-│       │       ├── base.py               # Middleware + MiddlewareChain
+│       │       ├── base.py              # Middleware + MiddlewareChain
 │       │       ├── thread_data.py       # 每线程元数据初始化
 │       │       ├── sandbox.py           # Docker 容器生命周期
 │       │       ├── security.py          # 路径验证
 │       │       ├── clarification.py     # ask_clarification 信号
-│       │       ├── loop_detection.py  # 重复调用防护
-│       │       ├── compression.py      # Token 计数压缩
-│       │       ├── uploads.py          # 用户上传处理
-│       │       └── title.py           # 会话标题生成
-│       ├── container/        # Docker 沙箱隔离
-│       │   ├── docker.py     # DockerSandboxProvider
-│       │   ├── local.py     # LocalSandboxProvider 回退
+│       │       ├── loop_detection.py    # 重复调用防护
+│       │       ├── compression.py       # Token 计数压缩
+│       │       ├── uploads.py           # 用户上传处理
+│       │       └── title.py             # 会话标题生成
+│       ├── sandbox/          # Docker 沙箱隔离
+│       │   ├── __init__.py   # SandboxProvider 抽象基类
+│       │   ├── docker.py     # DockerSandboxProvider（卷挂载）
+│       │   ├── local.py      # LocalSandboxProvider 回退方案
 │       │   ├── path.py       # 虚拟 ↔ 物理路径映射
-│       │   └── tools.py      # 工具沙箱包装
+│       │   └── tools.py      # SandboxExecTool（配置驱动）
 │       ├── tools/            # 内置工具
 │       ├── subagents/        # 子 Agent 执行器
 │       │   ├── runner.py     # SubagentRunner 类
@@ -157,7 +157,7 @@ NanoDeer 采用**信号驱动架构**，中间件通过 `ThreadState.next_action
 
 这替代了旧的注入 HumanMessage 或 strip tool_calls 来控制流程的模式。
 
-### 双节点 LangGraph
+### ReAct 执行图
 
 ```
 START → llm → [next_action?] → tools → llm → ... → END
@@ -181,15 +181,22 @@ START → llm → [next_action?] → tools → llm → ... → END
 - `thread_id` — 线程标识
 - `metadata` — 中间件黑板（`memory_context`、`uploaded_files` 等）
 
-### Layer 2: Container
+### Layer 2: 执行空间层（沙箱）
 
-每个线程拥有自己的 Docker 容器。虚拟路径（`/mnt/user-data/...`）映射到容器内的 `/workspace/{thread_id}/...`。两个 Provider：`DockerSandboxProvider`（默认）和 `LocalSandboxProvider`（子进程回退）。
+| 方面 | 详情 |
+|------|------|
+| **每线程容器** | 每个线程拥有独立的 Docker 容器 |
+| **宿主机挂载** | `base_path/{thread_id}/user-data` → `/mnt/user-data/`（读写） |
+| **工作目录** | `/workspace/{thread_id}/`（临时，Agent 创建的文件） |
+| **默认 Provider** | `DockerSandboxProvider` — 卷挂载，`network=none`，`read_only` rootfs |
+| **回退 Provider** | `LocalSandboxProvider` — 子进程，无隔离 |
+| **路径翻译** | `/mnt/user-data/...` 为挂载点，无需翻译；只有 `/workspace/...` 路径需要翻译 |
 
 ### Layer 3: Tools
 
-纯执行单元，包装为 LangChain `@tool`。Skills（通过 `invoke_skill` 加载的 markdown 工作流）是工具的数据扩展。
+纯执行单元 — LangChain `@tool` 装饰的函数，无沙箱感知。沙箱路由由 `wrap_tool_for_sandbox`（Layer 4）处理。Skills（通过 `invoke_skill` 加载的 markdown 工作流）是工具的数据扩展。
 
-### Layer 4: MiddlewareChain + Modules + wrap_tool_for_sandbox
+### Layer 4: 拦截层
 
 **MiddlewareChain** — 8 个拦截器，4 个钩子：
 ```
@@ -213,19 +220,23 @@ after_tools_all:  Sandbox(release)
 | | TitleMiddleware | after_llm | 标题生成 |
 
 **Modules** — 业务逻辑，直接被 Builder 调用：
-- `MemoryStore` — L2 情景 + L3 蒸馏记忆
+- `MemoryStore` — L2 episodic（append-once）+ L3 memory（`save_memory` 工具）
 - `SubagentRunner` — 并行子 Agent 执行
-- `PlanLoader` — 任务计划加载
+- `PlanLoader` — todo 加载/持久化
 
-**wrap_tool_for_sandbox** — 将工具执行包装到容器内运行。
+**wrap_tool_for_sandbox** — 通过 `SANDBOX_TOOL_CONFIGS` 将工具参数映射为沙箱命令。单一 `SandboxExecTool` 类，配置驱动，无子类。
 
-### Layer 5: AgentBuilder + NanoDeerFactory
+### Layer 5: 编排层 + prompt
 
-**Builder** — 双节点 LangGraph：`llm`（LLM 调用）和 `tools`（执行工具调用）。`_should_continue` 只检查 `state.next_action`。Builder 零功能知识。
+| 组件 | 职责 |
+|------|------|
+| **Builder** | 双节点 LangGraph（`llm` → `tools`）。`_should_continue` 只检查 `state.next_action`。零功能知识。 |
+| **Factory** | 将 `MiddlewareChain` + modules + LLM + tools 接入 `Builder`。通过 `RuntimeFeatures` 控制功能开关。 |
+| **prompt** | `build_lead_agent_prompt(state, tools)`。基于存在性渲染 — `state.metadata` 中有数据时才渲染对应段落。 |
 
-**Factory** — `NanoDeerFactory` 根据 `RuntimeFeatures` 组装 `MiddlewareChain`。返回配置好的 `AgentBuilder`，所有中间件和模块已连接。
+渲染的 prompt 段落：`<memory>`、`<memory_maintenance>`、`<plan>`、`<subagent_usage>`、`<loop_warning>`。
 
-### Layer 6: create_nanodeer_agent
+### Layer 6: 应用层
 
 用户入口，创建完整 Agent。
 

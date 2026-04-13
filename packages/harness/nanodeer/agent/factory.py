@@ -44,9 +44,9 @@ class NanoDeerFactory:
             return LocalSandboxProvider()
 
     def _assemble_before_llm(self, sandbox_provider=None):
-        from .middlewares.thread_data_middleware import ThreadDataMiddleware
-        from .middlewares.uploads_middleware import UploadsMiddleware
-        from .middlewares.compression_middleware import CompressionMiddleware
+        from .middlewares.thread_data import ThreadDataMiddleware
+        from .middlewares.uploads import UploadsMiddleware
+        from .middlewares.compression import CompressionMiddleware
 
         mw = [ThreadDataMiddleware()]
         if self.features.uploads:
@@ -61,8 +61,8 @@ class NanoDeerFactory:
         return mw
 
     def _assemble_after_llm(self):
-        from .middlewares.clarification_middleware import ClarificationMiddleware
-        from .middlewares.title_middleware import TitleMiddleware
+        from .middlewares.clarification import ClarificationMiddleware
+        from .middlewares.title import TitleMiddleware
 
         mw = []
         if self.features.clarification:
@@ -71,9 +71,9 @@ class NanoDeerFactory:
         return mw
 
     def _assemble_before_tools(self, sandbox_provider=None):
-        from .middlewares.sandbox_middleware import SandboxMiddleware
-        from .middlewares.security_middleware import SecurityMiddleware
-        from .middlewares.loop_detection_middleware import LoopDetectionMiddleware
+        from .middlewares.sandbox import SandboxMiddleware
+        from .middlewares.security import SecurityMiddleware
+        from .middlewares.loop_detection import LoopDetectionMiddleware
 
         mw = []
         if self.features.security:
@@ -88,7 +88,7 @@ class NanoDeerFactory:
         return mw
 
     def _assemble_after_tools_all(self, sandbox_provider=None):
-        from .middlewares.sandbox_middleware import SandboxMiddleware
+        from .middlewares.sandbox import SandboxMiddleware
         if self.features.sandbox and sandbox_provider:
             return [SandboxMiddleware(provider=sandbox_provider)]
         return []
