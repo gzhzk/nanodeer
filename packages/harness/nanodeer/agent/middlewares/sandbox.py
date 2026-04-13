@@ -2,7 +2,7 @@
 import logging
 import re
 
-from nanodeer.agent.state import ThreadState
+from nanodeer.agent.state import SandboxState, ThreadState
 from nanodeer.config import get_config
 from nanodeer.sandbox import Sandbox, set_sandbox, clear_sandbox, SandboxProvider
 from nanodeer.sandbox.docker import DockerSandboxProvider
@@ -47,7 +47,9 @@ class SandboxMiddleware(Middleware):
         )
 
     async def before_llm(self, state: ThreadState) -> None:
-        if state.sandbox and state.sandbox.container_id:
+        if state.sandbox is None:
+            state.sandbox = SandboxState()
+        if state.sandbox.container_id:
             return
         if not state.thread_id:
             raise ValueError("SandboxMiddleware requires thread_id in state")
