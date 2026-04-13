@@ -1,6 +1,7 @@
 """Docker-based sandbox provider. Ephemeral containers, one per thread."""
 import asyncio
 import os
+from pathlib import Path
 
 import docker
 
@@ -11,6 +12,7 @@ class DockerSandboxProvider(SandboxProvider):
     """Ephemeral containers: created fresh per thread, destroyed on release.
 
     Security: network=none, read-only rootfs, tmpfs for /tmp.
+    Host files (uploads, user-data) accessible via volume mount at /mnt/user-data.
     """
 
     def __init__(
@@ -19,6 +21,7 @@ class DockerSandboxProvider(SandboxProvider):
         container_prefix: str = "nanodeer-sandbox",
         base_url: str | None = None,
         network_mode: str = "none",
+        base_path: Path | None = None,
     ):
         """Initialize Docker provider.
 
@@ -27,12 +30,21 @@ class DockerSandboxProvider(SandboxProvider):
             container_prefix: Prefix for container names.
             base_url: Docker daemon address. Defaults to DOCKER_HOST env var or unix socket.
             network_mode: Docker network mode ("bridge", "none", "host").
+            base_path: Host directory for thread storage. Defaults to config thread.storage_path.
         """
         self.image = image
         self.container_prefix = container_prefix
         self.base_url = base_url or os.environ.get("DOCKER_HOST", None)
         self.network_mode = network_mode
+        self.base_path = base_path
         self._client: docker.DockerClient | None = None
+
+    def _get_base_path(self) -> Path:
+        """Resolve host storage path, lazily importing config to avoid circular imports."""
+        if self.base_path:
+            return self.base_path
+        from ..config import get_config
+        return get_config().thread.storage_path
 
     @property
     def client(self) -> docker.DockerClient:
@@ -41,7 +53,6 @@ class DockerSandboxProvider(SandboxProvider):
             if self.base_url:
                 self._client = docker.DockerClient(base_url=self.base_url)
             else:
-                # Try TCP localhost first (Docker Desktop on WSL2), then unix socket
                 try:
                     self._client = docker.DockerClient(base_url="tcp://localhost:2375")
                     self._client.ping()
@@ -56,7 +67,6 @@ class DockerSandboxProvider(SandboxProvider):
 
         loop = asyncio.get_event_loop()
 
-        # Check if container already exists and is running
         def _get_existing():
             try:
                 c = self.client.containers.get(container_name)
@@ -77,7 +87,14 @@ class DockerSandboxProvider(SandboxProvider):
 
         await loop.run_in_executor(None, self._pull_image)
 
-        # Security: read_only rootfs, tmpfs for /tmp; network_mode configurable
+        # Volume mount: host {base_path}/{thread_id}/user-data → container /mnt/user-data
+        # This makes uploads written by UploadsMiddleware visible inside the container
+        # at the virtual path /mnt/user-data/uploads/.
+        base_path = self._get_base_path()
+        volumes = {
+            str(base_path / thread_id / "user-data"): {"bind": "/mnt/user-data", "mode": "rw"},
+        }
+
         container = await loop.run_in_executor(
             None,
             lambda: self.client.containers.run(
@@ -89,6 +106,7 @@ class DockerSandboxProvider(SandboxProvider):
                 network_mode=self.network_mode,
                 read_only=True,
                 tmpfs={"/tmp": "rw,noexec,nosuid,size=64m"},
+                volumes=volumes,
                 command="sleep infinity",
             )
         )

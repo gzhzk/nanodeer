@@ -1,14 +1,116 @@
-"""Sandbox tool wrappers - execute tools inside Docker container."""
-import asyncio
+"""Sandbox tool wrappers — execute tools inside Docker container.
+
+SandboxToolWrapper: routing (sandbox vs raw).
+SandboxExecTool: single config-driven executor.
+SANDBOX_TOOL_CONFIGS: registry of tool → {template, path_vars, b64_vars, translate_vars}.
+
+Config fields:
+    path_vars      — translate virtual→physical, substitute {var} directly into template
+    b64_vars       — base64-encode, substitute {b64_var} into template
+    translate_vars — same as b64_vars, but first extract+replace virtual paths in the string
+    timeout        — seconds, default 30
+"""
+
 import base64
 import inspect
-import shlex
 
 from . import SandboxCommand, get_sandbox
 
+# Base64 shebang: decode argv[1] and exec it. Avoids shell escaping issues.
+_B64 = 'python3 -c "import base64,sys; exec(base64.b64decode(sys.argv[1]).decode())"'
+
+# Registry of sandbox-aware tools.
+# bash/git/exec_python: _B64 shebang + one base64-encoded argument.
+# read_file/ls: direct path substitution.
+# write_file: both path and content as base64 argv.
+# glob/grep: path direct + pattern base64.
+SANDBOX_TOOL_CONFIGS: dict[str, dict] = {
+    "read_file": {
+        "template": 'python3 -c "import sys; print(open(sys.argv[1]).read())" {path}',
+        "path_vars": ["file_path"],
+        "b64_vars": [],
+        "timeout": 30,
+    },
+    "write_file": {
+        # file_path and content both base64-encoded; decoded inside container to get
+        # the physical path and file bytes.
+        "template": (
+            'python3 -c "import base64,os,sys; '
+            'p=base64.b64decode(sys.argv[1]).decode();'
+            'os.makedirs(os.path.dirname(p) or \".\",exist_ok=True);'
+            'open(p,\\\"wb\\\").write(base64.b64decode(sys.argv[2]))" '
+            "{b64_file_path} {b64_content}"
+        ),
+        "path_vars": [],
+        "b64_vars": ["file_path", "content"],
+        "timeout": 60,
+    },
+    "ls": {
+        "template": 'python3 -c "import os; [print(f) for f in os.listdir(sys.argv[1])]" {path}',
+        "path_vars": ["file_path"],
+        "b64_vars": [],
+        "timeout": 10,
+    },
+    "glob": {
+        "template": (
+            'python3 -c "import base64,os,fnmatch,sys; '
+            'p=base64.b64decode(sys.argv[1]).decode();'
+            'pat=base64.b64decode(sys.argv[2]).decode();'
+            '[print(os.path.join(r,f)) for r,_,fs in os.walk(p) '
+            'for f in fs if fnmatch.fnmatch(f,pat)]" '
+            "{b64_file_path} {b64_pattern}"
+        ),
+        "path_vars": [],
+        "b64_vars": ["file_path", "pattern"],
+        "timeout": 30,
+    },
+    "grep": {
+        "template": (
+            'python3 -c "import base64,os,re,sys; '
+            'p=base64.b64decode(sys.argv[1]).decode();'
+            'pat=base64.b64decode(sys.argv[2]).decode();'
+            'rec=sys.argv[3]==\\\"True\\\"; '
+            'for root,_,fs in os.walk(p): '
+            '  for f in fs: '
+            '    fpath=os.path.join(root,f); '
+            '    try: '
+            '      for i,line in enumerate(open(fpath),1): '
+            '        if re.search(pat,line): print(f\\\"{{fpath}}:{{i}}:{{line.rstrip()}}\\\") '
+            '    except: pass; '
+            '  if not rec: break" '
+            "{b64_file_path} {b64_pattern} {rec_flag}"
+        ),
+        "path_vars": [],
+        "b64_vars": ["file_path", "pattern"],
+        "timeout": 30,
+    },
+    "bash": {
+        "template": f"{_B64} {{b64_command}}",
+        "path_vars": [],
+        "b64_vars": ["command"],
+        "timeout": 30,
+    },
+    "git": {
+        # git.py assembles the full command string with virtual paths embedded.
+        # translate_vars extracts /mnt/user-data/... from that string, replaces with
+        # the physical path using the real thread_id, then base64-encodes the result.
+        "template": f"{_B64} {{b64_command}}",
+        "path_vars": [],
+        "b64_vars": [],
+        "translate_vars": ["command"],
+        "timeout": 60,
+    },
+    "exec_python": {
+        "template": f"{_B64} {{b64_code}}",
+        "path_vars": [],
+        "b64_vars": ["code"],
+        "timeout": 30,
+    },
+}
+
 
 class SandboxToolWrapper:
-    """Wraps a tool to execute inside sandbox."""
+    """Routes execution to sandbox or raw tool. No tool-specific logic."""
 
     def __init__(self, tool, provider):
         self._tool = tool
@@ -18,176 +120,88 @@ class SandboxToolWrapper:
     def name(self) -> str:
         return self._tool.name
 
-    def get_sandbox_command(self, args: dict, thread_id: str) -> SandboxCommand | None:
-        raise NotImplementedError
-
     async def ainvoke(self, args: dict, thread_id: str | None = None):
         sandbox = get_sandbox(thread_id) if thread_id else None
 
         if sandbox is None or self._provider is None:
-            raw_result = self._tool.ainvoke(args)
-            if inspect.iscoroutine(raw_result):
-                raw_result = await raw_result
-            return raw_result
+            result = self._tool.ainvoke(args)
+            return await result if inspect.iscoroutine(result) else result
 
         cmd = self.get_sandbox_command(args, thread_id)
         if cmd is None:
-            raw_result = self._tool.ainvoke(args)
-            if inspect.iscoroutine(raw_result):
-                raw_result = await raw_result
-            return raw_result
+            result = self._tool.ainvoke(args)
+            return await result if inspect.iscoroutine(result) else result
 
         result = await self._provider.run(sandbox, cmd.cmd)
         return result.stdout
 
+    def get_sandbox_command(self, args: dict, thread_id: str) -> SandboxCommand | None:
+        raise NotImplementedError
 
-class ReadFileSandboxTool(SandboxToolWrapper):
-    def get_sandbox_command(self, args: dict, thread_id: str):
+
+class SandboxExecTool(SandboxToolWrapper):
+    """Config-driven executor. Reads SANDBOX_TOOL_CONFIGS; no per-tool subclasses."""
+
+    def __init__(self, tool, provider):
+        super().__init__(tool, provider)
+        cfg = SANDBOX_TOOL_CONFIGS.get(tool.name, {})
+        self._template: str = cfg.get("template", "")
+        self._path_vars: list[str] = cfg.get("path_vars", [])
+        self._b64_vars: list[str] = cfg.get("b64_vars", [])
+        self._translate_vars: list[str] = cfg.get("translate_vars", [])
+        self._timeout: int = cfg.get("timeout", 30)
+
+    def get_sandbox_command(self, args: dict, thread_id: str) -> SandboxCommand | None:
         from .path import translate_and_validate
-        path = translate_and_validate(args.get("file_path", ""), thread_id)
-        cmd = f'python3 -c "import sys; print(open(sys.argv[1]).read())" {path}'
-        return SandboxCommand(cmd=cmd, timeout=30)
 
+        subs: dict[str, str] = {}
 
-class WriteFileSandboxTool(SandboxToolWrapper):
-    def get_sandbox_command(self, args: dict, thread_id: str):
-        from .path import translate_and_validate
-        path = translate_and_validate(args.get("file_path", ""), thread_id)
-        content = args.get("content", "")
-        enc_content = base64.b64encode(content.encode()).decode()
-        enc_path = base64.b64encode(path.encode()).decode()
-        cmd = (
-            f'python3 -c "import base64,os,sys; '
-            f'p=base64.b64decode(sys.argv[1]).decode();'
-            f'os.makedirs(os.path.dirname(p) or \".\",exist_ok=True);'
-            f'open(p,\\\"wb\\\").write(base64.b64decode(sys.argv[2]))" '
-            f'{enc_path} {enc_content}'
-        )
-        return SandboxCommand(cmd=cmd, timeout=60)
+        # path_vars: translate and substitute directly into template
+        for var in self._path_vars:
+            phys = translate_and_validate(args.get(var, ""), thread_id)
+            subs[f"{{{var}}}"] = phys
 
+        # translate_vars: replace virtual paths inside the string, then b64-encode
+        for var in self._translate_vars:
+            translated = self._translate_paths_in_string(str(args.get(var, "")), thread_id)
+            subs[f"{{b64_{var}}}"] = base64.b64encode(translated.encode()).decode()
 
-class LsSandboxTool(SandboxToolWrapper):
-    def get_sandbox_command(self, args: dict, thread_id: str):
-        from .path import translate_and_validate
-        path = translate_and_validate(args.get("file_path", ""), thread_id)
-        cmd = f'python3 -c "import os; [print(f) for f in os.listdir(sys.argv[1])]" {path}'
-        return SandboxCommand(cmd=cmd, timeout=10)
+        # b64_vars: b64-encode directly
+        for var in self._b64_vars:
+            if var in self._translate_vars:
+                continue
+            subs[f"{{b64_{var}}}"] = base64.b64encode(str(args.get(var, "")).encode()).decode()
 
+        # Literal vars: inject remaining args as-is (e.g. rec_flag for grep)
+        for var, val in args.items():
+            key = f"{{{var}}}"
+            if key not in subs:
+                subs[key] = str(val)
 
-class GlobSandboxTool(SandboxToolWrapper):
-    def get_sandbox_command(self, args: dict, thread_id: str):
-        from .path import translate_and_validate
-        path = translate_and_validate(args.get("file_path", ""), thread_id)
-        pattern = args.get("pattern", "*")
-        enc_path = base64.b64encode(path.encode()).decode()
-        enc_pat = base64.b64encode(pattern.encode()).decode()
-        cmd = (
-            f'python3 -c "import base64,os,fnmatch; '
-            f'p=base64.b64decode(sys.argv[1]).decode();'
-            f'pat=base64.b64decode(sys.argv[2]).decode();'
-            f'[print(os.path.join(r,f)) for r,_,fs in os.walk(p) for f in fs if fnmatch.fnmatch(f,pat)]" '
-            f'{enc_path} {enc_pat}'
-        )
-        return SandboxCommand(cmd=cmd, timeout=30)
+        cmd = self._template
+        for ph, val in subs.items():
+            cmd = cmd.replace(ph, val)
 
+        return SandboxCommand(cmd=cmd, timeout=self._timeout)
 
-class BashSandboxTool(SandboxToolWrapper):
-    def get_sandbox_command(self, args: dict, thread_id: str):
-        cmd_str = args.get("command", "")
-        timeout = min(args.get("timeout", 30), 120)
-        # Use base64 + stdin to avoid shell quote escaping issues
-        enc = base64.b64encode(cmd_str.encode()).decode()
-        cmd = f'python3 -c "import base64,sys; exec(base64.b64decode(sys.argv[1]).decode())" {enc}'
-        return SandboxCommand(cmd=cmd, timeout=timeout)
+    def _translate_paths_in_string(self, s: str, thread_id: str) -> str:
+        """Replace virtual paths in a command string before b64 encoding.
 
+        Regex-scans for /mnt/user-data/..., validates each match, then
+        translates it to the physical path using the real thread_id.
+        """
+        from .path import validate_path, virtual2physical
+        import re
 
-class GitSandboxTool(SandboxToolWrapper):
-    def get_sandbox_command(self, args: dict, thread_id: str):
-        from .path import translate_and_validate, validate_path
-        op = args.get("operation", "")
-        path = args.get("path", ".")
-        msg = args.get("message")
-        files = args.get("file_paths") or []
+        def replacer(match):
+            vpath = match.group(0)
+            validated = validate_path(vpath)
+            return virtual2physical(validated, thread_id) if validated else vpath
 
-        # 统一用 validate_path 处理
-        if path.startswith("/mnt/user-data/"):
-            validated = validate_path(path)
-        else:
-            validated = validate_path(f"/mnt/user-data/workspace")
-
-        if validated is None:
-            raise ValueError(f"Invalid path: {path}")
-
-        phys = translate_and_validate(validated, thread_id)
-
-        if op == "clone" and files:
-            cmd = f"git clone {shlex.quote(files[0])} {shlex.quote(phys)}"
-        elif op == "add" and files:
-            cmd = f"git -C {shlex.quote(phys)} add {' '.join(shlex.quote(f) for f in files)}"
-        elif op == "commit" and msg:
-            cmd = f"git -C {shlex.quote(phys)} commit -m {shlex.quote(msg)}"
-        elif op == "checkout" and files:
-            cmd = f"git -C {shlex.quote(phys)} checkout {' '.join(shlex.quote(f) for f in files)}"
-        else:
-            cmd = f"git -C {shlex.quote(phys)} {op}"
-
-        return SandboxCommand(cmd=cmd, timeout=60)
-
-
-class GrepSandboxTool(SandboxToolWrapper):
-    def get_sandbox_command(self, args: dict, thread_id: str):
-        from .path import translate_and_validate
-        path = translate_and_validate(args.get("file_path", ""), thread_id)
-        pattern = args.get("pattern", "")
-        recursive = args.get("recursive", True)
-        enc_path = base64.b64encode(path.encode()).decode()
-        enc_pat = base64.b64encode(pattern.encode()).decode()
-        rec_flag = "True" if recursive else "False"
-        cmd = (
-            f'python3 -c "import base64,os,re,sys; '
-            f'p=base64.b64decode(sys.argv[1]).decode();'
-            f'pat=base64.b64decode(sys.argv[2]).decode();'
-            f'rec=sys.argv[3]==\"True\"; '
-            f'for root,dirs,files in os.walk(p): '
-            f'  for f in files: '
-            f'    fpath=os.path.join(root,f); '
-            f'    try: '
-            f'      for i,line in enumerate(open(fpath),1): '
-            f'        if re.search(pat,line): print(f\"{{fpath}}:{{i}}:{{line.rstrip()}}\") '
-            f'    except: pass; '
-            f'  if not rec: break" '
-            f'{enc_path} {enc_pat} {rec_flag}'
-        )
-        return SandboxCommand(cmd=cmd, timeout=30)
-
-
-class ExecPythonSandboxTool(SandboxToolWrapper):
-    def get_sandbox_command(self, args: dict, thread_id: str):
-        code = args.get("code", "")
-        timeout = min(args.get("timeout", 30), 120)
-        enc_code = base64.b64encode(code.encode()).decode()
-        cmd = (
-            f'python3 -c "import base64,sys; '
-            f'exec(base64.b64decode(sys.argv[1]).decode())" '
-            f'{enc_code}'
-        )
-        return SandboxCommand(cmd=cmd, timeout=timeout)
-
-
-SANDBOX_TOOL_WRAPPERS = {
-    "read_file": ReadFileSandboxTool,
-    "write_file": WriteFileSandboxTool,
-    "ls": LsSandboxTool,
-    "glob": GlobSandboxTool,
-    "grep": GrepSandboxTool,
-    "bash": BashSandboxTool,
-    "git": GitSandboxTool,
-    "exec_python": ExecPythonSandboxTool,
-}
+        return re.sub(r"/mnt/user-data/[^/\s\"']+", replacer, s)
 
 
 def wrap_tool_for_sandbox(tool, provider) -> SandboxToolWrapper | None:
-    wrapper_class = SANDBOX_TOOL_WRAPPERS.get(tool.name)
-    if wrapper_class:
-        return wrapper_class(tool, provider)
+    if tool.name in SANDBOX_TOOL_CONFIGS:
+        return SandboxExecTool(tool, provider)
     return None

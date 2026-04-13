@@ -1,44 +1,59 @@
 """Virtual path translation and security validation.
 
-Agent sees files through /mnt/user-data/ virtual paths.
-These are translated to physical paths inside the Docker container.
+Two categories of paths inside the container:
+- /mnt/user-data: mount point (host base_path/{thread_id}/user-data → /mnt/user-data).
+  This IS the real path — do NOT translate.
+- /workspace/{thread_id}: agent working directory on ephemeral container rootfs.
+  Paths here are created by the agent at runtime and need translation.
+
+Agent virtual paths always start with /mnt/user-data/.
 """
+
 import os
 import re
 
 
 VIRTUAL_PREFIX = "/mnt/user-data"
-WORKSPACE_ROOT = "/workspace"
 
 
 def virtual2physical(virtual_path: str, thread_id: str) -> str:
-    """Translate virtual path to physical path inside container.
+    """Translate virtual path to real container path.
 
-    /mnt/user-data/workspace/file.py -> /workspace/{thread_id}/workspace/file.py
+    /mnt/user-data/... paths: mount point, already real — return as-is.
+    /workspace/... paths: ephemeral container rootfs — translate using thread_id.
     """
-    if not virtual_path.startswith(VIRTUAL_PREFIX):
-        raise ValueError(f"Path must start with {VIRTUAL_PREFIX}: {virtual_path}")
+    if virtual_path.startswith(VIRTUAL_PREFIX):
+        # Mount point — already the real path inside the container
+        return virtual_path
 
-    relative = virtual_path[len(VIRTUAL_PREFIX):].lstrip("/")
-    return os.path.join(WORKSPACE_ROOT, thread_id, relative)
+    # Agent-created working files: translate to ephemeral container rootfs
+    if virtual_path.startswith("/workspace/"):
+        parts = virtual_path.split("/", 3)  # /workspace/{thread_id}/rest
+        if len(parts) >= 4 and parts[2] == thread_id:
+            return virtual_path
+        if len(parts) >= 4:
+            return f"/workspace/{thread_id}/{parts[3]}"
+
+    # Fallback: treat as working directory relative
+    return f"/workspace/{thread_id}/{virtual_path.lstrip('/')}"
 
 
 def validate_path(virtual_path: str) -> str | None:
     """Validate and sanitize virtual path. Returns None if dangerous.
 
     Blocks: path traversal (../), system files (/etc/passwd, /root/.ssh).
+    /mnt/user-data/... and /workspace/... paths are allowed.
     """
-    # Check for .. BEFORE normpath - normpath resolves .. first, bypassing checks
-    # Reject any path containing .. components (we only need direct subdirectories)
     if ".." in virtual_path:
         return None
 
     normalized = os.path.normpath(virtual_path)
 
-    if not normalized.startswith(VIRTUAL_PREFIX):
+    # Must be either a mount point path or workspace path
+    if not (normalized.startswith(VIRTUAL_PREFIX) or normalized.startswith("/workspace/")):
         return None
 
-    # Block dangerous paths after normpath resolution
+    # Block dangerous system paths after normpath resolution
     dangerous = [r"^/etc/passwd$", r"^/etc/shadow$", r"^/root/\.ssh/"]
     for pattern in dangerous:
         if re.match(pattern, normalized):
