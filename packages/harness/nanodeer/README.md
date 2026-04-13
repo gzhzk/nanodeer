@@ -5,36 +5,33 @@ Harness 是 NanoDeer 的核心，将 LLM 与外部工具/沙箱/记忆连接。
 ## 架构分层
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  Layer 6: 应用层                                           │
-│  create_nanodeer_agent                                     │
-└─────────────────────────────────────────────────────────────┘
-                              ▲
-┌─────────────────────────────────────────────────────────────┐
-│  Layer 5: 编排层                                           │
-│  AgentBuilder + NanoDeerFactory                            │
-└─────────────────────────────────────────────────────────────┘
-                              ▲
-┌─────────────────────────────────────────────────────────────┐
-│  Layer 4: 包装/拦截层                                      │
-│  MiddlewareChain + Modules + wrap_tool_for_sandbox          │
-└─────────────────────────────────────────────────────────────┘
-                              ▲
-┌─────────────────────────────────────────────────────────────┐
-│  Layer 3: 执行层 (Tools)                                   │
-│  read_file / write_file / bash / git / invoke_skill / ...  │
-│  invoke_skill → 加载 skills/*.md workflow                  │
-└─────────────────────────────────────────────────────────────┘
-                              ▲
-┌─────────────────────────────────────────────────────────────┐
-│  Layer 2: 执行空间层 (Container)                           │
-│  DockerSandbox / LocalSandbox                             │
-└─────────────────────────────────────────────────────────────┘
-                              ▲
-┌─────────────────────────────────────────────────────────────┐
-│  Layer 1: 数据层                                            │
-│  ThreadState                                               │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│  Layer 5: 应用层                                         │
+│  create_nanodeer_agent                                  │
+└─────────────────────────────────────────────────────────┘
+                            ▲
+┌─────────────────────────────────────────────────────────┐
+│  Layer 4: 编排层                                         │
+│  AgentBuilder + NanoDeerFactory + Modules (可注入)       │
+└─────────────────────────────────────────────────────────┘
+                            ▲
+┌─────────────────────────────────────────────────────────┐
+│  Layer 3: 工具 + 拦截                                    │
+│  MiddlewareChain + wrap_tool_for_sandbox + Tools        │
+└─────────────────────────────────────────────────────────┘
+                            ▲
+              ┌─────────────┴─────────────┐
+              ▼                           ▼
+┌───────────────────────────┐   ┌───────────────────────────┐
+│  Layer 2: Sandbox         │   │  Layer 2: Host 执行       │
+│  (sandbox-aware 工具)     │   │  (external/host 工具)      │
+│  DockerSandboxProvider    │   │  git / exec_python / ...  │
+│  LocalSandboxProvider     │   │                           │
+└───────────────────────────┘   └───────────────────────────┘
+                            ▲
+┌─────────────────────────────────────────────────────────┐
+│  Layer 1: 数据层 — ThreadState                           │
+└─────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -69,69 +66,45 @@ class ThreadState(BaseModel):
 
 ---
 
-## Layer 2: 执行空间层
+## Layer 2: Sandbox + Host 执行
 
-### Container (Sandbox Provider)
+### Sandbox（按需，用于敏感操作）
 
-提供工具执行的空间。
+sandbox-aware 工具在容器内执行。
 
 ```python
 class SandboxProvider:
-    async def acquire(thread_id: str) -> SandboxState
-    async def release(sandbox: SandboxState) -> None
+    async def acquire(thread_id: str) -> SandboxState  # 获取容器
+    async def release(sandbox: SandboxState) -> None   # 释放容器
+    async def run(sandbox: SandboxState, cmd: str) -> RunResult  # 容器内执行
 ```
 
 **两种实现**：
-- `DockerSandboxProvider`：Docker 容器内执行
-- `LocalSandboxProvider`：本地 fallback
+- `DockerSandboxProvider`：Docker 容器，`network=none`，`read_only` rootfs
+- `LocalSandboxProvider`：子进程 fallback（无隔离）
 
-**职责**：
-- `acquire()`：获取容器，设置 working_dir
-- `release()`：释放容器资源
+sandbox-aware 工具：`read_file` `write_file` `ls` `glob` `grep` `bash` `git` `exec_python`
+
+### Host 执行（直连，无隔离）
+
+host 工具：`fetch_url` `web_search` `read_image`
 
 ---
 
-## Layer 3: 执行层
+## Layer 3: 工具 + 拦截
 
 ### Tools
 
-工具是 LLM 的能力扩展，绑定到 LLM 后由 Agent 调用。
+纯执行单元，LangChain `@tool` 装饰，无沙箱感知。Skills（`invoke_skill`）是工具的数据扩展。
 
-| 工具 | 作用 |
-|------|------|
-| `read_file` | 读文件 |
-| `write_file` | 写文件 |
-| `ls` | 列目录 |
-| `glob` | 模式匹配 |
-| `grep` | 搜索内容 |
-| `bash` | 执行命令 |
-| `git` | Git 操作 |
-| `fetch_url` | 抓取网页 |
-| `web_search` | 搜索 |
-| `read_image` | 图片描述 |
-| `exec_python` | 执行 Python |
-| `invoke_skill` | 加载技能 |
-| `save_memory` | 保存记忆 |
-| `load_memory` | 加载记忆 |
-| `write_todo` | 创建任务 |
-| `list_todos` | 列出任务 |
-| `complete_todo` | 完成任务 |
-| `spawn_subagent` | 派生子代理 |
-| `get_subagent_results` | 获取子代理结果 |
-| `ask_clarification` | 请求澄清 |
-
-### Skills
-
-Skills 是 Tool 的数据扩展，不是独立层。
-
-```
-skills/*.md → markdown workflow 文件
-invoke_skill(skill_name) → 加载文件内容返回给 LLM
-```
-
----
-
-## Layer 4: 包装/拦截层
+| 分类 | 工具 |
+|---|---|
+| **沙箱感知** | `read_file` `write_file` `ls` `glob` `grep` `bash` `git` `exec_python` |
+| **Host 直连** | `fetch_url` `web_search` `read_image` |
+| **记忆** | `save_memory` `load_memory` |
+| **待办** | `write_todo` `list_todos` `complete_todo` |
+| **子 Agent** | `spawn_subagent` `get_subagent_results` |
+| **其他** | `invoke_skill` `ask_clarification` |
 
 ### MiddlewareChain
 
@@ -157,43 +130,25 @@ after_tools_all:  Sandbox(release)
 | **Signal Handler** | ClarificationMiddleware | after_llm | 检测澄清需求，设置 WAIT signal |
 | | TitleMiddleware | after_llm | 首轮生成标题 |
 
-### Modules
-
-业务逻辑模块，直接被 Builder 调用。
-
-**MemoryStore** — 三层记忆：
-```
-~/.nanodeer/memory/
-├── episodic/YYYY-MM-DD.md    # L2: 每日会话日志
-├── MEMORY.md                  # L3: 长期记忆 (frontmatter)
-├── project/{slug}.md          # 项目记忆
-└── todos/{project}.json      # 任务列表
-```
-
-**SubagentRunner** — 并行子代理：
-```
-spawn_subagent → 收集到 pending 队列
-get_subagent_results → asyncio.gather 批量执行
-```
-
-**PlanLoader** — 任务计划：
-```
-load() → 从 todos/ 读取，渲染 <plan> section
-update() → 暂不需要，todo 更新走工具
-```
-
 ### wrap_tool_for_sandbox
 
-工具包装器，将 Tool 执行重定向到 Container 内。
+工具包装器，将 sandbox-aware 工具路由到 Layer 2 容器内执行。
 
 ```python
-wrap_tool_for_sandbox(tool) → wrapped_tool
-# 执行时调用 Container.execute() 而非本地
+wrap_tool_for_sandbox(tool, provider) → SandboxToolWrapper | None
+# 配置驱动（SANDBOX_TOOL_CONFIGS），单一 SandboxExecTool 类
 ```
 
 ---
 
-## Layer 5: 编排层
+## Layer 4: 编排层
+
+### Modules（业务能力，可注入）
+
+直接被 Builder 调用：
+- **MemoryStore** — L2 episodic + L3 memory
+- **SubagentRunner** — 并行子 Agent 执行
+- **PlanLoader** — todo 加载/持久化
 
 ### AgentBuilder
 
@@ -206,25 +161,22 @@ START → llm → [next_action?] → tools → llm → ... → END
 ```
 
 **_llm_node 执行顺序**：
-1. before_llm hooks
-2. memory.load() → metadata["memory_context"]
-3. plan.load() → metadata["plan_context"]
-4. LLM invoke
-5. memory.extract_and_save()
-6. plan.update()
-7. after_llm hooks
+1. 重置 `next_action = PROCESS` / 清理 `metadata`
+2. `before_llm` hooks（ThreadData → Uploads → Compression）
+3. `memory_store.load()` → `metadata["memory_context"]`
+4. `plan_loader.load()` → `metadata["plan_context"]`
+5. `llm.ainvoke()`
+6. `after_llm` hooks（Clarification → Title）**[try/finally 配对执行]**
 
 **_tools_node 执行顺序**：
-1. spawn_subagent → collect
-2. before_tools hooks
-3. tool.invoke()
-4. save_memory → handle
-5. get_subagent_results → batch execute
-6. after_tools_all hooks
+1. 遍历 `tool_calls`
+2. `before_tools` hooks（Security → Sandbox → LoopDetection）
+3. `tool.invoke()` — sandbox-aware 工具走容器，host 工具直连
+4. `after_tools_all` hooks（Sandbox release）**[try/finally 配对执行]**
 
 ### NanoDeerFactory
 
-组装工厂，创建 MiddlewareChain 和 Modules，注入 Builder。
+组装工厂，将 `MiddlewareChain` + modules + LLM + tools 注入 `Builder`，通过 `RuntimeFeatures` 控制功能开关。
 
 ```python
 factory = NanoDeerFactory(features)
@@ -233,7 +185,7 @@ graph = factory.build(llm, tools, modules=[...])
 
 ---
 
-## Layer 6: 应用层
+## Layer 5: 应用层
 
 ### create_nanodeer_agent
 
@@ -246,6 +198,9 @@ graph = create_nanodeer_agent(
     model=llm,
     tools=my_tools,
     features=RuntimeFeatures(),
+    memory_store=...,    # agent 实现
+    subagent_runner=..., # agent 实现
+    plan_loader=...,    # agent 实现
 )
 ```
 
@@ -315,11 +270,73 @@ class RuntimeFeatures:
 
 ---
 
+## Agent / Harness / App 解耦
+
+### 依赖方向
+
+```
+App 层  ──imports──→  Harness 层（框架）
+                        │
+                        ├── ThreadState       （数据总线）
+                        ├── MiddlewareChain   （拦截机制）
+                        ├── Sandbox / ToolRunner（执行空间）
+                        ├── AgentBuilder      （图定义）
+                        └── Factory           （装配）
+
+Harness 内部无 Agent 业务逻辑，memory/plan/subagent 由 App 注入。
+```
+
+**单向依赖原则**：Agent 实现（memory/plan/subagent）可以依赖 Harness 接口，但 Harness 绝对不知道 Agent 的业务逻辑。
+
+### 三层角色
+
+| 层级 | 谁 | 做什么 |
+|---|---|---|
+| **App** | 你的应用代码 | 调用 `create_nanodeer_agent()`，把 Agent 实现作为参数传入 |
+| **Harness** | nanodeer 框架 | 定义接口（ThreadState、MiddlewareChain、hooks）；执行状态流；不知道 memory/plan/subagent 的业务逻辑 |
+| **Agent** | 你写的业务逻辑 | 实现 `MemoryStore`、`PlanLoader`、`SubagentRunner`；在构建时注入到 Harness |
+
+### 注入点
+
+Harness 定义以下注入点，Agent 提供实现，App 在装配时传入：
+
+| Harness 注入点 | Agent 实现什么 | App 传入 |
+|---|---|---|
+| `memory_store` | `load()`、`save()`、`append_episodic()`、`load_project_memory()` | `MyMemoryStore()` |
+| `plan_loader` | `load()`、`update()` | `MyPlanLoader()` |
+| `subagent_runner` | `spawn()`、`collect()` | `MySubagentRunner()` |
+| `extra_middlewares` | 按 hook 名的自定义中间件列表 | `{"before_llm": [...], "after_tools_all": [...]}` |
+| `tools` | `list[BaseTool]` | `my_custom_tools` |
+
+### 示例：App 层的装配
+
+```python
+from my_agent import MyMemoryStore, MyPlanLoader, MySubagentRunner
+
+graph = create_nanodeer_agent(
+    model=llm,
+    tools=my_custom_tools,
+    features=RuntimeFeatures(),
+    memory_store=MyMemoryStore(),       # ← Agent 实现，App 传入
+    subagent_runner=MySubagentRunner(), # ← Agent 实现，App 传入
+    plan_loader=MyPlanLoader(),         # ← Agent 实现，App 传入
+)
+```
+
+**依赖检查**：
+- App 知道 MyMemoryStore 的实现 ✅
+- Harness 不知道 MyMemoryStore，只接收一个 `memory_store` 参数 ✅
+- 方向：App → Harness，不是 memory → harness
+```
+
+---
+
 ## 关键设计原则
 
-1. **单向依赖**：上层依赖下层，下层不感知上层
-2. **关注点分离**：State/Container/Tools/Middleware/Modules/Builder 各司其职
-3. **Middleware 做拦截**：不做业务逻辑，只做横切关注点
-4. **Modules 做业务**：Memory/Subagent/Plan 是业务逻辑，直接调用
+1. **单向依赖**：Agent → Harness，Harness 不知道业务逻辑
+2. **关注点分离**：State / Sandbox（两条执行路径）/ Tools / Middleware / Builder 各司其职
+3. **Middleware 做横切**：不做业务逻辑，只做拦截
+4. **Modules 可注入**：MemoryStore / SubagentRunner / PlanLoader 是 agent 提供的实现
 5. **工具是纯执行**：无文件 I/O，无横切逻辑
-6. **Sandbox 两层职责**：Middleware 管理生命周期，wrap_tool 包装执行
+6. **Sandbox + Host 双路径**：敏感操作走容器，host 工具直连宿主机
+7. **Hook 配对执行**：`try/finally` 保证 before/after 一定配对执行

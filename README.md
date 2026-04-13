@@ -11,17 +11,21 @@ English | [中文](./README_zh.md)
 - [Background](#background)
 - [Quick Start](#quick-start)
 - [Architecture](#architecture)
-  - [6-Layer Design](#6-layer-design)
+  - [5-Layer Harness Design](#5-layer-harness-design)
   - [Project Structure](#project-structure)
   - [Signal-Driven Design](#signal-driven-design)
   - [ReAct Graph](#react-graph)
-- [Module Design](#module-design)
-  - [Layer 1: Data](#layer-1-threadstate)
-  - [Layer 2: Execution Space (Sandbox)](#layer-2-execution-space-sandbox)
-  - [Layer 3: Execution (Tools) ](#layer-3-tools)
-  - [Layer 4: Interception](#layer-4-interception)
-  - [Layer 5: Orchestration](#layer-5-orchestration)
-  - [Layer 6: Application](#layer-6-application)
+- [Layers Design](#layers-design)
+  - [Layer 1: Data](#layer-1-data)
+  - [Layer 2: Sandbox + Host Execution](#layer-2-sandbox--host-execution)
+  - [Layer 3: Tools + Interception](#layer-3-tools--interception)
+  - [Layer 4: Orchestration](#layer-4-orchestration)
+  - [Layer 5: Application](#layer-5-application)
+- [Agent / Harness / App Decoupling](#agent--harness--app-decoupling)
+  - [Dependency Direction](#dependency-direction)
+  - [Three Parts](#three-parts)
+  - [Injection Points](#injection-points)
+  - [Example: App Layer Assembly](#example-app-layer-assembly)
 - [Tools](#tools)
 - [Core Patterns](#core-patterns)
 - [Design Principles](#design-principles)
@@ -70,38 +74,36 @@ Recommended format: asciinema cast or GIF
 
 ## Architecture
 
-### 6-Layer Design
+### 5-Layer Harness Design
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  Layer 6: Application                                       │
-│  create_nanodeer_agent                                      │
-└─────────────────────────────────────────────────────────────┘
-                              ▲
-┌─────────────────────────────────────────────────────────────┐
-│  Layer 5: Orchestration                                     │
-│  AgentBuilder + NanoDeerFactory                             │
-└─────────────────────────────────────────────────────────────┘
-                              ▲
-┌─────────────────────────────────────────────────────────────┐
-│  Layer 4: Wrapping / Interception                           │
-│  MiddlewareChain + Modules + wrap_tool_for_sandbox          │
-└─────────────────────────────────────────────────────────────┘
-                              ▲
-┌─────────────────────────────────────────────────────────────┐
-│  Layer 3: Execution (Tools)                                 │
-│  read_file / write_file / bash / git / invoke_skill / ...   │
-└─────────────────────────────────────────────────────────────┘
-                              ▲
-┌─────────────────────────────────────────────────────────────┐
-│  Layer 2: Execution Space (Container)                       │
-│  DockerSandbox / LocalSandbox                               │
-└─────────────────────────────────────────────────────────────┘
-                              ▲
-┌─────────────────────────────────────────────────────────────┐
-│  Layer 1: Data                                              │
-│  ThreadState                                                │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│  Layer 5: Application                                   │
+│  create_nanodeer_agent                                  │
+└─────────────────────────────────────────────────────────┘
+                            ▲
+┌─────────────────────────────────────────────────────────┐
+│  Layer 4: Orchestration                                 │
+│  AgentBuilder + NanoDeerFactory + Modules (injectable)  │
+└─────────────────────────────────────────────────────────┘
+                            ▲
+┌─────────────────────────────────────────────────────────┐
+│  Layer 3: Interception                                  │
+│  MiddlewareChain + wrap_tool_for_sandbox + Tools        │
+└─────────────────────────────────────────────────────────┘
+                            ▲
+              ┌─────────────┴─────────────┐
+              ▲                           ▲
+┌───────────────────────────┐   ┌───────────────────────────┐
+│  Layer 2: Sandbox         │   │  Layer 2: Host Execution  │
+│  (sandbox-aware tools)    │   │  (external/host tools)    │
+│  DockerSandboxProvider    │   │  fetch_url / web_search / │
+│  LocalSandboxProvider     │   │  read_image ...           │
+└───────────────────────────┘   └───────────────────────────┘
+                            ▲
+┌─────────────────────────────────────────────────────────┐
+│  Layer 1: Data — ThreadState                            │
+└─────────────────────────────────────────────────────────┘
 ```
 
 ### Project Structure
@@ -119,15 +121,12 @@ nanodeer/
 │       ├── agent/
 │       │   ├── state.py      # ThreadState — single data bus
 │       │   ├── builder.py    # LangGraph graph assembly
-│       │   ├── factory.py    # NanoDeerFactory — assembles middlewares
-│       │   ├── prompt.py    # System prompt assembly
-│       │   ├── memory/       # L2 episodic + L3 memory
-│       │   │   ├── storage.py
-│       │   │   └── types.py
-│       │   └── middlewares/  # 8 interceptors
+│       │   ├── factory.py    # NanoDeerFactory — assembles harness
+│       │   ├── prompt.py     # System prompt assembly
+│       │   └── middlewares/  # 8 interceptors (harness hard-safety + smart)
 │       │       ├── base.py                # Middleware + MiddlewareChain
 │       │       ├── thread_data.py        # Per-thread metadata init
-│       │       ├── sandbox.py            # Docker container lifecycle
+│       │       ├── sandbox.py            # Container lifecycle + bash audit
 │       │       ├── security.py           # Path validation
 │       │       ├── clarification.py      # ask_clarification signal
 │       │       ├── loop_detection.py     # Repetitive call guard
@@ -140,20 +139,26 @@ nanodeer/
 │       │   ├── local.py      # LocalSandboxProvider fallback
 │       │   ├── path.py       # Path validation and translation
 │       │   └── tools.py      # SandboxExecTool (config-driven)
-│       ├── tools/            # Built-in tools
-│       ├── subagents/        # Subagent runner
-│       │   ├── runner.py     # SubagentRunner class
-│       │   └── types.py
-│       ├── plan/             # Plan loader
-│       │   ├── loader.py
-│       │   └── types.py
-│       ├── skills/           # Markdown skill workflows
-│       │   └── loader.py
+│       ├── tools/            # Built-in tools (pure execution)
+│       │   ├── file.py       # read_file / write_file
+│       │   ├── list_dir.py   # ls
+│       │   ├── search.py     # glob / grep
+│       │   ├── shell.py      # bash
+│       │   ├── git.py        # git
+│       │   ├── fetch_url.py  # fetch_url
+│       │   ├── web_search.py # web_search
+│       │   ├── read_image.py # read_image
+│       │   ├── exec_python.py # exec_python
+│       │   ├── memory.py     # save_memory / load_memory
+│       │   ├── plan.py       # write_todo / list_todos / complete_todo
+│       │   ├── subagent.py   # spawn_subagent / get_subagent_results
+│       │   ├── invoke_skill.py # invoke_skill
+│       │   └── ask_clarification.py # ask_clarification
 │       ├── client.py
 │       ├── engine.py
 │       └── README.md         # Framework architecture
 │
-├── sandbox/                  # Docker sandbox image
+├── docker/                   # Docker sandbox image (Dockerfile)
 ├── tests/                    # Test suite
 ├── examples/                 # Usage examples
 └── pyproject.toml
@@ -181,9 +186,9 @@ START → llm → [next_action?] → tools → llm → ... → END
 
 ---
 
-## Module Design
+## Layers Design
 
-### Layer 1: ThreadState
+### Layer 1: Data
 
 Single data bus flowing through LangGraph. Key fields:
 - `messages` — conversation history
@@ -195,7 +200,11 @@ Single data bus flowing through LangGraph. Key fields:
 - `thread_id` — thread identifier
 - `metadata` — middleware blackboard (`memory_context`, `uploaded_files`, etc.)
 
-### Layer 2: Execution Space (Sandbox)
+### Layer 2: Sandbox + Host Execution
+
+**Sandbox** (on-demand, for sensitive operations)
+
+sandbox-aware tools run inside containers:
 
 | Aspect | Detail |
 |--------|--------|
@@ -204,13 +213,16 @@ Single data bus flowing through LangGraph. Key fields:
 | **Working dir** | `/workspace/{thread_id}/` (ephemeral, agent-created files) |
 | **Default provider** | `DockerSandboxProvider` — volume mount, `network=none`, `read_only` rootfs |
 | **Fallback provider** | `LocalSandboxProvider` — subprocess, no isolation |
-| **Path translation** | `/mnt/user-data/...` is the mount point — no translation needed; only `/workspace/...` paths are translated |
 
-### Layer 3: Tools
+sandbox-aware tools: `read_file` `write_file` `ls` `glob` `grep` `bash` `git` `exec_python`
 
-Pure execution units — LangChain `@tool` decorated functions with no sandbox awareness. Sandbox routing handled by `wrap_tool_for_sandbox` (Layer 4). Tools are extended by Skills via `invoke_skill`.
+**Host Execution** (direct, no isolation)
 
-### Layer 4: Interception
+host tools: `fetch_url` `web_search` `read_image`
+
+### Layer 3: Tools + Interception
+
+**Tools** — pure execution units, LangChain `@tool` decorated, no sandbox awareness. Skills (`invoke_skill`) are data extensions for tools.
 
 **MiddlewareChain** — 8 interceptors with 4 hooks:
 ```
@@ -233,14 +245,14 @@ after_tools_all:  Sandbox(release)
 | **Signal Handler** | ClarificationMiddleware | after_llm | Clarification signal |
 | | TitleMiddleware | after_llm | Title generation |
 
-**Modules** — business logic, called directly by Builder (not via middleware):
-- `MemoryStore` — L2 episodic (append-once) + L3 memory (`save_memory` tool)
-- `SubagentRunner` — parallel subagent execution
-- `PlanLoader` — todo loading/persistence
+**wrap_tool_for_sandbox** — routes sandbox-aware tools to Layer 2 containers. Config-driven (`SANDBOX_TOOL_CONFIGS`), single `SandboxExecTool` class.
 
-**wrap_tool_for_sandbox** — maps tool args to sandbox commands via `SANDBOX_TOOL_CONFIGS`. Single `SandboxExecTool` class, config-driven, no per-tool subclasses.
+### Layer 4: Orchestration
 
-### Layer 5: Orchestration + prompt
+**Modules** (business capabilities, injectable) — called directly by Builder:
+- **MemoryStore** — L2 episodic + L3 memory
+- **SubagentRunner** — parallel subagent execution
+- **PlanLoader** — todo loading/persistence
 
 | Component | Responsibility |
 |-----------|----------------|
@@ -250,9 +262,79 @@ after_tools_all:  Sandbox(release)
 
 Sections in the rendered prompt: `<memory>`, `<memory_maintenance>`, `<plan>`, `<subagent_usage>`, `<loop_warning>`.
 
-### Layer 6: Application
+### Layer 5: Application
 
-User entry point that creates the complete Agent.
+Public entry point that assembles all harness + agent injection points:
+
+```python
+create_nanodeer_agent(
+    model=llm, tools=my_tools, features=RuntimeFeatures(),
+    memory_store=...,    # agent implementation
+    subagent_runner=..., # agent implementation
+    plan_loader=...,     # agent implementation
+)
+```
+
+---
+
+## Agent / Harness / App Decoupling
+
+### Dependency Direction
+
+```
+App Layer  ──imports──→  Harness Layer (framework)
+                        │
+                        ├── ThreadState       (data bus)
+                        ├── MiddlewareChain   (interception)
+                        ├── Sandbox / ToolRunner (execution space)
+                        ├── AgentBuilder      (graph definition)
+                        └── Factory           (assembly)
+
+Harness has zero knowledge of Agent business logic.
+memory/plan/subagent are injected by App, not imported by Harness.
+```
+
+**One-way dependency**: Agent implementations (memory/plan/subagent) can depend on Harness interfaces, but Harness has no knowledge of Agent's business logic.
+
+### Three Parts
+
+| Part | Who | Does |
+|---|---|---|
+| **App** | Your application code | Calls `create_nanodeer_agent()`, passes Agent implementations as arguments |
+| **Harness** | nanodeer framework | Defines interfaces (ThreadState, MiddlewareChain, hooks); executes state flow; knows nothing about memory/plan/subagent business |
+| **Agent** | Your implementation | Implements `MemoryStore`, `PlanLoader`, `SubagentRunner`; injected into Harness at build time |
+
+### Injection Points
+
+Harness defines the following injection points. Agent provides the implementation, App passes it at assembly:
+
+| Harness Injection Point | Agent Implements | App Passes |
+|---|---|---|
+| `memory_store` | `load()`, `save()`, `append_episodic()`, `load_project_memory()` | `MyMemoryStore()` |
+| `plan_loader` | `load()`, `update()` | `MyPlanLoader()` |
+| `subagent_runner` | `spawn()`, `collect()` | `MySubagentRunner()` |
+| `extra_middlewares` | Custom middleware list per hook | `{"before_llm": [...], "after_tools_all": [...]}` |
+| `tools` | `list[BaseTool]` | `my_custom_tools` |
+
+### Example: App Layer Assembly
+
+```python
+from my_agent import MyMemoryStore, MyPlanLoader, MySubagentRunner
+
+graph = create_nanodeer_agent(
+    model=llm,
+    tools=my_custom_tools,
+    features=RuntimeFeatures(),
+    memory_store=MyMemoryStore(),      # ← Agent implements, App passes
+    subagent_runner=MySubagentRunner(), # ← Agent implements, App passes
+    plan_loader=MyPlanLoader(),        # ← Agent implements, App passes
+)
+```
+
+**Dependency check**:
+- App knows MyMemoryStore ✅
+- Harness does NOT know MyMemoryStore, only receives it as `memory_store` parameter ✅
+- Direction: App → Harness, not memory → harness
 
 ---
 
@@ -269,15 +351,15 @@ User entry point that creates the complete Agent.
 | `glob` | Find files matching glob pattern |
 | `grep` | Search for regex pattern in files |
 | `bash` | Execute bash command in container |
+| `git` | Git operations (local only, inside sandbox) |
+| `exec_python` | Execute arbitrary Python code inside sandbox |
 
 **External** (run on host — network available)
 | Tool | Description |
 |------|-------------|
-| `git` | Git operations |
 | `fetch_url` | Fetch web page, extract clean text |
 | `web_search` | Search via DuckDuckGo HTML |
 | `read_image` | Read image file, return base64 for vision |
-| `exec_python` | Execute arbitrary Python code locally |
 
 **Memory**
 | Tool | Description |
@@ -318,17 +400,20 @@ User entry point that creates the complete Agent.
 
 **Memory Tiers** — L1: `ThreadState.messages` (current context, native) · L2: append-once episodic log written when `next_action = END` · L3: agent actively maintained via `save_memory` tool
 
+**Hook Pairing** — Every `before_*` hook has its `after_*` counterpart guaranteed to run via `try/finally`, even on exception. This ensures `after_llm` (TitleMiddleware, ClarificationMiddleware) and `after_tools_all` (SandboxMiddleware release) always execute.
+
 ---
 
 ## Design Principles
 
-1. **Single-direction dependency**: Upper layers depend on lower layers, lower layers are unaware of upper layers
-2. **Separation of concerns**: State/Container/Tools/Middleware/Modules/Builder each has its own responsibility
+1. **One-way dependency**: Agent → Harness, Harness has no knowledge of Agent's business logic
+2. **Separation of concerns**: State / Sandbox (dual execution paths) / Tools / Middleware / Builder each has its own responsibility
 3. **Middleware intercepts**: Does not handle business logic, only handles cross-cutting concerns
-4. **Modules handle business**: Memory/Subagent/Plan are business logic, called directly
+4. **Modules are injectable**: MemoryStore / SubagentRunner / PlanLoader are agent-provided implementations
 5. **Tools are pure execution**: Each tool is a single responsibility function; cross-cutting logic (sandbox routing, path translation) lives in `wrap_tool_for_sandbox`, not in the tool itself
-6. **Sandbox dual responsibility**: Middleware manages lifecycle, wrap_tool handles execution
+6. **Sandbox + Host dual paths**: Sensitive ops go through containers, host tools run directly on the host
 7. **Signal-driven flow**: Control flow via `state.next_action`, not message injection
+8. **Hook pairing**: `try/finally` ensures every before_* hook has its after_* counterpart even on exception
 
 ---
 

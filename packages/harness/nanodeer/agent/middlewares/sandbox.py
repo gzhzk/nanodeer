@@ -99,8 +99,8 @@ class SandboxMiddleware(Middleware):
         tid = state.sandbox.thread_id
         try:
             await self._provider.release(state.sandbox)
-            state.sandbox.status = "released"
         except Exception:
             pass
         finally:
             clear_sandbox(tid)
+            state.sandbox.status = "released"  # always update, even on error

@@ -81,39 +81,48 @@ class AgentBuilder:
         return state.next_action.value
 
     async def _llm_node(self, state: ThreadState) -> dict:
-        await self._chain.before_llm(state)
+        # Reset per-turn state before any hooks run.
+        # These flags must not leak across turns.
+        state.next_action = NextAction.PROCESS
+        state.metadata.pop("loop_warning", None)
+        state.metadata.pop("__compressed", None)
 
-        # Session end: write entire conversation to episodic once
-        if self._memory_store and state.next_action == NextAction.END:
-            self._memory_store.append_episodic(
-                _format_messages_for_episodic(state.messages)
+        try:
+            await self._chain.before_llm(state)
+
+            # Session end: write entire conversation to episodic once
+            if self._memory_store and state.next_action == NextAction.END:
+                self._memory_store.append_episodic(
+                    _format_messages_for_episodic(state.messages)
+                )
+                return {"messages": []}
+
+            if self._memory_store:
+                # L3 + L2: load for prompt injection
+                memory_context = self._memory_store.load()
+                project_slug = state.metadata.get("project_slug", "default")
+                project_mem = self._memory_store.load_project_memory(project_slug)
+                if project_mem:
+                    memory_context = (memory_context + "\n\n" + project_mem) if memory_context else project_mem
+                state.metadata["memory_context"] = memory_context
+
+            if self._plan_loader:
+                project_slug = state.metadata.get("project_slug", "default")
+                state.metadata["plan_context"] = self._plan_loader.load(project_slug)
+
+            tools_names = [t.name for t in self._tools]
+            prompt = build_lead_agent_prompt(state, tools_names)
+            resp = await self.llm.ainvoke(
+                [SystemMessage(content=prompt)] + list(state.messages)
             )
+
+            if self._plan_loader:
+                self._plan_loader.update(state)
+        finally:
+            # after_llm must run even on exception / session end —
+            # ClarificationMiddleware and TitleMiddleware need a chance to execute.
             await self._chain.after_llm(state)
-            return {"messages": []}
 
-        if self._memory_store:
-            # L3 + L2: load for prompt injection
-            memory_context = self._memory_store.load()
-            project_slug = state.metadata.get("project_slug", "default")
-            project_mem = self._memory_store.load_project_memory(project_slug)
-            if project_mem:
-                memory_context = (memory_context + "\n\n" + project_mem) if memory_context else project_mem
-            state.metadata["memory_context"] = memory_context
-
-        if self._plan_loader:
-            project_slug = state.metadata.get("project_slug", "default")
-            state.metadata["plan_context"] = self._plan_loader.load(project_slug)
-
-        tools_names = [t.name for t in self._tools]
-        prompt = build_lead_agent_prompt(state, tools_names)
-        resp = await self.llm.ainvoke(
-            [SystemMessage(content=prompt)] + list(state.messages)
-        )
-
-        if self._plan_loader:
-            self._plan_loader.update(state)
-
-        await self._chain.after_llm(state)
         return {"messages": [resp]}
 
     async def _tools_node(self, state: ThreadState) -> dict:
@@ -124,23 +133,27 @@ class AgentBuilder:
         thread_id = state.thread_id or "default"
         results = []
 
-        for tc in last.tool_calls:
-            tool = self._tool_map.get(tc["name"])
+        try:
+            for tc in last.tool_calls:
+                tool = self._tool_map.get(tc["name"])
 
-            await self._chain.before_tools(state, tc["name"], tc["args"])
+                await self._chain.before_tools(state, tc["name"], tc["args"])
 
-            if not tool:
-                content = f"Tool {tc['name']} not found"
-            else:
-                content = await tool.ainvoke(tc["args"], thread_id=thread_id)
+                if not tool:
+                    content = f"Tool {tc['name']} not found"
+                else:
+                    content = await tool.ainvoke(tc["args"], thread_id=thread_id)
 
-            results.append(ToolMessage(
-                tool_call_id=tc["id"],
-                name=tc["name"],
-                content=str(content),
-            ))
+                results.append(ToolMessage(
+                    tool_call_id=tc["id"],
+                    name=tc["name"],
+                    content=str(content),
+                ))
+        finally:
+            # after_tools_all must run even if a tool throws —
+            # SandboxMiddleware needs to release the container.
+            await self._chain.after_tools_all(state)
 
-        await self._chain.after_tools_all(state)
         return {"messages": results}
 
     @property

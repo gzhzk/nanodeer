@@ -43,7 +43,7 @@ class NanoDeerFactory:
         except Exception:
             return LocalSandboxProvider()
 
-    def _assemble_before_llm(self, sandbox_provider=None):
+    def _assemble_before_llm(self, sandbox_provider=None, extra_middlewares=None):
         from .middlewares.thread_data import ThreadDataMiddleware
         from .middlewares.uploads import UploadsMiddleware
         from .middlewares.compression import CompressionMiddleware
@@ -58,9 +58,11 @@ class NanoDeerFactory:
                 compression_ratio=self.features.compression_ratio,
                 keep_recent=self.features.compression_keep_recent,
             ))
+        if extra_middlewares:
+            mw.extend(extra_middlewares)
         return mw
 
-    def _assemble_after_llm(self):
+    def _assemble_after_llm(self, extra_middlewares=None):
         from .middlewares.clarification import ClarificationMiddleware
         from .middlewares.title import TitleMiddleware
 
@@ -68,9 +70,11 @@ class NanoDeerFactory:
         if self.features.clarification:
             mw.append(ClarificationMiddleware())
         mw.append(TitleMiddleware(llm=None))
+        if extra_middlewares:
+            mw.extend(extra_middlewares)
         return mw
 
-    def _assemble_before_tools(self, sandbox_provider=None):
+    def _assemble_before_tools(self, sandbox_provider=None, extra_middlewares=None):
         from .middlewares.sandbox import SandboxMiddleware
         from .middlewares.security import SecurityMiddleware
         from .middlewares.loop_detection import LoopDetectionMiddleware
@@ -85,13 +89,18 @@ class NanoDeerFactory:
                 warn_threshold=self.features.loop_warn_threshold,
                 hard_limit=self.features.loop_hard_limit,
             ))
+        if extra_middlewares:
+            mw.extend(extra_middlewares)
         return mw
 
-    def _assemble_after_tools_all(self, sandbox_provider=None):
+    def _assemble_after_tools_all(self, sandbox_provider=None, extra_middlewares=None):
         from .middlewares.sandbox import SandboxMiddleware
+        mw = []
         if self.features.sandbox and sandbox_provider:
-            return [SandboxMiddleware(provider=sandbox_provider)]
-        return []
+            mw.append(SandboxMiddleware(provider=sandbox_provider))
+        if extra_middlewares:
+            mw.extend(extra_middlewares)
+        return mw
 
     def build(
         self,
@@ -101,17 +110,19 @@ class NanoDeerFactory:
         memory_store=None,
         subagent_runner=None,
         plan_loader=None,
+        extra_middlewares: dict[str, list] | None = None,
     ):
         from .middlewares import MiddlewareChain
         from .builder import AgentBuilder
 
         sandbox_provider = self._create_sandbox_provider() if self.features.sandbox else None
+        extra = extra_middlewares or {}
 
         chain = MiddlewareChain(
-            before_llm=self._assemble_before_llm(sandbox_provider),
-            after_llm=self._assemble_after_llm(),
-            before_tools=self._assemble_before_tools(sandbox_provider),
-            after_tools_all=self._assemble_after_tools_all(sandbox_provider),
+            before_llm=self._assemble_before_llm(sandbox_provider, extra.get("before_llm")),
+            after_llm=self._assemble_after_llm(extra.get("after_llm")),
+            before_tools=self._assemble_before_tools(sandbox_provider, extra.get("before_tools")),
+            after_tools_all=self._assemble_after_tools_all(sandbox_provider, extra.get("after_tools_all")),
         )
         builder = AgentBuilder(
             llm=llm,
@@ -133,8 +144,20 @@ def create_nanodeer_agent(
     tools: list["BaseTool"] | None = None,
     *,
     features: RuntimeFeatures | None = None,
+    memory_store: Any = None,
+    plan_loader: Any = None,
+    subagent_runner: Any = None,
+    extra_middlewares: dict[str, list] | None = None,
 ) -> "CompiledStateGraph":
     from .tools import default_tools
+
     feat = features or RuntimeFeatures()
     effective_tools = tools or default_tools()
-    return NanoDeerFactory(feat).build(model, effective_tools)
+    return NanoDeerFactory(feat).build(
+        model,
+        effective_tools,
+        memory_store=memory_store,
+        plan_loader=plan_loader,
+        subagent_runner=subagent_runner,
+        extra_middlewares=extra_middlewares,
+    )

@@ -11,17 +11,21 @@
 - [背景](#背景)
 - [快速开始](#快速开始)
 - [架构](#架构)
-  - [6 层架构](#6-层架构)
+  - [5 层 Harness 设计](#5-层harness-设计)
   - [项目结构](#项目结构)
   - [信号驱动设计](#信号驱动设计)
   - [ReAct 执行图](#react-执行图)
-- [模块设计](#模块设计)
-  - [Layer 1: 数据层 ](#layer-1-threadstate)
-  - [Layer 2: 执行空间层（沙箱）](#layer-2-执行空间层沙箱)
-  - [Layer 3: 执行层（工具）](#layer-3-tools)
-  - [Layer 4: 拦截层](#layer-4-拦截层)
-  - [Layer 5: 编排层](#layer-5-编排层)
-  - [Layer 6: 应用层](#layer-6-应用层)
+- [层级设计](#层级设计)
+  - [Layer 1: 数据层](#layer-1-threadstate)
+  - [Layer 2: Sandbox + Host 执行](#layer-2-sandbox--host-执行)
+  - [Layer 3: 工具 + 拦截](#layer-3-工具--拦截)
+  - [Layer 4: 编排层](#layer-4-编排层)
+  - [Layer 5: 应用层](#layer-5-应用层)
+- [Agent / Harness / App 解耦](#agent--harness--app-解耦)
+  - [依赖方向](#依赖方向)
+  - [三层角色](#三层角色)
+  - [注入点](#注入点)
+  - [示例：App 层的装配](#示例app-层的装配)
 - [工具](#工具)
 - [核心模式](#核心模式)
 - [设计原则](#设计原则)
@@ -56,38 +60,36 @@
 
 ## 架构
 
-### 6 层设计
+### 5 层 Harness 设计
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  Layer 6: Application                                       │
-│  create_nanodeer_agent                                      │
-└─────────────────────────────────────────────────────────────┘
-                              ▲
-┌─────────────────────────────────────────────────────────────┐
-│  Layer 5: Orchestration                                     │
-│  AgentBuilder + NanoDeerFactory + prompt                    │
-└─────────────────────────────────────────────────────────────┘
-                              ▲
-┌─────────────────────────────────────────────────────────────┐
-│  Layer 4: Interception                                       │
-│  MiddlewareChain + Modules + wrap_tool_for_sandbox          │
-└─────────────────────────────────────────────────────────────┘
-                              ▲
-┌─────────────────────────────────────────────────────────────┐
-│  Layer 3: Execution (Tools)                                 │
-│  read_file / write_file / bash / git / invoke_skill / ...   │
-└─────────────────────────────────────────────────────────────┘
-                              ▲
-┌─────────────────────────────────────────────────────────────┐
-│  Layer 2: Execution Space (Sandbox)                          │
-│  DockerSandbox / LocalSandbox                               │
-└─────────────────────────────────────────────────────────────┘
-                              ▲
-┌─────────────────────────────────────────────────────────────┐
-│  Layer 1: Data                                              │
-│  ThreadState                                                │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│  Layer 5: Application                                   │
+│  create_nanodeer_agent                                  │
+└─────────────────────────────────────────────────────────┘
+                            ▲
+┌─────────────────────────────────────────────────────────┐
+│  Layer 4: Orchestration                                 │
+│  AgentBuilder + NanoDeerFactory + Modules (可注入)       │
+└─────────────────────────────────────────────────────────┘
+                            ▲
+┌─────────────────────────────────────────────────────────┐
+│  Layer 3: Interception                                  │
+│  MiddlewareChain + wrap_tool_for_sandbox + Tools        │
+└─────────────────────────────────────────────────────────┘
+                            ▲
+              ┌─────────────┴─────────────┐
+              ▲                           ▲
+┌───────────────────────────┐   ┌───────────────────────────┐
+│  Layer 2: Sandbox         │   │  Layer 2: Host 执行       │
+│  (sandbox-aware 工具)     │   │  (external/host 工具)      │
+│  DockerSandboxProvider    │   │  fetch_url / web_search / │
+│  LocalSandboxProvider     │   │  read_image ...           │
+└───────────────────────────┘   └───────────────────────────┘
+                            ▲
+┌─────────────────────────────────────────────────────────┐
+│  Layer 1: Data — ThreadState                            │
+└─────────────────────────────────────────────────────────┘
 ```
 
 ### 项目结构
@@ -105,15 +107,12 @@ nanodeer/
 │       ├── agent/
 │       │   ├── state.py      # ThreadState — 单一数据总线
 │       │   ├── builder.py    # LangGraph 图组装
-│       │   ├── factory.py    # NanoDeerFactory — 组装中间件
+│       │   ├── factory.py    # NanoDeerFactory — 组装 harness
 │       │   ├── prompt.py     # System Prompt 组装
-│       │   ├── memory/       # L2 episodic + L3 memory
-│       │   │   ├── storage.py
-│       │   │   └── types.py
-│       │   └── middlewares/  # 8 个拦截器
+│       │   └── middlewares/  # 8 个拦截器（harness 硬安全 + 智能）
 │       │       ├── base.py              # Middleware + MiddlewareChain
 │       │       ├── thread_data.py       # 每线程元数据初始化
-│       │       ├── sandbox.py           # Docker 容器生命周期
+│       │       ├── sandbox.py           # 容器生命周期 + bash 审计
 │       │       ├── security.py          # 路径验证
 │       │       ├── clarification.py     # ask_clarification 信号
 │       │       ├── loop_detection.py    # 重复调用防护
@@ -126,20 +125,26 @@ nanodeer/
 │       │   ├── local.py      # LocalSandboxProvider 回退方案
 │       │   ├── path.py       # 虚拟 ↔ 物理路径映射
 │       │   └── tools.py      # SandboxExecTool（配置驱动）
-│       ├── tools/            # 内置工具
-│       ├── subagents/        # 子 Agent 执行器
-│       │   ├── runner.py     # SubagentRunner 类
-│       │   └── types.py
-│       ├── plan/             # 计划加载器
-│       │   ├── loader.py
-│       │   └── types.py
-│       ├── skills/           # Markdown 技能工作流
-│       │   └── loader.py
+│       ├── tools/            # 内置工具（纯执行）
+│       │   ├── file.py       # read_file / write_file
+│       │   ├── list_dir.py   # ls
+│       │   ├── search.py     # glob / grep
+│       │   ├── shell.py      # bash
+│       │   ├── git.py        # git
+│       │   ├── fetch_url.py  # fetch_url
+│       │   ├── web_search.py # web_search
+│       │   ├── read_image.py # read_image
+│       │   ├── exec_python.py # exec_python
+│       │   ├── memory.py     # save_memory / load_memory
+│       │   ├── plan.py       # write_todo / list_todos / complete_todo
+│       │   ├── subagent.py   # spawn_subagent / get_subagent_results
+│       │   ├── invoke_skill.py # invoke_skill
+│       │   └── ask_clarification.py # ask_clarification
 │       ├── client.py
 │       ├── engine.py
 │       └── README.md         # 框架架构
 │
-├── sandbox/                  # Docker 沙箱镜像
+├── docker/                   # Docker 沙箱镜像（Dockerfile）
 ├── tests/                    # 测试套件
 ├── examples/                 # 使用示例
 └── pyproject.toml
@@ -167,9 +172,9 @@ START → llm → [next_action?] → tools → llm → ... → END
 
 ---
 
-## 模块设计
+## 层级设计
 
-### Layer 1: ThreadState
+### Layer 1: 数据层
 
 流经 LangGraph 的单一数据总线。关键字段：
 - `messages` — 对话历史
@@ -181,7 +186,11 @@ START → llm → [next_action?] → tools → llm → ... → END
 - `thread_id` — 线程标识
 - `metadata` — 中间件黑板（`memory_context`、`uploaded_files` 等）
 
-### Layer 2: 执行空间层（沙箱）
+### Layer 2: Sandbox + Host 执行
+
+**Sandbox（按需，用于敏感操作）**
+
+sandbox-aware 工具在容器内执行。两种实现：
 
 | 方面 | 详情 |
 |------|------|
@@ -190,13 +199,16 @@ START → llm → [next_action?] → tools → llm → ... → END
 | **工作目录** | `/workspace/{thread_id}/`（临时，Agent 创建的文件） |
 | **默认 Provider** | `DockerSandboxProvider` — 卷挂载，`network=none`，`read_only` rootfs |
 | **回退 Provider** | `LocalSandboxProvider` — 子进程，无隔离 |
-| **路径翻译** | `/mnt/user-data/...` 为挂载点，无需翻译；只有 `/workspace/...` 路径需要翻译 |
 
-### Layer 3: Tools
+sandbox-aware 工具：`read_file` `write_file` `ls` `glob` `grep` `bash` `git` `exec_python`
 
-纯执行单元 — LangChain `@tool` 装饰的函数，无沙箱感知。沙箱路由由 `wrap_tool_for_sandbox`（Layer 4）处理。Skills（通过 `invoke_skill` 加载的 markdown 工作流）是工具的数据扩展。
+**Host 执行（直连，无隔离）**
 
-### Layer 4: 拦截层
+host 工具：`fetch_url` `web_search` `read_image`
+
+### Layer 3: 工具 + 拦截
+
+**Tools** — 纯执行单元，LangChain `@tool` 装饰，无沙箱感知。Skills（`invoke_skill`）是工具的数据扩展。
 
 **MiddlewareChain** — 8 个拦截器，4 个钩子：
 ```
@@ -219,14 +231,14 @@ after_tools_all:  Sandbox(release)
 | **Signal Handler** | ClarificationMiddleware | after_llm | 澄清信号 |
 | | TitleMiddleware | after_llm | 标题生成 |
 
-**Modules** — 业务逻辑，直接被 Builder 调用：
-- `MemoryStore` — L2 episodic（append-once）+ L3 memory（`save_memory` 工具）
-- `SubagentRunner` — 并行子 Agent 执行
-- `PlanLoader` — todo 加载/持久化
+**wrap_tool_for_sandbox** — 把 sandbox-aware 工具路由到 Layer 2 容器内执行。配置驱动（`SANDBOX_TOOL_CONFIGS`），单一 `SandboxExecTool` 类。
 
-**wrap_tool_for_sandbox** — 通过 `SANDBOX_TOOL_CONFIGS` 将工具参数映射为沙箱命令。单一 `SandboxExecTool` 类，配置驱动，无子类。
+### Layer 4: 编排层
 
-### Layer 5: 编排层 + prompt
+**Modules（业务能力，可注入）**，直接被 Builder 调用：
+- **MemoryStore** — L2 episodic + L3 memory
+- **SubagentRunner** — 并行子 Agent 执行
+- **PlanLoader** — todo 加载/持久化
 
 | 组件 | 职责 |
 |------|------|
@@ -236,9 +248,79 @@ after_tools_all:  Sandbox(release)
 
 渲染的 prompt 段落：`<memory>`、`<memory_maintenance>`、`<plan>`、`<subagent_usage>`、`<loop_warning>`。
 
-### Layer 6: 应用层
+### Layer 5: 应用层
 
-用户入口，创建完整 Agent。
+唯一公开入口，装配 harness + agent 的所有注入点：
+
+```python
+create_nanodeer_agent(
+    model=llm, tools=my_tools, features=RuntimeFeatures(),
+    memory_store=...,    # agent 实现
+    subagent_runner=..., # agent 实现
+    plan_loader=...,     # agent 实现
+)
+```
+
+---
+
+## Agent / Harness / App 解耦
+
+### 依赖方向
+
+```
+App 层  ──imports──→  Harness 层（框架）
+                        │
+                        ├── ThreadState       （数据总线）
+                        ├── MiddlewareChain   （拦截机制）
+                        ├── Sandbox / ToolRunner（执行空间）
+                        ├── AgentBuilder      （图定义）
+                        └── Factory           （装配）
+
+Harness 内部无 Agent 业务逻辑，memory/plan/subagent 由 App 注入。
+```
+
+**单向依赖原则**：Agent 实现（memory/plan/subagent）可以依赖 Harness 接口，但 Harness 绝对不知道 Agent 的业务逻辑。
+
+### 三层角色
+
+| 层级 | 谁 | 做什么 |
+|---|---|---|
+| **App** | 你的应用代码 | 调用 `create_nanodeer_agent()`，把 Agent 实现作为参数传入 |
+| **Harness** | nanodeer 框架 | 定义接口（ThreadState、MiddlewareChain、hooks）；执行状态流；不知道 memory/plan/subagent 的业务逻辑 |
+| **Agent** | 你写的业务逻辑 | 实现 `MemoryStore`、`PlanLoader`、`SubagentRunner`；在构建时注入到 Harness |
+
+### 注入点
+
+Harness 定义以下注入点，Agent 提供实现，App 在装配时传入：
+
+| Harness 注入点 | Agent 实现什么 | App 传入 |
+|---|---|---|
+| `memory_store` | `load()`、`save()`、`append_episodic()`、`load_project_memory()` | `MyMemoryStore()` |
+| `plan_loader` | `load()`、`update()` | `MyPlanLoader()` |
+| `subagent_runner` | `spawn()`、`collect()` | `MySubagentRunner()` |
+| `extra_middlewares` | 按 hook 名的自定义中间件列表 | `{"before_llm": [...], "after_tools_all": [...]}` |
+| `tools` | `list[BaseTool]` | `my_custom_tools` |
+
+### 示例：App 层的装配
+
+```python
+from my_agent import MyMemoryStore, MyPlanLoader, MySubagentRunner
+
+graph = create_nanodeer_agent(
+    model=llm,
+    tools=my_custom_tools,
+    features=RuntimeFeatures(),
+    memory_store=MyMemoryStore(),       # ← Agent 实现，App 传入
+    subagent_runner=MySubagentRunner(), # ← Agent 实现，App 传入
+    plan_loader=MyPlanLoader(),         # ← Agent 实现，App 传入
+)
+```
+
+**依赖检查**：
+- App 知道 MyMemoryStore 的实现 ✅
+- Harness 不知道 MyMemoryStore，只接收一个 `memory_store` 参数 ✅
+- 方向：App → Harness，不是 memory → harness
+```
 
 ---
 
@@ -255,15 +337,15 @@ after_tools_all:  Sandbox(release)
 | `glob` | 查找匹配 glob 模式的文件 |
 | `grep` | 在文件中搜索正则模式 |
 | `bash` | 在容器内执行 Bash 命令 |
+| `git` | Git 操作（本地，在沙箱内执行） |
+| `exec_python` | 在沙箱内执行任意 Python 代码 |
 
 **外部**（在宿主机运行 — 网络可用）
 | 工具 | 描述 |
 |------|------|
-| `git` | Git 操作 |
 | `fetch_url` | 获取网页，提取纯文本 |
 | `web_search` | 通过 DuckDuckGo HTML 搜索 |
 | `read_image` | 读取图片文件，返回 base64 给视觉模型 |
-| `exec_python` | 本地执行任意 Python 代码 |
 
 **记忆**
 | 工具 | 描述 |
@@ -304,17 +386,20 @@ after_tools_all:  Sandbox(release)
 
 **记忆层级**：L1（当前消息）、L2（每日情景）、L3（蒸馏长期记忆）。
 
+**Hook 配对执行**：每个 before_* hook 一定有对应的 after_* hook，通过 `try/finally` 保证即使抛异常也能配对执行。
+
 ---
 
 ## 设计原则
 
-1. **单向依赖**：上层依赖下层，下层不感知上层
-2. **关注点分离**：State/Container/Tools/Middleware/Modules/Builder 各司其职
-3. **Middleware 做拦截**：不做业务逻辑，只做横切关注点
-4. **Modules 做业务**：Memory/Subagent/Plan 是业务逻辑，直接调用
+1. **单向依赖**：Agent → Harness，Harness 不知道业务逻辑
+2. **关注点分离**：State / Sandbox（两条执行路径）/ Tools / Middleware / Builder 各司其职
+3. **Middleware 做横切**：不做业务逻辑，只做拦截
+4. **Modules 可注入**：MemoryStore / SubagentRunner / PlanLoader 是 agent 提供的实现
 5. **工具是纯执行**：无文件 I/O，无横切逻辑
-6. **Sandbox 两层职责**：Middleware 管理生命周期，wrap_tool 包装执行
-7. **Signal 驱动流程**：通过 `state.next_action` 控制流，而非注入消息
+6. **Sandbox + Host 双路径**：敏感操作走容器，host 工具直连宿主机
+7. **Signal 驱动流**：通过 `state.next_action` 控制 LangGraph 路由
+8. **Hook 配对执行**：`try/finally` 保证 before/after 一定配对执行
 
 ---
 
