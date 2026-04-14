@@ -158,7 +158,7 @@ nanodeer/
 │       ├── engine.py
 │       └── README.md         # Framework architecture
 │
-├── docker/                   # Docker sandbox image (Dockerfile)
+├── sandbox/                  # Sandbox image (Dockerfile)
 ├── tests/                    # Test suite
 ├── examples/                 # Usage examples
 └── pyproject.toml

@@ -6,7 +6,7 @@ FROM python:3.11-slim
 
 LABEL maintainer="NanoDeer"
 LABEL description="NanoDeer AI Agent Sandbox - Ephemeral execution environment"
-LABEL version="1.3"
+LABEL version="1.0"
 
 # Install essential system tools
 RUN apt-get update && apt-get install -y \

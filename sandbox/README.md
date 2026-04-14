@@ -31,6 +31,26 @@ Agent 的文件实际写入 `/workspace/{thread_id}/user-data/{workspace,uploads
 
 ## 构建
 
+### 国内用户配置镜像加速（推荐）
+
+国内服务器拉取 Docker 镜像较慢，建议配置镜像加速器：
+
+```bash
+sudo mkdir -p /etc/docker
+sudo tee /etc/docker/daemon.json <<EOF
+{
+  "registry-mirrors": [
+    "https://docker.1ms.run"
+  ]
+}
+EOF
+sudo systemctl restart docker
+```
+
+配置后构建时会自动使用加速器，速度大幅提升。
+
+### 构建命令
+
 ```bash
 # 本地构建
 ./build.sh
