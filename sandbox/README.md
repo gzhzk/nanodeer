@@ -31,28 +31,27 @@ Agent 的文件实际写入 `/workspace/{thread_id}/user-data/{workspace,uploads
 
 ## 构建
 
-### 国内用户配置镜像加速（推荐）
+### 构建说明
 
-国内服务器拉取 Docker 镜像较慢，建议配置镜像加速器：
+Dockerfile 默认使用清华镜像源（国内加速更快）。国外用户可通过 `--build-arg` 切换到官方源：
 
 ```bash
-sudo mkdir -p /etc/docker
-sudo tee /etc/docker/daemon.json <<EOF
-{
-  "registry-mirrors": [
-    "https://docker.1ms.run"
-  ]
-}
-EOF
-sudo systemctl restart docker
-```
+# 国内用户（默认清华源）
+docker build -t nanodeer/sandbox:latest .
 
-配置后构建时会自动使用加速器，速度大幅提升。
+# 国外用户（官方源）
+docker build -t nanodeer/sandbox:latest . \
+  --build-arg APT_MIRROR=deb.debian.org \
+  --build-arg PIP_MIRROR=https://pypi.io/simple
+```
 
 ### 构建命令
 
 ```bash
-# 本地构建
+# 本地构建（国内默认清华源）
+docker build -t nanodeer/sandbox:latest .
+
+# 或使用 build.sh（支持 push、registry 等高级选项）
 ./build.sh
 
 # 推送到 registry
@@ -69,13 +68,15 @@ sudo systemctl restart docker
 
 ### Docker 配置
 
-在 `config.yaml` 中配置：
+在 `config.yaml` 中配置（默认已配置好，无需修改）：
 
 ```yaml
 sandbox:
-  image: "nanodeer/sandbox:latest"
+  image: "nanodeer/sandbox:latest"  # 与 docker build -t 的名称一致
   container_prefix: "nanodeer"
 ```
+
+镜像名 `nanodeer/sandbox:latest` 与构建命令一致，框架启动时会自动使用此镜像。
 
 ### 测试镜像
 
