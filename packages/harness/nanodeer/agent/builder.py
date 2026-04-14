@@ -106,18 +106,11 @@ class AgentBuilder:
                     memory_context = (memory_context + "\n\n" + project_mem) if memory_context else project_mem
                 state.metadata["memory_context"] = memory_context
 
-            if self._plan_loader:
-                project_slug = state.metadata.get("project_slug", "default")
-                state.metadata["plan_context"] = self._plan_loader.load(project_slug)
-
             tools_names = [t.name for t in self._tools]
             prompt = build_lead_agent_prompt(state, tools_names)
             resp = await self.llm.ainvoke(
                 [SystemMessage(content=prompt)] + list(state.messages)
             )
-
-            if self._plan_loader:
-                self._plan_loader.update(state)
         finally:
             # after_llm must run even on exception / session end —
             # ClarificationMiddleware and TitleMiddleware need a chance to execute.

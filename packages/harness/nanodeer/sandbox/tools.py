@@ -26,27 +26,27 @@ _B64 = 'python3 -c "import base64,sys; exec(base64.b64decode(sys.argv[1]).decode
 # glob/grep: path direct + pattern base64.
 SANDBOX_TOOL_CONFIGS: dict[str, dict] = {
     "read_file": {
-        "template": 'python3 -c "import sys; print(open(sys.argv[1]).read())" {path}',
+        "template": 'python3 -c "import sys; print(open(sys.argv[1]).read())" {file_path}',
         "path_vars": ["file_path"],
         "b64_vars": [],
         "timeout": 30,
     },
     "write_file": {
-        # file_path and content both base64-encoded; decoded inside container to get
-        # the physical path and file bytes.
+        # file_path: validated + translated to physical path (path_vars).
+        # content: base64-encoded for safe transport.
         "template": (
             'python3 -c "import base64,os,sys; '
-            'p=base64.b64decode(sys.argv[1]).decode();'
+            'p=sys.argv[1];'
             'os.makedirs(os.path.dirname(p) or \".\",exist_ok=True);'
             'open(p,\\\"wb\\\").write(base64.b64decode(sys.argv[2]))" '
-            "{b64_file_path} {b64_content}"
+            "{file_path} {b64_content}"
         ),
-        "path_vars": [],
-        "b64_vars": ["file_path", "content"],
+        "path_vars": ["file_path"],
+        "b64_vars": ["content"],
         "timeout": 60,
     },
     "ls": {
-        "template": 'python3 -c "import os; [print(f) for f in os.listdir(sys.argv[1])]" {path}',
+        "template": 'python3 -c "import os; [print(f) for f in os.listdir(sys.argv[1])]" {file_path}',
         "path_vars": ["file_path"],
         "b64_vars": [],
         "timeout": 10,
@@ -125,14 +125,24 @@ class SandboxToolWrapper:
 
         if sandbox is None or self._provider is None:
             result = self._tool.ainvoke(args)
-            return await result if inspect.iscoroutine(result) else result
+            if inspect.iscoroutine(result):
+                result = await result
+            if hasattr(result, 'returncode') and result.returncode != 0:
+                return f"Error: {getattr(result, 'stderr', '') or getattr(result, 'stdout', '')}"
+            return str(result)
 
         cmd = self.get_sandbox_command(args, thread_id)
         if cmd is None:
             result = self._tool.ainvoke(args)
-            return await result if inspect.iscoroutine(result) else result
+            if inspect.iscoroutine(result):
+                result = await result
+            if hasattr(result, 'returncode') and result.returncode != 0:
+                return f"Error: {getattr(result, 'stderr', '') or getattr(result, 'stdout', '')}"
+            return str(result)
 
-        result = await self._provider.run(sandbox, cmd.cmd)
+        result = await self._provider.run(sandbox, cmd.cmd, timeout=cmd.timeout)
+        if result.returncode != 0:
+            return f"Error: {result.stderr or result.stdout}"
         return result.stdout
 
     def get_sandbox_command(self, args: dict, thread_id: str) -> SandboxCommand | None:
@@ -198,7 +208,8 @@ class SandboxExecTool(SandboxToolWrapper):
             validated = validate_path(vpath)
             return virtual2physical(validated, thread_id) if validated else vpath
 
-        return re.sub(r"/mnt/user-data/[^/\s\"']+", replacer, s)
+        # Match /mnt/user-data/ followed by non-quote chars (handles spaces in paths)
+        return re.sub(r"/mnt/user-data/[^'\"]+", replacer, s)
 
 
 def wrap_tool_for_sandbox(tool, provider) -> SandboxToolWrapper | None:

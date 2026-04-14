@@ -2,6 +2,7 @@
 
 Each thread gets its own sandbox (Docker container).
 """
+import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
@@ -36,20 +37,24 @@ class SandboxProvider(ABC):
     async def release(self, sandbox: Sandbox) -> None: ...
 
     @abstractmethod
-    async def run(self, sandbox: Sandbox, command: str) -> RunResult: ...
+    async def run(self, sandbox: Sandbox, command: str, timeout: int = 30) -> RunResult: ...
 
 
 # Module-level context (can't serialize Sandbox into ThreadState)
 _sandbox_context: dict[str, Sandbox] = {}
+_sandbox_lock = threading.Lock()
 
 
 def set_sandbox(thread_id: str, sandbox: Sandbox) -> None:
-    _sandbox_context[thread_id] = sandbox
+    with _sandbox_lock:
+        _sandbox_context[thread_id] = sandbox
 
 
 def get_sandbox(thread_id: str) -> Sandbox | None:
-    return _sandbox_context.get(thread_id)
+    with _sandbox_lock:
+        return _sandbox_context.get(thread_id)
 
 
 def clear_sandbox(thread_id: str) -> None:
-    _sandbox_context.pop(thread_id, None)
+    with _sandbox_lock:
+        _sandbox_context.pop(thread_id, None)

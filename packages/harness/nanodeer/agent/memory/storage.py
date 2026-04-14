@@ -125,21 +125,21 @@ class MemoryStore:
 
     # -------------------------------------------------------------------------
     # Combined L2 + L3 load (for builder prompt injection)
-    # Returns raw content — caller wraps in tags as needed.
+    # Returns tagged content for consistent prompt formatting.
     # -------------------------------------------------------------------------
 
     def load(self) -> str:
         """Load combined L3 + recent episodic for prompt injection.
 
-        Returns raw content without any markup tags.
+        Returns tagged content: <memory> for L3, <episodic> for recent logs.
         """
         parts = []
         l3 = self.load_memory()
         if l3:
-            parts.append(l3)
+            parts.append(f"<memory>\n{l3}\n</memory>")
         recent = self.load_recent_episodic()
         if recent:
-            parts.append(recent)
+            parts.append(f"<episodic>\n{recent}\n</episodic>")
         return "\n\n".join(parts)
 
     # -------------------------------------------------------------------------

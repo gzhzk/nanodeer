@@ -16,7 +16,7 @@ class MemoryEntry:
     """
     name: str
     description: str
-    memory_type: MemoryType
+    memory_type: MemoryType     # "user" | "project"
     content: str
     updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
 
@@ -67,44 +67,3 @@ updated: {self.updated_at}
             content=content,
             updated_at=updated_at,
         )
-
-
-@dataclass
-class EpisodicEntry:
-    """A single episodic session entry (L2).
-
-    Represents one session or conversation turn within a day's episodic log.
-    """
-    date: str
-    turn: int
-    role: str  # "user" or "agent"
-    content: str
-    artifacts: list[str] = field(default_factory=list)
-    summary: str = ""
-
-    def to_markdown(self) -> str:
-        """Serialize to markdown for episodic log."""
-        lines = [
-            f"### Turn {self.turn} [{self.role}]",
-            self.content,
-        ]
-        if self.summary:
-            lines.append(f"_Summary: {self.summary}_")
-        if self.artifacts:
-            lines.append(f"_Artifacts: {', '.join(self.artifacts)}_")
-        return "\n".join(lines)
-
-
-MEMORY_INDEX_TEMPLATE = """# Memory Index
-
-This directory contains NanoDeer memory files.
-
-## Tiers
-
-- **L2 episodic/**: Daily session logs (raw, auto-generated)
-- **L3 MEMORY.md**: Distilled long-term memories (curated)
-- **project/**: Project-specific memories
-
----
-_last_updated: {updated_at}
-"""

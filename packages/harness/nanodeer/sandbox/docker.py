@@ -1,11 +1,17 @@
 """Docker-based sandbox provider. Ephemeral containers, one per thread."""
 import asyncio
 import os
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import docker
 
 from . import Sandbox, SandboxProvider, RunResult
+
+# Container resource limits
+DEFAULT_MEM_LIMIT = "256m"       # 256MB memory
+DEFAULT_NANO_CPUS = 500000000    # 0.5 CPU cores
+STALE_CONTAINER_HOURS = 24       # Remove containers older than this
 
 
 class DockerSandboxProvider(SandboxProvider):
@@ -22,6 +28,8 @@ class DockerSandboxProvider(SandboxProvider):
         base_url: str | None = None,
         network_mode: str = "none",
         base_path: Path | None = None,
+        mem_limit: str = DEFAULT_MEM_LIMIT,
+        nano_cpus: int = DEFAULT_NANO_CPUS,
     ):
         """Initialize Docker provider.
 
@@ -31,12 +39,16 @@ class DockerSandboxProvider(SandboxProvider):
             base_url: Docker daemon address. Defaults to DOCKER_HOST env var or unix socket.
             network_mode: Docker network mode ("bridge", "none", "host").
             base_path: Host directory for thread storage. Defaults to config thread.storage_path.
+            mem_limit: Memory limit (e.g. "256m").
+            nano_cpus: CPU limit in nano CPUs (e.g. 500000000 = 0.5 cores).
         """
         self.image = image
         self.container_prefix = container_prefix
         self.base_url = base_url or os.environ.get("DOCKER_HOST", None)
         self.network_mode = network_mode
         self.base_path = base_path
+        self.mem_limit = mem_limit
+        self.nano_cpus = nano_cpus
         self._client: docker.DockerClient | None = None
 
     def _get_base_path(self) -> Path:
@@ -60,8 +72,30 @@ class DockerSandboxProvider(SandboxProvider):
                     self._client = docker.from_env()
         return self._client
 
+    def _cleanup_stale_containers(self) -> None:
+        """Remove stale containers (stopped and older than STALE_CONTAINER_HOURS)."""
+        try:
+            cutoff = datetime.now() - timedelta(hours=STALE_CONTAINER_HOURS)
+            for c in self.client.containers.all():
+                if c.name.startswith(self.container_prefix) and c.status != "running":
+                    # Check if container has a created time
+                    created_str = c.attrs.get("CreatedAt", "")
+                    if created_str:
+                        try:
+                            created = datetime.strptime(created_str[:19], "%Y-%m-%dT%H:%M:%S")
+                            if created < cutoff:
+                                c.remove(force=True)
+                        except (ValueError, OSError):
+                            # If we can't parse the date, remove it anyway
+                            c.remove(force=True)
+        except Exception:
+            pass  # Best-effort cleanup
+
     async def acquire(self, thread_id: str) -> Sandbox:
         """Create ephemeral container for thread (reuses existing if already running)."""
+        # Cleanup stale containers on each acquire attempt
+        self._cleanup_stale_containers()
+
         container_name = f"{self.container_prefix}-{thread_id}"
         working_dir = f"/workspace/{thread_id}"
 
@@ -107,6 +141,8 @@ class DockerSandboxProvider(SandboxProvider):
                 read_only=True,
                 tmpfs={"/tmp": "rw,noexec,nosuid,size=64m"},
                 volumes=volumes,
+                mem_limit=self.mem_limit,
+                nano_cpus=self.nano_cpus,
                 command="sleep infinity",
             )
         )
@@ -136,22 +172,52 @@ class DockerSandboxProvider(SandboxProvider):
         except docker.errors.NotFound:
             pass  # already removed
 
-    async def run(self, sandbox: Sandbox, command: str) -> RunResult:
-        """Execute command inside container."""
+    async def run(self, sandbox: Sandbox, command: str, timeout: int = 30) -> RunResult:
+        """Execute command inside container with timeout and OOM detection."""
         loop = asyncio.get_event_loop()
         try:
             container = await loop.run_in_executor(
                 None,
                 lambda: self.client.containers.get(sandbox.container_id)
             )
-            result = await loop.run_in_executor(
-                None,
-                lambda: container.exec_run(command, workdir=sandbox.working_dir)
-            )
+
+            async def _exec():
+                return await loop.run_in_executor(
+                    None,
+                    lambda: container.exec_run(command, workdir=sandbox.working_dir, demux=True)
+                )
+
+            result = await asyncio.wait_for(_exec(), timeout=timeout)
+
+            # Check if container died unexpectedly (OOM: exit_code 137)
+            try:
+                container.reload()
+            except docker.errors.NotFound:
+                return RunResult(
+                    stdout="",
+                    stderr=f"Container {sandbox.container_id} was killed (likely OOM)",
+                    returncode=137,
+                )
+            if container.status != "running" and result.exit_code == 137:
+                return RunResult(
+                    stdout="",
+                    stderr=f"Container exited with code 137 (OOM or killed)",
+                    returncode=137,
+                )
+
+            stdout_bytes, stderr_bytes = result.output
+            stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
+            stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
             return RunResult(
-                stdout=result.output.decode("utf-8", errors="replace"),
-                stderr="",
+                stdout=stdout,
+                stderr=stderr,
                 returncode=result.exit_code,
+            )
+        except asyncio.TimeoutError:
+            return RunResult(
+                stdout="",
+                stderr=f"Timeout: Command exceeded {timeout} seconds",
+                returncode=124,
             )
         except docker.errors.NotFound:
             return RunResult(
