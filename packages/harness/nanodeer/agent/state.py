@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 class NextAction(str, Enum):
     """Control signals for LangGraph routing."""
     PROCESS = "process"
-    WAIT_FOR_CLARIFICATION = "wait_for_clarification"
+    WAIT = "wait"
     END = "end"
 
 

@@ -17,8 +17,8 @@ English | [中文](./README_zh.md)
   - [ReAct Graph](#react-graph)
 - [Layers Design](#layers-design)
   - [Layer 1: Data](#layer-1-data)
-  - [Layer 2: Sandbox + Host Execution](#layer-2-sandbox--host-execution)
-  - [Layer 3: Tools + Interception](#layer-3-tools--interception)
+  - [Layer 2: Sandbox](#layer-2-sandbox)
+  - [Layer 3: Tools](#layer-3-tools)
   - [Layer 4: Orchestration](#layer-4-orchestration)
   - [Layer 5: Application](#layer-5-application)
 - [Agent / Harness / App Decoupling](#agent--harness--app-decoupling)
@@ -49,7 +49,7 @@ English | [中文](./README_zh.md)
 
 At the end of last year I started working on agent-related projects — my understanding was rough: just AI doing things for you. In early March my mentor mentioned "harness engineering is getting popular lately, maybe look into it." So I started searching for materials and picked up Claude Code along the way. By late March, **DeerFlow** came onto my radar. ByteDance's open-source project showed me for the first time what a proper enterprise-grade Agent harness framework should look like — state machine, middleware chain, sandbox isolation, tiered memory, every piece in its right place. I read through several articles multiple times. So this is how you engineer an agent.
 
-The story might have ended there. But on the last evening of March, I attended ByteDance's campus recruiting talk. One thing that stuck with me was their motto — *"Work with great people, on challenging things."* During the talk, a message flashed across my phone screen — Claude Code "went open source." Something clicked in that moment. DeerFlow showed me what a framework should look like. Claude Code showed me what a product could feel like. And with the inspiration of Open Claw trending in China, everything suddenly connected. That night, back in my dorm, I wrote down the first draft.
+The story might have ended there. But on the last evening of March, I attended ByteDance's campus recruiting talk. One thing that stuck with me was their motto — *"Work with great people, on challenging things."* During the talk, a message flashed across my phone screen — Claude Code "went open source." Something clicked in that moment. DeerFlow showed me what a framework should look like. Claude Code showed me what a product could feel like. And with the inspiration of OpenClaw trending in China, everything suddenly connected. That night, back in my dorm, I wrote down the first draft.
 
 **The core idea**: distill the patterns that work — **LangGraph state machine**, **middleware chain**, **Docker sandbox isolation**, **tiered memory** — into a focused, auditable foundation where every module has one job and every cross-cutting concern is interceptable.
 
@@ -77,33 +77,21 @@ Recommended format: asciinema cast or GIF
 ### 5-Layer Harness Design
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  Layer 5: Application                                   │
-│  create_nanodeer_agent                                  │
-└─────────────────────────────────────────────────────────┘
-                            ▲
-┌─────────────────────────────────────────────────────────┐
-│  Layer 4: Orchestration                                 │
-│  AgentBuilder + NanoDeerFactory + Modules (injectable)  │
-└─────────────────────────────────────────────────────────┘
-                            ▲
-┌─────────────────────────────────────────────────────────┐
-│  Layer 3: Interception                                  │
-│  MiddlewareChain + wrap_tool_for_sandbox + Tools        │
-└─────────────────────────────────────────────────────────┘
-                            ▲
-              ┌─────────────┴─────────────┐
-              ▲                           ▲
-┌───────────────────────────┐   ┌───────────────────────────┐
-│  Layer 2: Sandbox         │   │  Layer 2: Host Execution  │
-│  (sandbox-aware tools)    │   │  (external/host tools)    │
-│  DockerSandboxProvider    │   │  fetch_url / web_search / │
-│  LocalSandboxProvider     │   │  read_image ...           │
-└───────────────────────────┘   └───────────────────────────┘
-                            ▲
-┌─────────────────────────────────────────────────────────┐
-│  Layer 1: Data — ThreadState                            │
-└─────────────────────────────────────────────────────────┘
+  Layer 5: Application
+    create_nanodeer_agent
+
+  Layer 4: Orchestration
+    AgentBuilder + NanoDeerFactory + Modules (injectable)
+      MiddlewareChain (interception mechanism)
+
+  Layer 3: Tools
+    Tools + wrap_tool_for_sandbox
+
+  Layer 2: Sandbox
+    DockerSandboxProvider / LocalSandboxProvider
+
+  Layer 1: Data
+    ThreadState
 ```
 
 ### Project Structure
@@ -171,7 +159,7 @@ NanoDeer follows a **signal-driven architecture** where middlewares communicate 
 | Signal | Effect |
 |--------|--------|
 | `next_action = "process"` | Continue to tools |
-| `next_action = "wait_for_clarification"` | Route to END (pause for user) |
+| `next_action = "wait"` | Route to END (pause for user) |
 | `next_action = "end"` | Route to END (terminate) |
 
 This replaces the old pattern of injecting HumanMessages or stripping tool_calls to control flow.
@@ -180,7 +168,7 @@ This replaces the old pattern of injecting HumanMessages or stripping tool_calls
 
 ```
 START → llm → [next_action?] → tools → llm → ... → END
-                     ↓ (wait_for_clarification | end)
+                     ↓ (wait | end)
                     END
 ```
 
@@ -196,13 +184,13 @@ Single data bus flowing through LangGraph. Key fields:
 - `title` — conversation title
 - `todos` — task list
 - `artifacts` — generated artifact paths
-- `next_action` — control signal (`"process"` | `"wait_for_clarification"` | `"end"`)
+- `next_action` — control signal (`"process"` | `"wait"` | `"end"`)
 - `thread_id` — thread identifier
 - `metadata` — middleware blackboard (`memory_context`, `uploaded_files`, etc.)
 
-### Layer 2: Sandbox + Host Execution
+### Layer 2: Sandbox
 
-**Sandbox** (on-demand, for sensitive operations)
+**Sandbox** — execution space. sandbox-aware tools run inside containers.
 
 sandbox-aware tools run inside containers:
 
@@ -216,15 +204,13 @@ sandbox-aware tools run inside containers:
 
 sandbox-aware tools: `read_file` `write_file` `ls` `glob` `grep` `bash` `git` `exec_python`
 
-**Host Execution** (direct, no isolation)
+Host tools (no sandbox routing): `fetch_url` `web_search` `read_image`
 
-host tools: `fetch_url` `web_search` `read_image`
+### Layer 3: Tools
 
-### Layer 3: Tools + Interception
+**Tools** — pure execution units, LangChain `@tool` decorated, no sandbox awareness. Skills (`invoke_skill`) are data extensions for tools. sandbox-aware tools route through `wrap_tool_for_sandbox` to Layer 2; host tools run directly.
 
-**Tools** — pure execution units, LangChain `@tool` decorated, no sandbox awareness. Skills (`invoke_skill`) are data extensions for tools.
-
-**MiddlewareChain** — 8 interceptors with 4 hooks:
+**MiddlewareChain** — 8 interceptors with 4 hooks (跨 Builder 和 Tools 的拦截机制，不是独立层):
 ```
 before_llm:       ThreadData → Uploads → Compression
 after_llm:        Clarification → Title

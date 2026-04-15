@@ -2,7 +2,7 @@
 
 Two-node LangGraph:
   START → llm → [next_action?] → tools → llm → ... → END
-                       ↓ (wait_for_clarification | end)
+                       ↓ (wait | end)
                       END
 
 Modules (memory/subagent/plan) are called directly here,
@@ -66,7 +66,7 @@ class AgentBuilder:
         graph.add_conditional_edges(
             "llm",
             self._should_continue,
-            {"process": "tools", "wait_for_clarification": END, "end": END},
+            {"process": "tools", "wait": END, "end": END},
         )
         graph.add_edge("tools", "llm")
 

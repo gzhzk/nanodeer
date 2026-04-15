@@ -7,28 +7,34 @@ Harness 是 NanoDeer 的核心，将 LLM 与外部工具/沙箱/记忆连接。
 ```
 ┌─────────────────────────────────────────────────────────┐
 │  Layer 5: 应用层                                         │
-│  create_nanodeer_agent                                  │
+│  create_nanodeer_agent                                   │
 └─────────────────────────────────────────────────────────┘
                             ▲
 ┌─────────────────────────────────────────────────────────┐
 │  Layer 4: 编排层                                         │
 │  AgentBuilder + NanoDeerFactory + Modules (可注入)       │
 └─────────────────────────────────────────────────────────┘
-                            ▲
+                            │
+                            ▼
+              ┌─────────────────────────────┐
+              │  MiddlewareChain           │  ← 拦截机制，非独立层
+              │  (before_llm / before_tools│
+              │   after_llm / after_tools) │
+              └─────────────────────────────┘
+                            │
 ┌─────────────────────────────────────────────────────────┐
-│  Layer 3: 工具 + 拦截                                    │
-│  MiddlewareChain + wrap_tool_for_sandbox + Tools        │
+│  Layer 3: 工具层                                         │
+│  Tools + wrap_tool_for_sandbox                           │
+│           │                                             │
+│           ├── sandbox-aware 工具 ──→ 路由到 Layer 2     │
+│           └── host 直连工具 (fetch_url, web_search)     │
 └─────────────────────────────────────────────────────────┘
-                            ▲
-              ┌─────────────┴─────────────┐
-              ▲                           ▲
-┌───────────────────────────┐   ┌───────────────────────────┐
-│  Layer 2: Sandbox         │   │  Layer 2: Host 执行       │
-│  (sandbox-aware 工具)     │   │  (external/host 工具)      │
-│  DockerSandboxProvider    │   │  git / exec_python / ...  │
-│  LocalSandboxProvider     │   │                           │
-└───────────────────────────┘   └───────────────────────────┘
-                            ▲
+                            │
+┌─────────────────────────────────────────────────────────┐
+│  Layer 2: Sandbox                                        │
+│  DockerSandboxProvider / LocalSandboxProvider            │
+└─────────────────────────────────────────────────────────┘
+                            │
 ┌─────────────────────────────────────────────────────────┐
 │  Layer 1: 数据层 — ThreadState                           │
 └─────────────────────────────────────────────────────────┘
@@ -156,7 +162,7 @@ wrap_tool_for_sandbox(tool, provider) → SandboxToolWrapper | None
 
 ```
 START → llm → [next_action?] → tools → llm → ... → END
-                     ↓ (wait_for_clarification | end)
+                     ↓ (wait | end)
                     END
 ```
 

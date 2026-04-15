@@ -16,9 +16,9 @@
   - [信号驱动设计](#信号驱动设计)
   - [ReAct 执行图](#react-执行图)
 - [层级设计](#层级设计)
-  - [Layer 1: 数据层](#layer-1-threadstate)
-  - [Layer 2: Sandbox + Host 执行](#layer-2-sandbox--host-执行)
-  - [Layer 3: 工具 + 拦截](#layer-3-工具--拦截)
+  - [Layer 1: 数据层](#layer-1-数据层)
+  - [Layer 2: 沙箱隔离层](#layer-2-沙箱隔离层)
+  - [Layer 3: 工具层](#layer-3-工具层)
   - [Layer 4: 编排层](#layer-4-编排层)
   - [Layer 5: 应用层](#layer-5-应用层)
 - [Agent / Harness / App 解耦](#agent--harness--app-解耦)
@@ -48,9 +48,9 @@
 
 ## 背景
 
-去年年末，我开始接触 Agent 相关实践 —— 彼时理解很粗糙，就是觉得能让 AI 帮自己干活。今年3月初，导师随口提了一句 "harness engineering 最近挺火的，多了解了解一下"，我开始四处找资料学习，也顺手用起了 Claude Code。3月底，**DeerFlow** 进入了我的视线：字节开源的这个项目让我第一次看到企业级 Agent 框架应该长什么样子——状态机、中间件链、沙箱隔离、分层记忆，每块各司其职。我反复读了好几篇介绍文章，心想：原来 Agent 可以这样工程化。
+去年年末，我开始接触 Agent 相关实践 —— 彼时理解很粗糙，就是觉得能让 AI 帮自己干活。今年3月初，导师随口提了一句 “harness engineering 最近挺火的，多了解了解一下”，我开始四处找资料学习，也顺手用起了 Claude Code。3月底，**DeerFlow** 进入了我的视线：字节开源的这个项目让我第一次看到企业级 Agent 框架应该长什么样子——状态机、中间件链、沙箱隔离、分层记忆，每块各司其职。我反复读了好几篇介绍文章，心想：原来 Agent 可以这样工程化。
 
-本来故事可能到这里就结束了。但3月最后一天晚上，我去参加了字节的暑期招聘宣讲。印象很深的是那句字节的企业口号 —— *"和优秀的人，做有挑战的事"*。宣讲会进行中，手机屏幕上无意间闪过一行消息 —— Claude Code "开源了"。那一刻突然有种说不清的冲动：DeerFlow 让我看到了框架该有的样子，Claude Code 让我看到了产品能做成什么样，再加上国内爆火的小龙虾 Open Claw 的启发，所有东西突然串在了一起。当晚回到宿舍，我写下了第一版设想。
+本来故事可能到这里就结束了。但3月最后一天晚上，我去参加了字节的暑期招聘宣讲。印象很深的是那句字节的企业口号 —— *“和优秀的人，做有挑战的事”*。宣讲会进行中，手机屏幕上无意间闪过一行消息 —— Claude Code “开源了”。那一刻突然有种说不清的冲动：DeerFlow 让我看到了框架该有的样子，Claude Code 让我看到了产品能做成什么样，再加上国内爆火的小龙虾 OpenClaw 的启发，所有东西突然串在了一起。当晚回到宿舍，我写下了第一版设想。
 
 **核心思路**：提炼真正有效的模式 —— **LangGraph 状态机**、**中间件链**、**Docker 容器隔离**、**分层记忆** —— 构建一个每个模块职责单一、每个横切关注点都可拦截的、可审计的 Agent 底座。
 
@@ -63,33 +63,21 @@
 ### 5 层 Harness 设计
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  Layer 5: Application                                   │
-│  create_nanodeer_agent                                  │
-└─────────────────────────────────────────────────────────┘
-                            ▲
-┌─────────────────────────────────────────────────────────┐
-│  Layer 4: Orchestration                                 │
-│  AgentBuilder + NanoDeerFactory + Modules (可注入)       │
-└─────────────────────────────────────────────────────────┘
-                            ▲
-┌─────────────────────────────────────────────────────────┐
-│  Layer 3: Interception                                  │
-│  MiddlewareChain + wrap_tool_for_sandbox + Tools        │
-└─────────────────────────────────────────────────────────┘
-                            ▲
-              ┌─────────────┴─────────────┐
-              ▲                           ▲
-┌───────────────────────────┐   ┌───────────────────────────┐
-│  Layer 2: Sandbox         │   │  Layer 2: Host 执行       │
-│  (sandbox-aware 工具)     │   │  (external/host 工具)      │
-│  DockerSandboxProvider    │   │  fetch_url / web_search / │
-│  LocalSandboxProvider     │   │  read_image ...           │
-└───────────────────────────┘   └───────────────────────────┘
-                            ▲
-┌─────────────────────────────────────────────────────────┐
-│  Layer 1: Data — ThreadState                            │
-└─────────────────────────────────────────────────────────┘
+  Layer 5: 应用层
+    create_nanodeer_agent
+
+  Layer 4: 编排层
+    AgentBuilder + NanoDeerFactory + Modules（可注入）
+      MiddlewareChain（拦截机制，非独立层）
+
+  Layer 3: 工具层
+    Tools + wrap_tool_for_sandbox
+
+  Layer 2: 沙箱隔离层
+    DockerSandboxProvider / LocalSandboxProvider
+
+  Layer 1: 数据层
+    ThreadState
 ```
 
 ### 项目结构
@@ -157,7 +145,7 @@ NanoDeer 采用**信号驱动架构**，中间件通过 `ThreadState.next_action
 | 信号 | 效果 |
 |------|------|
 | `next_action = "process"` | 继续执行 tools |
-| `next_action = "wait_for_clarification"` | 路由到 END（暂停等待用户） |
+| `next_action = "wait"` | 路由到 END（暂停等待用户） |
 | `next_action = "end"` | 路由到 END（终止） |
 
 这替代了旧的注入 HumanMessage 或 strip tool_calls 来控制流程的模式。
@@ -166,7 +154,7 @@ NanoDeer 采用**信号驱动架构**，中间件通过 `ThreadState.next_action
 
 ```
 START → llm → [next_action?] → tools → llm → ... → END
-                     ↓ (wait_for_clarification | end)
+                     ↓ (wait | end)
                     END
 ```
 
@@ -182,15 +170,13 @@ START → llm → [next_action?] → tools → llm → ... → END
 - `title` — 对话标题
 - `todos` — 任务列表
 - `artifacts` — 产物路径
-- `next_action` — 控制信号（`"process"` | `"wait_for_clarification"` | `"end"`）
+- `next_action` — 控制信号（`"process"` | `"wait"` | `"end"`）
 - `thread_id` — 线程标识
 - `metadata` — 中间件黑板（`memory_context`、`uploaded_files` 等）
 
-### Layer 2: Sandbox + Host 执行
+### Layer 2: 沙箱隔离层
 
-**Sandbox（按需，用于敏感操作）**
-
-sandbox-aware 工具在容器内执行。两种实现：
+**Sandbox** — 执行空间。sandbox-aware 工具在容器内执行。
 
 | 方面 | 详情 |
 |------|------|
@@ -202,15 +188,13 @@ sandbox-aware 工具在容器内执行。两种实现：
 
 sandbox-aware 工具：`read_file` `write_file` `ls` `glob` `grep` `bash` `git` `exec_python`
 
-**Host 执行（直连，无隔离）**
+Host 直连工具（无沙箱路由）：`fetch_url` `web_search` `read_image`
 
-host 工具：`fetch_url` `web_search` `read_image`
+### Layer 3: 工具层
 
-### Layer 3: 工具 + 拦截
+**Tools** — 纯执行单元，LangChain `@tool` 装饰，无沙箱感知。Skills（`invoke_skill`）是工具的数据扩展。sandbox-aware 工具通过 `wrap_tool_for_sandbox` 路由到 Layer 2；host 工具直连。
 
-**Tools** — 纯执行单元，LangChain `@tool` 装饰，无沙箱感知。Skills（`invoke_skill`）是工具的数据扩展。
-
-**MiddlewareChain** — 8 个拦截器，4 个钩子：
+**MiddlewareChain** — 8 个拦截器，4 个钩子（跨 Builder 和 Tools 的拦截机制，不是独立层）：
 ```
 before_llm:       ThreadData → Uploads → Compression
 after_llm:        Clarification → Title
