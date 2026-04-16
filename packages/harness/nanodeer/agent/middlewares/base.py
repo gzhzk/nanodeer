@@ -1,10 +1,10 @@
 """Middleware chain for agent execution pipeline.
 
 Hooks:
-  before_llm      — pre-LLM call (Context Guard: ThreadData → Uploads → Compression)
-  after_llm       — post-LLM call (Signal Handler: Title → Clarification)
-  before_tools    — pre-tool call (Safety Gate: Security → Sandbox → LoopDetection)
-  after_tools_all — after all tools in this turn (Sandbox release)
+  before_llm      — pre-LLM call
+  after_llm       — post-LLM call
+  before_tools    — pre-tool call
+  after_tools_all — after all tools in this turn
 """
 
 from abc import ABC
@@ -18,32 +18,25 @@ class Middleware(ABC):
     """Base middleware — subclasses only override hooks they need."""
 
     async def before_llm(self, state: "ThreadState") -> None:
-        """Pre-LLM call — use for context setup."""
         pass
 
     async def after_llm(self, state: "ThreadState") -> None:
-        """Post-LLM call — use for signal handling."""
         pass
 
     async def before_tools(
         self, state: "ThreadState", tool_name: str, tool_args: dict
     ) -> None:
-        """Pre-tool call — use for validation/audit."""
         pass
 
     async def after_tools_all(self, state: "ThreadState") -> None:
-        """After all tools in this turn — use for cleanup."""
         pass
 
 
 class MiddlewareChain:
     """Per-hook independent middleware chain.
 
-    Execution order:
-      before_llm:     registration order (ThreadData → Uploads → Compression)
-      after_llm:      reverse order (Clarification → Title)
-      before_tools:    registration order (Security → Sandbox → LoopDetection)
-      after_tools_all: reverse order (Sandbox release)
+    All hooks execute in registration order (forward order).
+    What you register is what you get — no hidden reversals.
     """
 
     def __init__(
@@ -74,8 +67,8 @@ class MiddlewareChain:
             await m.before_llm(state)
 
     async def after_llm(self, state: "ThreadState") -> None:
-        """Execute after_llm chain in reverse order."""
-        for m in reversed(self._after_llm):
+        """Execute after_llm chain in registration order."""
+        for m in self._after_llm:
             await m.after_llm(state)
 
     async def before_tools(
@@ -86,6 +79,6 @@ class MiddlewareChain:
             await m.before_tools(state, tool_name, tool_args)
 
     async def after_tools_all(self, state: "ThreadState") -> None:
-        """Execute after_tools_all in reverse order."""
-        for m in reversed(self._after_tools_all):
+        """Execute after_tools_all chain in registration order."""
+        for m in self._after_tools_all:
             await m.after_tools_all(state)
