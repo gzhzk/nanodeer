@@ -17,8 +17,6 @@ class RuntimeFeatures:
     uploads: bool = True
     compression: bool = True
     sandbox: bool = True
-    security: bool = True
-    loop_detection: bool = True
     clarification: bool = True
     context_window: int = 204800
     compression_ratio: float = 0.7
@@ -43,64 +41,16 @@ class NanoDeerFactory:
         except Exception:
             return LocalSandboxProvider()
 
-    def _assemble_before_llm(self, sandbox_provider=None, extra_middlewares=None):
-        from .middlewares.thread_data import ThreadDataMiddleware
-        from .middlewares.uploads import UploadsMiddleware
-        from .middlewares.compression import CompressionMiddleware
-
-        mw = [ThreadDataMiddleware()]
-        if self.features.uploads:
-            mw.append(UploadsMiddleware())
-        if self.features.compression:
-            mw.append(CompressionMiddleware(
-                llm=None,
-                context_window=self.features.context_window,
-                compression_ratio=self.features.compression_ratio,
-                keep_recent=self.features.compression_keep_recent,
-            ))
-        if extra_middlewares:
-            mw.extend(extra_middlewares)
-        return mw
-
-    def _assemble_after_llm(self, extra_middlewares=None):
-        from .middlewares.clarification import ClarificationMiddleware
-        from .middlewares.title import TitleMiddleware
-
-        mw = []
-        if self.features.clarification:
-            mw.append(ClarificationMiddleware())
-        mw.append(TitleMiddleware(llm=None))
-        if extra_middlewares:
-            mw.extend(extra_middlewares)
-        return mw
-
-    def _assemble_before_tools(self, sandbox_provider=None, extra_middlewares=None):
-        from .middlewares.sandbox import SandboxMiddleware
-        from .middlewares.security import SecurityMiddleware
-        from .middlewares.loop_detection import LoopDetectionMiddleware
-
-        mw = []
-        if self.features.security:
-            mw.append(SecurityMiddleware())
-        if self.features.sandbox and sandbox_provider:
-            mw.append(SandboxMiddleware(provider=sandbox_provider))
-        if self.features.loop_detection:
-            mw.append(LoopDetectionMiddleware(
-                warn_threshold=self.features.loop_warn_threshold,
-                hard_limit=self.features.loop_hard_limit,
-            ))
-        if extra_middlewares:
-            mw.extend(extra_middlewares)
-        return mw
-
-    def _assemble_after_tools_all(self, sandbox_provider=None, extra_middlewares=None):
-        from .middlewares.sandbox import SandboxMiddleware
-        mw = []
-        if self.features.sandbox and sandbox_provider:
-            mw.append(SandboxMiddleware(provider=sandbox_provider))
-        if extra_middlewares:
-            mw.extend(extra_middlewares)
-        return mw
+    def _chain(self, *specs, extras=None):
+        """Build chain from specs: (cls, feature_flag, kwargs)."""
+        result = []
+        for cls, feature, kw in specs:
+            if feature and not getattr(self.features, feature):
+                continue
+            result.append(cls(**kw) if kw else cls())
+        if extras:
+            result.extend(extras)
+        return result
 
     def build(
         self,
@@ -113,24 +63,61 @@ class NanoDeerFactory:
         extra_middlewares: dict[str, list] | None = None,
     ):
         from .middlewares import MiddlewareChain
+        from .middlewares.thread_data import ThreadDataMiddleware
+        from .middlewares.file import FileMiddleware
+        from .middlewares.memory import MemoryMiddleware
+        from .middlewares.compression import CompressionMiddleware
+        from .middlewares.todo import TodoMiddleware
+        from .middlewares.title import TitleMiddleware
+        from .middlewares.clarification import ClarificationMiddleware
+        from .middlewares.detection import DetectionMiddleware
+        from .middlewares.handling import HandlingMiddleware
+        from .middlewares.sandbox import SandboxMiddleware
         from .builder import AgentBuilder
 
-        sandbox_provider = self._create_sandbox_provider() if self.features.sandbox else None
         extra = extra_middlewares or {}
+        sandbox = self._create_sandbox_provider() if self.features.sandbox else None
+        sp_kw = {"provider": sandbox} if sandbox else {}
 
         chain = MiddlewareChain(
-            before_llm=self._assemble_before_llm(sandbox_provider, extra.get("before_llm")),
-            after_llm=self._assemble_after_llm(extra.get("after_llm")),
-            before_tools=self._assemble_before_tools(sandbox_provider, extra.get("before_tools")),
-            after_tools_all=self._assemble_after_tools_all(sandbox_provider, extra.get("after_tools_all")),
+            before_llm=self._chain(
+                (ThreadDataMiddleware, None, {}),
+                (FileMiddleware, "uploads", {}),
+                (MemoryMiddleware, None, {"memory_store": memory_store, "plan_loader": plan_loader}),
+                (TodoMiddleware, None, {}),
+                (CompressionMiddleware, "compression", {
+                    "llm": None, "context_window": self.features.context_window,
+                    "compression_ratio": self.features.compression_ratio,
+                    "keep_recent": self.features.compression_keep_recent,
+                }),
+                extras=extra.get("before_llm"),
+            ),
+            after_llm=self._chain(
+                (ClarificationMiddleware, "clarification", {}),
+                (TitleMiddleware, None, {"llm": None}),
+                extras=extra.get("after_llm"),
+            ),
+            before_tools=self._chain(
+                (DetectionMiddleware, None, {
+                    "loop_warn_threshold": self.features.loop_warn_threshold,
+                    "loop_hard_limit": self.features.loop_hard_limit,
+                }),
+                (HandlingMiddleware, None, {}),
+                (SandboxMiddleware, "sandbox", sp_kw),
+                extras=extra.get("before_tools"),
+            ),
+            after_tools_all=self._chain(
+                (SandboxMiddleware, "sandbox", sp_kw),
+                extras=extra.get("after_tools_all"),
+            ),
         )
+
         builder = AgentBuilder(
             llm=llm,
             tools=tools,
             chain=chain,
-            sandbox_provider=sandbox_provider,
+            sandbox_provider=sandbox,
             memory_store=memory_store,
-            plan_loader=plan_loader,
         )
         if subagent_runner and hasattr(subagent_runner, "set_llm"):
             subagent_runner.set_llm(llm)
