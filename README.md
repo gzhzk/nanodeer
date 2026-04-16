@@ -8,8 +8,12 @@ English | [中文](./README_zh.md)
 
 - [Design Inspirations](#design-inspirations)
 - [Status](#status)
+- [Target Users & Tasks](#target-users--tasks)
+  - [What does it solve?](#what-does-it-solve)
+  - [Supported Channels](#supported-channels)
+  - [Safety](#safety)
+- [Installation & Quick Start](#installation--quick-start)
 - [Background](#background)
-- [Quick Start](#quick-start)
 - [Architecture](#architecture)
   - [5-Layer Harness Design](#5-layer-harness-design)
   - [Project Structure](#project-structure)
@@ -45,6 +49,59 @@ English | [中文](./README_zh.md)
 
 **In development** — core framework stable.
 
+## Target Users & Tasks
+
+| User | Technical Level | Usage |
+|------|-----------------|-------|
+| Individual developers | High | CLI commands, direct interaction |
+| Small teams (3-5 people) | Medium | Feishu/WeChat Work bot, message-driven |
+
+### What does it solve?
+
+**Lightweight tasks that web LLMs can't handle and OpenClaw is too heavy for:**
+
+```
+Task examples:
+• "Organize all PDFs on my desktop into folders"
+• "Analyze this Excel file and generate charts"
+• "Send me a weekly report every Friday at 5 PM"
+• "Write an automation script for me"
+• "Scrape competitor pricing from their website"
+• "Make a visualization report from this data"
+```
+
+**Core value: user says one thing in IM → Agent does the work locally in sandbox → result returned**
+
+### Supported Channels
+
+- **CLI**: `nanodeer cli "analyze this data"`
+- **Feishu bot**: message-based interaction
+- **WeChat Work bot**: message-based interaction
+
+### Safety
+
+- **Sandbox isolation**: All file operations run inside Docker containers
+- **Local only**: Data never leaves your machine, open source for audit
+- **Dangerous command blacklist**: `rm -rf /`, `mkfs`, `curl|bash`, etc.
+- **Path whitelist**: Only workspace directory accessible, system paths blocked
+
+## Installation & Quick Start
+
+```bash
+# Install
+pip install nanodeer
+
+# Configure
+cp config.yaml.example config.yaml
+# Edit config.yaml (Feishu/WeChat Work tokens, workspace path)
+
+# Start daemon
+nanodeer run
+
+# Or CLI mode
+nanodeer cli "analyze this data"
+```
+
 ## Background
 
 At the end of last year I started working on agent-related projects — my understanding was rough: just AI doing things for you. In early March my mentor mentioned "harness engineering is getting popular lately, maybe look into it." So I started searching for materials and picked up Claude Code along the way. By late March, **DeerFlow** came onto my radar. ByteDance's open-source project showed me for the first time what a proper enterprise-grade Agent harness framework should look like — state machine, middleware chain, sandbox isolation, tiered memory, every piece in its right place. I read through several articles multiple times. So this is how you engineer an agent.
@@ -53,9 +110,6 @@ The story might have ended there. But on the last evening of March, I attended B
 
 **The core idea**: distill the patterns that work — **LangGraph state machine**, **middleware chain**, **Docker sandbox isolation**, **tiered memory** — into a focused, auditable foundation where every module has one job and every cross-cutting concern is interceptable.
 
-## Quick Start
-
-> ⚠️ **Under construction** — examples and tests need updating for the new per-module structure.
 
 <!--
 ================================================================================
@@ -111,13 +165,18 @@ nanodeer/
 │       │   ├── builder.py    # LangGraph graph assembly
 │       │   ├── factory.py    # NanoDeerFactory — assembles harness
 │       │   ├── prompt.py     # System prompt assembly
-│       │   └── middlewares/  # 8 interceptors (harness hard-safety + smart)
+│       │   └── middlewares/  # 10 interceptors (harness hard-safety + smart)
 │       │       ├── base.py                # Middleware + MiddlewareChain
-│       │       ├── thread_data.py        # Per-thread metadata init
-│       │       ├── sandbox.py            # Container lifecycle + bash audit
-│       │       ├── security.py           # Path validation
-│       │       ├── clarification.py      # ask_clarification signal
-│       │       ├── loop_detection.py     # Repetitive call guard
+│       │       ├── thread_data.py        # Per-thread directory init
+│       │       ├── file.py               # User-uploaded file handling
+│       │       ├── memory.py             # Memory context injection
+│       │       ├── compression.py        # Token count compression
+│       │       ├── clarification.py     # ask_clarification signal
+│       │       ├── title.py              # Thread title generation
+│       │       ├── detection.py          # Health check + loop detection
+│       │       ├── handling.py           # Retry + LLM fallback
+│       │       ├── todo.py               # Todo tool result parsing
+│       │       └── sandbox.py            # Container lifecycle + bash audit
 │       │       ├── compression.py        # Token count compression
 │       │       ├── uploads.py            # User file upload handling
 │       │       └── title.py              # Thread title generation
@@ -210,26 +269,28 @@ Host tools (no sandbox routing): `fetch_url` `web_search` `read_image`
 
 **Tools** — pure execution units, LangChain `@tool` decorated, no sandbox awareness. Skills (`invoke_skill`) are data extensions for tools. sandbox-aware tools route through `wrap_tool_for_sandbox` to Layer 2; host tools run directly.
 
-**MiddlewareChain** — 8 interceptors with 4 hooks (跨 Builder 和 Tools 的拦截机制，不是独立层):
+**MiddlewareChain** — 10 interceptors with 4 hooks (跨 Builder 和 Tools 的拦截机制，不是独立层):
 ```
-before_llm:       ThreadData → Uploads → Compression
-after_llm:        Clarification → Title
-before_tools:     Security → Sandbox(audit) → LoopDetection
-after_tools_all:  Sandbox(release)
+before_llm:       ThreadData → File → Memory → Compression
+after_llm:        Title → Clarification
+before_tools:     Detection → Handling → Sandbox(audit)
+after_tools_all:  Todo → Sandbox(release)
 ```
 
-**8 Middlewares:**
+**10 Middlewares:**
 
 | Group | Middleware | Hook | Responsibility |
 |-------|-----------|------|----------------|
-| **Context Guard** | ThreadDataMiddleware | before_llm | Initialize metadata |
-| | UploadsMiddleware | before_llm | Process uploads |
-| | CompressionMiddleware | before_llm | Compress history |
-| **Safety Gate** | SecurityMiddleware | before_tools | Validate paths |
-| | SandboxMiddleware | before_llm/before_tools/after_tools_all | Container lifecycle |
-| **Recursion Limit** | LoopDetectionMiddleware | before_tools | Loop detection |
-| **Signal Handler** | ClarificationMiddleware | after_llm | Clarification signal |
-| | TitleMiddleware | after_llm | Title generation |
+| **Context Guard** | ThreadDataMiddleware | before_llm | Initialize thread directories |
+| | FileMiddleware | before_llm | Process uploaded files |
+| | MemoryMiddleware | before_llm | Memory context injection |
+| | CompressionMiddleware | before_llm | Token count compression |
+| **Signal Handler** | TitleMiddleware | after_llm | Title generation |
+| | ClarificationMiddleware | after_llm | Clarification signal |
+| **Safety Gate** | DetectionMiddleware | before_llm/before_tools | Health check + loop detection |
+| | HandlingMiddleware | before_tools | Retry + LLM fallback |
+| | SandboxMiddleware | before_llm/before_tools/after_tools_all | Container lifecycle + bash audit |
+| **Todo Parser** | TodoMiddleware | after_tools_all | Parse todo tool results |
 
 **wrap_tool_for_sandbox** — routes sandbox-aware tools to Layer 2 containers. Config-driven (`SANDBOX_TOOL_CONFIGS`), single `SandboxExecTool` class.
 

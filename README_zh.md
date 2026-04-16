@@ -8,8 +8,12 @@
 
 - [设计灵感来源](#设计灵感来源)
 - [状态](#状态)
+- [目标用户与任务](#目标用户与任务)
+  - [解决什么问题？](#解决什么问题)
+  - [支持的入口](#支持的入口)
+  - [安全模型](#安全模型)
+- [安装与快速开始](#安装与快速开始)
 - [背景](#背景)
-- [快速开始](#快速开始)
 - [架构](#架构)
   - [5 层 Harness 设计](#5-层harness-设计)
   - [项目结构](#项目结构)
@@ -34,7 +38,7 @@
 
 ## 设计灵感来源
 
-- **DeerFlow** — 借鉴其“中间件链 + LangGraph”状态机架构：8 个中间件拦截工具执行，状态机控制流转（llm ↔ tools），通过 `next_action` 信号路由
+- **DeerFlow** — 借鉴其”中间件链 + LangGraph”状态机架构：10 个中间件拦截工具执行，状态机控制流转（llm ↔ tools），通过 `next_action` 信号路由
 
 - **Claude Code** — 借鉴其工具优先、clarification 驱动的设计哲学：ClarificationMiddleware 检测澄清需求，`ask_clarification` 工具主动暂停
 
@@ -46,6 +50,59 @@
 
 **开发中** — 核心框架稳定。
 
+## 目标用户与任务
+
+| 用户 | 技术水平 | 使用方式 |
+|------|----------|----------|
+| 开发者本人 | 高 | CLI 命令，直接交互 |
+| 小团队（3-5人） | 中 | 飞书/企微机器人，消息驱动 |
+
+### 解决什么问题？
+
+**网页对话 LLM 做不到、OpenClaw 又太重的轻量任务：**
+
+```
+示例任务：
+• 「整理桌面上所有 PDF 到文件夹」
+• 「分析这份 Excel，生成图表」
+• 「每周五下午 5 点给我发周报」
+• 「帮我写一个自动化脚本」
+• 「抓取这个竞品网站的价格信息」
+• 「把这份数据做成可视化报告」
+```
+
+**核心价值：用户在 IM 里说一句话 → Agent 在本地沙箱里把活干完 → 返回结果**
+
+### 支持的入口
+
+- **CLI**: `nanodeer cli "分析这份数据"`
+- **飞书机器人**: 消息式交互
+- **企业微信机器人**: 消息式交互
+
+### 安全模型
+
+- **沙箱隔离**：所有文件操作在 Docker 容器内
+- **本地数据**：数据不出本机，开源可审计
+- **危险命令黑名单**：`rm -rf /`、`mkfs`、`curl|bash` 等
+- **路径白名单**：只允许操作 Workspace 目录，系统路径禁止
+
+## 安装与快速开始
+
+```bash
+# 安装
+pip install nanodeer
+
+# 配置
+cp config.yaml.example config.yaml
+# 编辑 config.yaml，填入飞书/企微 token、workspace 路径等
+
+# 启动守护进程
+nanodeer run
+
+# 或 CLI 模式
+nanodeer cli "分析这份数据"
+```
+
 ## 背景
 
 去年年末，我开始接触 Agent 相关实践 —— 彼时理解很粗糙，就是觉得能让 AI 帮自己干活。今年3月初，导师随口提了一句 “harness engineering 最近挺火的，多了解了解一下”，我开始四处找资料学习，也顺手用起了 Claude Code。3月底，**DeerFlow** 进入了我的视线：字节开源的这个项目让我第一次看到企业级 Agent 框架应该长什么样子——状态机、中间件链、沙箱隔离、分层记忆，每块各司其职。我反复读了好几篇介绍文章，心想：原来 Agent 可以这样工程化。
@@ -54,9 +111,6 @@
 
 **核心思路**：提炼真正有效的模式 —— **LangGraph 状态机**、**中间件链**、**Docker 容器隔离**、**分层记忆** —— 构建一个每个模块职责单一、每个横切关注点都可拦截的、可审计的 Agent 底座。
 
-## 快速开始
-
-> ⚠️ **待完善**
 
 ## 架构
 
@@ -97,11 +151,18 @@ nanodeer/
 │       │   ├── builder.py    # LangGraph 图组装
 │       │   ├── factory.py    # NanoDeerFactory — 组装 harness
 │       │   ├── prompt.py     # System Prompt 组装
-│       │   └── middlewares/  # 8 个拦截器（harness 硬安全 + 智能）
+│       │   └── middlewares/  # 10 个拦截器（harness 硬安全 + 智能）
 │       │       ├── base.py              # Middleware + MiddlewareChain
-│       │       ├── thread_data.py       # 每线程元数据初始化
-│       │       ├── sandbox.py           # 容器生命周期 + bash 审计
-│       │       ├── security.py          # 路径验证
+│       │       ├── thread_data.py       # 每线程目录初始化
+│       │       ├── file.py             # 用户上传文件处理
+│       │       ├── memory.py           # 记忆上下文注入
+│       │       ├── compression.py      # Token 计数压缩
+│       │       ├── clarification.py    # ask_clarification 信号
+│       │       ├── title.py            # 会话标题生成
+│       │       ├── detection.py        # 健康检查 + 循环检测
+│       │       ├── handling.py         # 重试 + LLM fallback
+│       │       ├── todo.py             # Todo 工具结果解析
+│       │       └── sandbox.py          # 容器生命周期 + bash 审计
 │       │       ├── clarification.py     # ask_clarification 信号
 │       │       ├── loop_detection.py    # 重复调用防护
 │       │       ├── compression.py       # Token 计数压缩
@@ -194,26 +255,28 @@ Host 直连工具（无沙箱路由）：`fetch_url` `web_search` `read_image`
 
 **Tools** — 纯执行单元，LangChain `@tool` 装饰，无沙箱感知。Skills（`invoke_skill`）是工具的数据扩展。sandbox-aware 工具通过 `wrap_tool_for_sandbox` 路由到 Layer 2；host 工具直连。
 
-**MiddlewareChain** — 8 个拦截器，4 个钩子（跨 Builder 和 Tools 的拦截机制，不是独立层）：
+**MiddlewareChain** — 10 个拦截器，4 个钩子（跨 Builder 和 Tools 的拦截机制，不是独立层）：
 ```
-before_llm:       ThreadData → Uploads → Compression
-after_llm:        Clarification → Title
-before_tools:     Security → Sandbox(audit) → LoopDetection
-after_tools_all:  Sandbox(release)
+before_llm:       ThreadData → File → Memory → Compression
+after_llm:        Title → Clarification
+before_tools:     Detection → Handling → Sandbox(audit)
+after_tools_all:  Todo → Sandbox(release)
 ```
 
-**8 个中间件：**
+**10 个中间件：**
 
 | 分组 | 中间件 | 钩子 | 职责 |
 |------|--------|------|------|
-| **Context Guard** | ThreadDataMiddleware | before_llm | 初始化 metadata |
-| | UploadsMiddleware | before_llm | 处理上传文件 |
-| | CompressionMiddleware | before_llm | 压缩历史消息 |
-| **Safety Gate** | SecurityMiddleware | before_tools | 验证文件路径 |
-| | SandboxMiddleware | before_llm/before_tools/after_tools_all | 容器生命周期 |
-| **Recursion Limit** | LoopDetectionMiddleware | before_tools | 循环检测 |
-| **Signal Handler** | ClarificationMiddleware | after_llm | 澄清信号 |
-| | TitleMiddleware | after_llm | 标题生成 |
+| **Context Guard** | ThreadDataMiddleware | before_llm | 初始化线程目录 |
+| | FileMiddleware | before_llm | 处理上传文件 |
+| | MemoryMiddleware | before_llm | 记忆上下文注入 |
+| | CompressionMiddleware | before_llm | Token 计数压缩 |
+| **Signal Handler** | TitleMiddleware | after_llm | 标题生成 |
+| | ClarificationMiddleware | after_llm | 澄清信号 |
+| **Safety Gate** | DetectionMiddleware | before_llm/before_tools | 健康检查 + 循环检测 |
+| | HandlingMiddleware | before_tools | 重试 + LLM fallback |
+| | SandboxMiddleware | before_llm/before_tools/after_tools_all | 容器生命周期 + bash 审计 |
+| **Todo Parser** | TodoMiddleware | after_tools_all | 解析 todo 工具结果 |
 
 **wrap_tool_for_sandbox** — 把 sandbox-aware 工具路由到 Layer 2 容器内执行。配置驱动（`SANDBOX_TOOL_CONFIGS`），单一 `SandboxExecTool` 类。
 
@@ -304,7 +367,6 @@ graph = create_nanodeer_agent(
 - App 知道 MyMemoryStore 的实现 ✅
 - Harness 不知道 MyMemoryStore，只接收一个 `memory_store` 参数 ✅
 - 方向：App → Harness，不是 memory → harness
-```
 
 ---
 
