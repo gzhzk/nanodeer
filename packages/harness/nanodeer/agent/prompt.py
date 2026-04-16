@@ -25,7 +25,6 @@ _TOOL_DESCRIPTIONS = {
     "grep": "Search for pattern in files. Args: file_path (str), pattern (str), recursive (bool)",
     "bash": "Execute shell command. Args: command (str), timeout (int, optional)",
     "git": "Git operations: status, diff, log, add, commit, push, pull, branch, checkout, clone",
-    "fetch_url": "Fetch and parse web page. Args: url (str), timeout (int, optional)",
     "web_search": "Search the web via DuckDuckGo. Args: query (str), num_results (int, optional)",
     "read_image": "Describe an image. Args: image_path (str), description_request (str, optional)",
     "exec_python": "Execute Python code. Args: code (str), timeout (int, optional)",
@@ -34,7 +33,6 @@ _TOOL_DESCRIPTIONS = {
     "write_todo": "Create or update a task. Args: content (str, optional), id (str, optional), status (str, optional), priority (int, optional)",
     "list_todos": "List all tasks. No args.",
     "spawn_subagent": "Spawn a subagent and get results. Args: name (str), task (str), subagent_type (str, optional), thread_id (str, optional)",
-    "ask_clarification": "Ask user for clarification. Args: question (str)",
 }
 
 _SAFETY_RULES = """**Path Security:**
@@ -70,7 +68,8 @@ Only save things that are truly durable — not ephemeral task details."""
 _RESPONSE_STYLE = """- Clear and concise
 - Same language as user"""
 
-_CRITICAL_REMINDERS = """**Clarification First**: ALWAYS clarify unclear/missing/ambiguous requirements BEFORE starting work
+_CRITICAL_REMINDERS = """**Clarification Signal**: When you need clarification, embed your question in <clarification>...</clarification> tags.
+  The system will pause and route to the user. Example: <clarification>Which format do you prefer: CSV or Excel?</clarification>
 **Output Files**: Final deliverables must be in `/mnt/user-data/outputs`
 **Be direct and helpful**"""
 
@@ -179,9 +178,9 @@ def build_lead_agent_prompt(state: "ThreadState", tools: list[str] | None = None
     else:
         loop_warning_section = ""
 
-    virtual_uploads = state.metadata.get("uploads_path", "/mnt/user-data/uploads")
-    virtual_workspace = state.metadata.get("workspace_path", "/mnt/user-data/workspace")
-    virtual_outputs = state.metadata.get("outputs_path", "/mnt/user-data/outputs")
+    virtual_uploads = "/mnt/user-data/uploads"
+    virtual_workspace = "/mnt/user-data/workspace"
+    virtual_outputs = "/mnt/user-data/outputs"
 
     return _PROMPT_TEMPLATE.format(
         agent_name="NanoDeer",

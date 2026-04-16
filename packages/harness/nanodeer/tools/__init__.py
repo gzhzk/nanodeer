@@ -13,7 +13,6 @@ from .save_memory import save_memory
 from .write_todo import write_todo
 from .list_todos import list_todos
 from .spawn_subagent import spawn_subagent
-from .ask_clarification import ask_clarification
 
 __all__ = [
     # file
@@ -42,6 +41,4 @@ __all__ = [
     "list_todos",
     # subagent
     "spawn_subagent",
-    # clarification
-    "ask_clarification",
 ]
