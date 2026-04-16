@@ -3,12 +3,11 @@
 Runs after the first agent turn. Extracts first user message content
 and generates a short title (≤50 chars) via LLM.
 """
-from typing import Any
-
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 
 from .base import Middleware
+from ..state import ThreadState
 
 
 class TitleMiddleware(Middleware):
@@ -35,30 +34,16 @@ class TitleMiddleware(Middleware):
     def set_llm(self, llm: BaseChatModel) -> None:
         self._llm = llm
 
-    async def after_llm(self, state: Any) -> None:
+    async def after_llm(self, state: ThreadState) -> None:
         """Generate title from first user message after first turn."""
         if self._llm is None:
             return
 
-        # Only generate title if not already set
-        if isinstance(state, dict):
-            existing_title = state.get("title")
-            thread_id = state.get("thread_id")
-        else:
-            existing_title = getattr(state, "title", None)
-            thread_id = getattr(state, "thread_id", None)
-
-        if existing_title:
+        if state.title:
             return
 
-        # Extract first user message
-        if isinstance(state, dict):
-            messages = state.get("messages", [])
-        else:
-            messages = getattr(state, "messages", [])
-
         first_user_msg = None
-        for msg in messages:
+        for msg in state.messages:
             if hasattr(msg, "type") and msg.type == "human":
                 first_user_msg = msg.content
                 break
@@ -69,7 +54,6 @@ class TitleMiddleware(Middleware):
         if not first_user_msg:
             return
 
-        # Generate title via LLM
         prompt = (
             f"Generate a short conversation title (max {self.max_length} characters) "
             f"based on this first message. Return ONLY the title, no quotes or explanation:\n\n"
@@ -81,11 +65,6 @@ class TitleMiddleware(Middleware):
             title = resp.content.strip() if hasattr(resp, "content") else ""
             title = title[:self.max_length]
         except Exception:
-            # Fallback: truncate first message
             title = first_user_msg[:self.max_length].replace("\n", " ").strip()
 
-        # Store title in state
-        if isinstance(state, dict):
-            state["title"] = title
-        else:
-            state.title = title  # type: ignore
+        state.title = title

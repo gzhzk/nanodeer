@@ -66,10 +66,6 @@ class CompressionMiddleware(Middleware):
         else:
             messages = state.messages
 
-        # Skip if already compressed this cycle
-        if state.metadata.get("__compressed"):
-            return
-
         # Count tokens using the LLM's built-in method
         try:
             total_tokens = self.llm.get_num_tokens_from_messages(list(messages))
@@ -115,7 +111,5 @@ class CompressionMiddleware(Middleware):
 
         if isinstance(state, dict):
             state["messages"] = compressed
-            state["metadata"]["__compressed"] = True
         else:
             state.messages = compressed
-            state.metadata["__compressed"] = True

@@ -150,7 +150,7 @@ class NanoEngine:
         state = ThreadState(
             thread_id=thread_id,
             messages=[HumanMessage(content=prompt)],
-            metadata={"uploaded_files": uploaded_files or [], "memory_context": system_hint or ""},
+            metadata={"uploaded_files": uploaded_files or []},
         )
 
         agent = self._get_agent()
@@ -173,7 +173,7 @@ class NanoEngine:
         state = ThreadState(
             thread_id=thread_id,
             messages=[HumanMessage(content=prompt)],
-            metadata={"uploaded_files": uploaded_files or [], "memory_context": system_hint or ""},
+            metadata={"uploaded_files": uploaded_files or []},
         )
 
         agent = self._get_agent()

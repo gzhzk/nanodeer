@@ -1,28 +1,32 @@
-"""ThreadDataMiddleware — initializes thread context and metadata.
+"""ThreadDataMiddleware — creates thread directory structure.
 
-before_llm: ensures metadata dict exists, sets default paths.
+Creates on host (before Docker mounts):
+  {base_path}/{thread_id}/user-data/
+  ├── workspace/
+  ├── uploads/
+  └── outputs/
+
+These are volume-mounted into the container at /mnt/user-data/.
 """
 
 from nanodeer.agent.state import ThreadState
+from nanodeer.config import get_config
 
 from .base import Middleware
 
 
 class ThreadDataMiddleware(Middleware):
-    """Initializes thread context before agent starts.
-
-    Ensures metadata dict exists and sets default virtual paths.
-    """
+    """Ensures thread directories exist before agent execution."""
 
     async def before_llm(self, state: ThreadState) -> None:
-        """Initialize metadata if not present."""
-        if state.metadata is None:
-            state.metadata = {}
+        if not state.thread_id:
+            return
 
-        # Ensure default virtual paths are set
-        if "uploads_path" not in state.metadata:
-            state.metadata["uploads_path"] = "/mnt/user-data/uploads"
-        if "workspace_path" not in state.metadata:
-            state.metadata["workspace_path"] = "/mnt/user-data/workspace"
-        if "outputs_path" not in state.metadata:
-            state.metadata["outputs_path"] = "/mnt/user-data/outputs"
+        cfg = get_config()
+        base = cfg.thread.storage_path
+        root = base / state.thread_id / "user-data"
+
+        # Create all three directories eagerly
+        (root / "workspace").mkdir(parents=True, exist_ok=True)
+        (root / "uploads").mkdir(parents=True, exist_ok=True)
+        (root / "outputs").mkdir(parents=True, exist_ok=True)

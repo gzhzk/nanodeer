@@ -5,8 +5,8 @@ Two-node LangGraph:
                        ↓ (wait | end)
                       END
 
-Modules (memory/subagent/plan) are called directly here,
-not via middleware — middleware handles cross-cutting concerns only.
+Middleware handles cross-cutting concerns.
+Modules (memory/subagent) are called via Middleware.
 """
 
 from typing import TYPE_CHECKING, Any
@@ -25,18 +25,6 @@ from .prompt import build_lead_agent_prompt
 __all__ = ["AgentBuilder"]
 
 
-def _format_messages_for_episodic(messages: list) -> str:
-    """Format messages for L2 episodic log. Raw text, no extraction."""
-    parts = []
-    for msg in messages[-6:]:  # last 6 messages
-        role = type(msg).__name__
-        content = msg.content if hasattr(msg, "content") else str(msg)
-        if len(content) > 500:
-            content = content[:500] + "..."
-        parts.append(f"[{role}]: {content}")
-    return "\n\n".join(parts)
-
-
 class AgentBuilder:
     """Clean execution pipe — only knows state, chain, and LLM."""
 
@@ -48,14 +36,12 @@ class AgentBuilder:
         *,
         sandbox_provider: Any = None,
         memory_store: Any = None,
-        plan_loader: Any = None,
     ):
         self.llm = llm.bind_tools(tools)
         self._tools = tools
         self._chain = chain
         self._sandbox_provider = sandbox_provider
         self._memory_store = memory_store
-        self._plan_loader = plan_loader
 
     def build(self) -> "CompiledStateGraph":
         graph = StateGraph(ThreadState)
@@ -82,29 +68,25 @@ class AgentBuilder:
 
     async def _llm_node(self, state: ThreadState) -> dict:
         # Reset per-turn state before any hooks run.
-        # These flags must not leak across turns.
         state.next_action = NextAction.PROCESS
         state.metadata.pop("loop_warning", None)
-        state.metadata.pop("__compressed", None)
 
         try:
             await self._chain.before_llm(state)
 
-            # Session end: write entire conversation to episodic once
-            if self._memory_store and state.next_action == NextAction.END:
-                self._memory_store.append_episodic(
-                    _format_messages_for_episodic(state.messages)
-                )
+            # END path: write episodic log and exit without calling LLM.
+            if state.next_action == NextAction.END:
+                if self._memory_store:
+                    # Inline episodic formatting — END path only, no need for a helper.
+                    parts = []
+                    for msg in state.messages[-6:]:
+                        role = type(msg).__name__
+                        content = msg.content if hasattr(msg, "content") else str(msg)
+                        if len(content) > 500:
+                            content = content[:500] + "..."
+                        parts.append(f"[{role}]: {content}")
+                    self._memory_store.append_episodic("\n\n".join(parts))
                 return {"messages": []}
-
-            if self._memory_store:
-                # L3 + L2: load for prompt injection
-                memory_context = self._memory_store.load()
-                project_slug = state.metadata.get("project_slug", "default")
-                project_mem = self._memory_store.load_project_memory(project_slug)
-                if project_mem:
-                    memory_context = (memory_context + "\n\n" + project_mem) if memory_context else project_mem
-                state.metadata["memory_context"] = memory_context
 
             tools_names = [t.name for t in self._tools]
             prompt = build_lead_agent_prompt(state, tools_names)
@@ -112,8 +94,6 @@ class AgentBuilder:
                 [SystemMessage(content=prompt)] + list(state.messages)
             )
         finally:
-            # after_llm must run even on exception / session end —
-            # ClarificationMiddleware and TitleMiddleware need a chance to execute.
             await self._chain.after_llm(state)
 
         return {"messages": [resp]}
@@ -131,6 +111,11 @@ class AgentBuilder:
                 tool = self._tool_map.get(tc["name"])
 
                 await self._chain.before_tools(state, tc["name"], tc["args"])
+
+                # If a before_tools hook set END (e.g. SandboxMiddleware blocked HIGH risk),
+                # skip remaining tools but still collect results from already-executed ones.
+                if state.next_action == NextAction.END:
+                    break
 
                 if not tool:
                     content = f"Tool {tc['name']} not found"
@@ -156,5 +141,5 @@ class AgentBuilder:
             self.__tool_map = {}
             for tool in self._tools:
                 wrapped = wrap_tool_for_sandbox(tool, self._sandbox_provider)
-                self.__tool_map[wrapped.name if wrapped else tool.name] = wrapped or tool
+                self.__tool_map[tool.name] = wrapped if wrapped else tool
         return self.__tool_map

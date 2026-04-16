@@ -2,7 +2,7 @@
 import logging
 import re
 
-from nanodeer.agent.state import SandboxState, ThreadState
+from nanodeer.agent.state import NextAction, SandboxState, ThreadState
 from nanodeer.config import get_config
 from nanodeer.sandbox import Sandbox, set_sandbox, clear_sandbox, SandboxProvider
 from nanodeer.sandbox.docker import DockerSandboxProvider
@@ -61,6 +61,14 @@ class SandboxMiddleware(Middleware):
         state.sandbox.status = "ready"
         set_sandbox(state.thread_id, sandbox)
 
+    async def after_llm(self, state: ThreadState) -> None:
+        """Release container on END — covers the path where tools_node is skipped."""
+        if state.next_action == NextAction.END:
+            await self._release_if_needed(state)
+
+    # Shell metacharacters that allow command chaining — hard block regardless of other intent.
+    _SHELL_METACHAR = frozenset([";", "&&", "||", "|", ">", ">>", "<", "`", "$("])
+
     async def before_tools(self, state: ThreadState, tool_name: str, tool_args: dict) -> None:
         if tool_name != "bash":
             return
@@ -68,10 +76,16 @@ class SandboxMiddleware(Middleware):
         if not cmd:
             return
 
+        # Hard block: command chaining metacharacters are never allowed in user bash commands.
+        if self._SHELL_METACHAR.intersection(cmd):
+            logger.warning(f"Shell metacharacters blocked: {cmd[:80]!r}")
+            state.next_action = NextAction.END
+            return
+
         risk, _ = self._classify(cmd)
         if risk == "HIGH":
             logger.warning(f"HIGH_RISK blocked: {cmd[:80]!r}")
-            state.next_action = "end"
+            state.next_action = NextAction.END
         elif risk == "MEDIUM":
             logger.warning(f"MEDIUM_RISK warning: {cmd[:80]!r}")
 

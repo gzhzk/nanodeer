@@ -123,15 +123,10 @@ class MemoryStore:
         memory_file = self.root / MEMORY_FILE
         memory_file.write_text(entry.to_frontmatter(), encoding="utf-8")
 
-    # -------------------------------------------------------------------------
-    # Combined L2 + L3 load (for builder prompt injection)
-    # Returns tagged content for consistent prompt formatting.
-    # -------------------------------------------------------------------------
+    def load_for_prompt(self, project_slug: str = "default") -> str:
+        """Load combined L3 + recent episodic + project memory for prompt injection.
 
-    def load(self) -> str:
-        """Load combined L3 + recent episodic for prompt injection.
-
-        Returns tagged content: <memory> for L3, <episodic> for recent logs.
+        Returns tagged content for consistent prompt formatting.
         """
         parts = []
         l3 = self.load_memory()
@@ -140,6 +135,9 @@ class MemoryStore:
         recent = self.load_recent_episodic()
         if recent:
             parts.append(f"<episodic>\n{recent}\n</episodic>")
+        project_mem = self.load_project_memory(project_slug)
+        if project_mem:
+            parts.append(f"<project_memory>\n{project_mem}\n</project_memory>")
         return "\n\n".join(parts)
 
     # -------------------------------------------------------------------------
