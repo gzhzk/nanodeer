@@ -1,42 +1,42 @@
-"""LoopDetectionMiddleware — detects repetitive tool call loops.
+"""DetectionMiddleware — health checks, loop detection, and timeout tracking.
 
-Sets next_action="end" when hard limit is reached. When warn threshold is
-reached, signals via metadata["loop_warning"] so the prompt layer can inject
-a reminder — keeping the message history clean.
+before_llm:    checks sandbox liveness.
+before_tools:  marks tool start time + detects repetitive tool call loops
+               (merged from former LoopDetectionMiddleware).
 """
 
 import asyncio
 import hashlib
 import json
 import logging
-from typing import Any
+import time
 
-from ..state import ThreadState
+from nanodeer.agent.state import NextAction, ThreadState
+
 from .base import Middleware
 
 logger = logging.getLogger(__name__)
 
 
-class LoopDetectionMiddleware(Middleware):
-    """Detects and breaks repetitive tool call loops.
+class DetectionMiddleware(Middleware):
+    """Detects health issues, tool call loops, and tracks execution time.
 
-    Uses a sliding window hash of tool calls (name + args, order-independent).
-    Thread-safe with per-thread locks.
-
-    warn_threshold: set metadata signal for prompt layer to remind LLM
-    hard_limit: set next_action="end" to terminate the graph
+    Writes:
+      metadata["health_error"]  — set if sandbox released
+      metadata["_tool_start"]    — timestamp before tool runs
+      metadata["loop_warning"]  — loop warn signal for prompt layer
     """
 
     def __init__(
         self,
-        warn_threshold: int = 3,
-        hard_limit: int = 5,
-        window_size: int = 20,
+        loop_warn_threshold: int = 3,
+        loop_hard_limit: int = 5,
+        loop_window_size: int = 20,
         max_threads: int = 100,
     ):
-        self.warn_threshold = warn_threshold
-        self.hard_limit = hard_limit
-        self.window_size = window_size
+        self.loop_warn_threshold = loop_warn_threshold
+        self.loop_hard_limit = loop_hard_limit
+        self.loop_window_size = loop_window_size
         self.max_threads = max_threads
 
         self._history: dict[str, list[tuple[str, int]]] = {}
@@ -48,7 +48,6 @@ class LoopDetectionMiddleware(Middleware):
         return self._locks[thread_id]
 
     def _hash_tool_calls(self, tool_calls: list[dict]) -> str:
-        """Hash tool calls in order-independent way."""
         normalized = [
             {"name": tc.get("name", ""), "args": tc.get("args", {})}
             for tc in tool_calls
@@ -67,10 +66,18 @@ class LoopDetectionMiddleware(Middleware):
             self._history[thread_id] = []
         return self._history[thread_id]
 
+    async def before_llm(self, state: ThreadState) -> None:
+        if state.sandbox and state.sandbox.container_id:
+            if state.sandbox.status == "released":
+                state.metadata["health_error"] = "sandbox_released"
+
     async def before_tools(
         self, state: ThreadState, tool_name: str, tool_args: dict
     ) -> None:
-        """Check for repetitive tool calls before execution."""
+        # Mark tool start time — HandlingMiddleware reads this to detect timeout.
+        state.metadata["_tool_start"] = time.monotonic()
+
+        # Loop detection: sliding window hash
         thread_id = getattr(state, "thread_id", None) or "default"
 
         async with self._get_lock(thread_id):
@@ -95,22 +102,19 @@ class LoopDetectionMiddleware(Middleware):
                     f"thread={thread_id} tool={tool_name} count={count}"
                 )
 
-                if count == self.warn_threshold:
-                    # Signal via metadata — prompt layer reads this and injects
-                    # a reminder into the system prompt. Message history stays clean.
+                if count == self.loop_warn_threshold:
                     state.metadata["loop_warning"] = {
                         "tool": tool_name,
                         "count": count,
-                        "threshold": self.warn_threshold,
+                        "threshold": self.loop_warn_threshold,
                     }
-
-                elif count >= self.hard_limit:
+                elif count >= self.loop_hard_limit:
                     state.metadata.pop("loop_warning", None)
-                    state.next_action = "end"
+                    state.next_action = NextAction.END
                     logger.warning(
-                        f"LoopDetection: hard limit reached, setting next_action=end "
+                        f"LoopDetection: hard limit reached, setting next_action=END "
                         f"thread={thread_id} tool={tool_name} count={count}"
                     )
 
-            if len(history) > self.window_size:
-                history[:] = history[-self.window_size:]
+            if len(history) > self.loop_window_size:
+                history[:] = history[-self.loop_window_size:]
