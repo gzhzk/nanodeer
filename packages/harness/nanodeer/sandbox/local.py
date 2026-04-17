@@ -25,23 +25,21 @@ class LocalSandboxProvider(SandboxProvider):
 
     def __init__(
         self,
-        base_dir: Path | None = None,
         container_prefix: str = "nanodeer-local",
     ):
         """Initialize local sandbox provider.
 
         Args:
-            base_dir: Base directory for thread workspaces.
-                      Defaults to /tmp/nanodeer/workspaces.
             container_prefix: Unused, kept for API compatibility.
         """
-        self.base_dir = (base_dir or Path("/tmp/nanodeer/workspaces")).resolve()
         self.container_prefix = container_prefix
 
     async def acquire(self, thread_id: str) -> Sandbox:
         """Create a local workspace directory for the thread."""
+        from ..config import get_config
         safe_id = re.sub(r'[^a-zA-Z0-9_-]', '', thread_id)
-        working_dir = self.base_dir / safe_id
+        base = get_config().thread.storage_path
+        working_dir = base / safe_id / "user-data"
         working_dir.mkdir(parents=True, exist_ok=True)
         return Sandbox(
             thread_id=thread_id,
@@ -96,9 +94,11 @@ class LocalSandboxProvider(SandboxProvider):
     async def release(self, sandbox: Sandbox) -> None:
         """Clean up thread workspace directory with path hardening."""
         def _cleanup():
+            from ..config import get_config
+            base = get_config().thread.storage_path
             workspace = Path(sandbox.working_dir).resolve()
-            # Ensure workspace is actually under base_dir (symlink attack defense)
-            if workspace.exists() and self.base_dir in workspace.parents:
+            # Ensure workspace is actually under storage_path (symlink attack defense)
+            if workspace.exists() and base in workspace.parents:
                 shutil.rmtree(workspace, ignore_errors=True)
 
         loop = asyncio.get_running_loop()
