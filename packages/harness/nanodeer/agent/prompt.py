@@ -1,21 +1,38 @@
 """System prompt for NanoDeer lead agent — structured by LLM cognitive flow.
 
+Sections are rendered on-demand via PromptConfig feature flags.
 Group ordering (not alphabetical):
-  1. Identity & constraints   — who am I, what must I never do
-  2. Available capabilities    — tools, skills, subagents
-  3. Current context           — dynamic: memory, todos, uploads
-  4. Output requirements        — style, reminders
-  5. Metadata                   — date (always last)
+  1. Identity & constraints   — always rendered
+  2. Available capabilities   — tools always; skills/subagent on-demand
+  3. Current context          — memory/todos on-demand; working_directory always
+  4. Output requirements      — always rendered
+  5. Metadata                 — always rendered (date)
 """
 
+from dataclasses import dataclass, field
 from datetime import date
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .state import ThreadState
+    from .state import ThreadState, TurnSignals
 
 
-# Static text fragments
+# --- PromptConfig ---
+
+@dataclass
+class PromptConfig:
+    """Feature flags for prompt section activation.
+
+    Each flag controls whether the corresponding section is rendered.
+    Default: all True (backwards compatible).
+    """
+    memory: bool = True
+    todos: bool = True
+    skills: bool = True
+    subagent: bool = True
+
+
+# --- Static text fragments ---
 
 _TOOL_DESCRIPTIONS = {
     "read_file": "Read file contents. Args: file_path (str)",
@@ -74,66 +91,36 @@ _CRITICAL_REMINDERS = """**Clarification Signal**: When you need clarification, 
 **Be direct and helpful**"""
 
 
-# Prompt template
+# --- Section builders ---
 
-_PROMPT_TEMPLATE = """<identity_and_constraints>
+def _identity_section() -> str:
+    return """<identity_and_constraints>
 <role>
-You are {agent_name}, a lightweight AI super agent built with NanoDeer.
+You are NanoDeer, a lightweight AI super agent built with NanoDeer.
 </role>
 
-{safety_rules}
-</identity_and_constraints>
+{_SAFETY_RULES}
+</identity_and_constraints>""".format(_SAFETY_RULES=_SAFETY_RULES)
 
-<available_capabilities>
-<tools>
-{tools_section}
-</tools>
-
-<skills>
-{skills_usage}
-</skills>
-
-<subagent>
-{subagent_usage}
-</subagent>
-</available_capabilities>
-
-<current_context>
-{memory_section}
-
-<todos>
-{todos_section}
-</todos>
-
-<working_directory>
-- User uploads: {virtual_uploads}
-- User workspace: {virtual_workspace}
-- Output files: {virtual_outputs}
-</working_directory>
-</current_context>
-
-<output_requirements>
-<response_style>
-{response_style}
-</response_style>
-
-<critical_reminders>
-{critical_reminders}
-</critical_reminders>
-
-{loop_warning_section}
-</output_requirements>
-
-<current_date>{date}
-"""
-
-
-# Helpers
 
 def _tools_section(tools: list[str]) -> str:
     if not tools:
-        return "No tools available."
-    return "\n".join(f"- {t}: {_TOOL_DESCRIPTIONS.get(t, f'{t} tool')}" for t in tools)
+        tools_text = "No tools available."
+    else:
+        tools_text = "\n".join(f"- {t}: {_TOOL_DESCRIPTIONS.get(t, f'{t} tool')}" for t in tools)
+    return f"<available_capabilities>\n<tools>\n{tools_text}\n</tools>\n</available_capabilities>"
+
+
+def _skills_section() -> str:
+    return f"<skills>\n{_SKILLS_USAGE}\n</skills>"
+
+
+def _subagent_section() -> str:
+    return f"<subagent>\n{_SUBAGENT_USAGE}\n</subagent>"
+
+
+def _memory_section(memory_context: str) -> str:
+    return f"<memory>\n{memory_context}\n\n---\n{_MEMORY_MAINTENANCE}\n</memory>"
 
 
 def _todos_section(todos: list[dict]) -> str:
@@ -146,55 +133,77 @@ def _todos_section(todos: list[dict]) -> str:
         content = todo.get("content", "")
         checkbox = "[x]" if status == "completed" else "[>]" if status == "in_progress" else "[ ]"
         lines.append(f"{checkbox} {content}")
-    return "\n".join(lines)
+    return "<todos>\n" + "\n".join(lines) + "\n</todos>"
 
 
-# Public API
+def _working_directory_section() -> str:
+    return """<working_directory>
+- User uploads: /mnt/user-data/uploads
+- User workspace: /mnt/user-data/workspace
+- Output files: /mnt/user-data/outputs
+</working_directory>"""
 
-def build_lead_agent_prompt(state: "ThreadState", tools: list[str] | None = None) -> str:
+
+def _output_section(response_style: str = _RESPONSE_STYLE, reminders: str = _CRITICAL_REMINDERS) -> str:
+    return f"""<output_requirements>
+<response_style>
+{response_style}
+</response_style>
+
+<critical_reminders>
+{reminders}
+</critical_reminders>
+</output_requirements>"""
+
+
+# --- Public API ---
+
+def build_lead_agent_prompt(
+    state: "ThreadState",
+    tools: list[str],
+    signals: "TurnSignals",
+    config: PromptConfig | None = None,
+) -> str:
     """Build prompt from state, ordered by LLM cognitive flow.
 
-    Sections render only when their data is present.
+    Auto-detection rules:
+      - <memory>: rendered only if signals.memory_context is non-empty
+      - <todos>: rendered only if state.todos is non-empty
+      - <skills>: rendered only if config.skills=True AND "invoke_skill" in tools
+      - <subagent>: rendered only if config.subagent=True AND "spawn_subagent" in tools
+      - <tools>: always rendered (always available to LLM)
+
+    This minimizes token waste for lightweight tasks.
     """
-    # Memory context (L3 + L2) + maintenance hint
-    memory_context = state.metadata.get("memory_context", "") if state.metadata else ""
-    if memory_context:
-        memory_section = f"<memory>\n{memory_context}\n\n---\n{_MEMORY_MAINTENANCE}\n</memory>"
-    else:
-        memory_section = ""
+    if config is None:
+        config = PromptConfig()
 
-    # Todos from ThreadState (single source of truth)
-    todos_section = _todos_section(state.todos)
+    sections = []
 
-    # Loop warning (injected only when loop detected)
-    loop_warning = state.metadata.get("loop_warning") if state.metadata else None
-    if loop_warning:
-        loop_warning_section = (
-            f"<loop_warning>\n"
-            f"You have called `{loop_warning['tool']}` {loop_warning['count']} times "
-            f"with identical arguments. Try a different approach or stop.\n"
-            f"</loop_warning>"
-        )
-    else:
-        loop_warning_section = ""
+    # 1. Identity & constraints (always)
+    sections.append(_identity_section())
 
-    virtual_uploads = "/mnt/user-data/uploads"
-    virtual_workspace = "/mnt/user-data/workspace"
-    virtual_outputs = "/mnt/user-data/outputs"
+    # 2. Available capabilities
+    sections.append(_tools_section(tools))
+    # Auto-detect: only render if tool is available AND feature flag is True
+    if config.skills and "invoke_skill" in tools:
+        sections.append(_skills_section())
+    if config.subagent and "spawn_subagent" in tools:
+        sections.append(_subagent_section())
 
-    return _PROMPT_TEMPLATE.format(
-        agent_name="NanoDeer",
-        safety_rules=_SAFETY_RULES,
-        tools_section=_tools_section(tools or []),
-        skills_usage=_SKILLS_USAGE,
-        subagent_usage=_SUBAGENT_USAGE,
-        memory_section=memory_section,
-        todos_section=todos_section,
-        virtual_uploads=virtual_uploads,
-        virtual_workspace=virtual_workspace,
-        virtual_outputs=virtual_outputs,
-        response_style=_RESPONSE_STYLE,
-        critical_reminders=_CRITICAL_REMINDERS,
-        loop_warning_section=loop_warning_section,
-        date=date.today().isoformat(),
-    )
+    # 3. Current context
+    if config.memory and signals and signals.memory_context:
+        sections.append(_memory_section(signals.memory_context))
+    if config.todos and state.todos:
+        todos_text = _todos_section(state.todos)
+        if todos_text:
+            sections.append(todos_text)
+    sections.append(_working_directory_section())
+
+    # 4. Output requirements (always)
+    sections.append(_output_section())
+
+    # 5. Metadata (always)
+    sections.append(f"<current_date>{date.today().isoformat()}</current_date>")
+
+    return "\n\n".join(sections)
