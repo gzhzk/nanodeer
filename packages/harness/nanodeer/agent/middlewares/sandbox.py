@@ -2,7 +2,7 @@
 import logging
 import re
 
-from nanodeer.agent.state import NextAction, SandboxState, ThreadState
+from nanodeer.agent.state import NextAction, SandboxState, ThreadState, TurnSignals
 from nanodeer.config import get_config
 from nanodeer.sandbox import Sandbox, set_sandbox, clear_sandbox, SandboxProvider
 from nanodeer.sandbox.docker import DockerSandboxProvider
@@ -46,7 +46,7 @@ class SandboxMiddleware(Middleware):
             network_mode=cfg.sandbox.network_mode,
         )
 
-    async def before_llm(self, state: ThreadState) -> None:
+    async def before_llm(self, state: ThreadState, signals: TurnSignals) -> None:
         if state.sandbox is None:
             state.sandbox = SandboxState()
         if state.sandbox.container_id:
@@ -61,7 +61,7 @@ class SandboxMiddleware(Middleware):
         state.sandbox.status = "ready"
         set_sandbox(state.thread_id, sandbox)
 
-    async def after_llm(self, state: ThreadState) -> None:
+    async def after_llm(self, state: ThreadState, signals: TurnSignals) -> None:
         """Release container on END — covers the path where tools_node is skipped."""
         if state.next_action == NextAction.END:
             await self._release_if_needed(state)
@@ -69,7 +69,9 @@ class SandboxMiddleware(Middleware):
     # Shell metacharacters that allow command chaining — hard block regardless of other intent.
     _SHELL_METACHAR = frozenset([";", "&&", "||", "|", ">", ">>", "<", "`", "$("])
 
-    async def before_tools(self, state: ThreadState, tool_name: str, tool_args: dict) -> None:
+    async def before_tools(
+        self, state: ThreadState, signals: TurnSignals, tool_name: str, tool_args: dict
+    ) -> None:
         if tool_name != "bash":
             return
         cmd = tool_args.get("command", "")
@@ -89,7 +91,7 @@ class SandboxMiddleware(Middleware):
         elif risk == "MEDIUM":
             logger.warning(f"MEDIUM_RISK warning: {cmd[:80]!r}")
 
-    async def after_tools_all(self, state: ThreadState) -> None:
+    async def after_tools_all(self, state: ThreadState, signals: TurnSignals) -> None:
         await self._release_if_needed(state)
 
     def _classify(self, command: str) -> tuple[str, str]:

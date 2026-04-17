@@ -4,10 +4,10 @@ Runs after the first agent turn. Extracts first user message content
 and generates a short title (≤50 chars) via LLM.
 """
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import HumanMessage
 
 from .base import Middleware
-from ..state import ThreadState
+from ..state import ThreadState, TurnSignals
+from ..messages import HumanMessage
 
 
 class TitleMiddleware(Middleware):
@@ -34,7 +34,7 @@ class TitleMiddleware(Middleware):
     def set_llm(self, llm: BaseChatModel) -> None:
         self._llm = llm
 
-    async def after_llm(self, state: ThreadState) -> None:
+    async def after_llm(self, state: ThreadState, signals: TurnSignals) -> None:
         """Generate title from first user message after first turn."""
         if self._llm is None:
             return

@@ -9,7 +9,7 @@ Creates on host (before Docker mounts):
 These are volume-mounted into the container at /mnt/user-data/.
 """
 
-from nanodeer.agent.state import ThreadState
+from nanodeer.agent.state import ThreadState, TurnSignals
 from nanodeer.config import get_config
 
 from .base import Middleware
@@ -18,7 +18,7 @@ from .base import Middleware
 class ThreadDataMiddleware(Middleware):
     """Ensures thread directories exist before agent execution."""
 
-    async def before_llm(self, state: ThreadState) -> None:
+    async def before_llm(self, state: ThreadState, signals: TurnSignals) -> None:
         if not state.thread_id:
             return
 

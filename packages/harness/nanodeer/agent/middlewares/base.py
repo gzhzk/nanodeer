@@ -5,30 +5,33 @@ Hooks:
   after_llm       — post-LLM call
   before_tools    — pre-tool call
   after_tools_all — after all tools in this turn
+
+All hooks receive (state, signals) where signals is TurnSignals — the
+ephemeral per-turn context that dies at the end of each ReAct turn.
 """
 
 from abc import ABC
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from nanodeer.agent.state import ThreadState
+    from nanodeer.agent.state import ThreadState, TurnSignals
 
 
 class Middleware(ABC):
     """Base middleware — subclasses only override hooks they need."""
 
-    async def before_llm(self, state: "ThreadState") -> None:
+    async def before_llm(self, state: "ThreadState", signals: "TurnSignals") -> None:
         pass
 
-    async def after_llm(self, state: "ThreadState") -> None:
+    async def after_llm(self, state: "ThreadState", signals: "TurnSignals") -> None:
         pass
 
     async def before_tools(
-        self, state: "ThreadState", tool_name: str, tool_args: dict
+        self, state: "ThreadState", signals: "TurnSignals", tool_name: str, tool_args: dict
     ) -> None:
         pass
 
-    async def after_tools_all(self, state: "ThreadState") -> None:
+    async def after_tools_all(self, state: "ThreadState", signals: "TurnSignals") -> None:
         pass
 
 
@@ -61,24 +64,24 @@ class MiddlewareChain:
                     seen.add(id(mw))
                     yield mw
 
-    async def before_llm(self, state: "ThreadState") -> None:
+    async def before_llm(self, state: "ThreadState", signals: "TurnSignals") -> None:
         """Execute before_llm chain in registration order."""
         for m in self._before_llm:
-            await m.before_llm(state)
+            await m.before_llm(state, signals)
 
-    async def after_llm(self, state: "ThreadState") -> None:
+    async def after_llm(self, state: "ThreadState", signals: "TurnSignals") -> None:
         """Execute after_llm chain in registration order."""
         for m in self._after_llm:
-            await m.after_llm(state)
+            await m.after_llm(state, signals)
 
     async def before_tools(
-        self, state: "ThreadState", tool_name: str, tool_args: dict
+        self, state: "ThreadState", signals: "TurnSignals", tool_name: str, tool_args: dict
     ) -> None:
         """Execute before_tools chain in registration order."""
         for m in self._before_tools:
-            await m.before_tools(state, tool_name, tool_args)
+            await m.before_tools(state, signals, tool_name, tool_args)
 
-    async def after_tools_all(self, state: "ThreadState") -> None:
+    async def after_tools_all(self, state: "ThreadState", signals: "TurnSignals") -> None:
         """Execute after_tools_all chain in registration order."""
         for m in self._after_tools_all:
-            await m.after_tools_all(state)
+            await m.after_tools_all(state, signals)

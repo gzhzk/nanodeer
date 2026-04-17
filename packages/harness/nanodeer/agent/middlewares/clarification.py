@@ -1,14 +1,14 @@
 """ClarificationMiddleware — detects clarification intent in LLM response.
 
 after_llm: detects <clarification>...</clarification> tags in LLM content
-           and signals WAIT to route to END. LLM uses signal, not tool call.
+           and sets signals.clarification_question + signals.next_action = WAIT.
+           LLM uses signal, not tool call.
 """
 
 import re
 
-from langchain_core.messages import AIMessage
-
-from nanodeer.agent.state import NextAction, ThreadState
+from nanodeer.agent.state import NextAction, ThreadState, TurnSignals
+from nanodeer.agent.messages import AIMessage
 
 from .base import Middleware
 
@@ -22,7 +22,7 @@ class ClarificationMiddleware(Middleware):
     No tool call needed — signal-driven detection.
     """
 
-    async def after_llm(self, state: ThreadState) -> None:
+    async def after_llm(self, state: ThreadState, signals: TurnSignals) -> None:
         last = state.messages[-1] if state.messages else None
         if not isinstance(last, AIMessage):
             return
@@ -30,6 +30,6 @@ class ClarificationMiddleware(Middleware):
         # Check for <clarification>...</clarification> tag in content
         match = _CLARIFICATION_TAG.search(last.content or "")
         if match:
-            # Store the question in metadata for app layer to display
-            state.metadata["clarification_question"] = match.group(1).strip()
+            # Store the question in signals for app layer to display
+            signals.clarification_question = match.group(1).strip()
             state.next_action = NextAction.WAIT

@@ -3,17 +3,22 @@
 Writes to the host directory that is volume-mounted into the container,
 so files are accessible at /mnt/user-data/uploads/ inside the sandbox.
 
-before_llm: consumes state.metadata["uploaded_files"], writes to disk,
-            writes virtual path list to state.metadata["_uploaded_paths"].
+before_llm: reads signals._uploaded_files (injected by executor), writes to disk.
 """
 
 import mimetypes
 from pathlib import Path
 
-from nanodeer.agent.state import ThreadState
+from nanodeer.agent.state import ThreadState, TurnSignals
 from nanodeer.config import get_config
 
 from .base import Middleware
+
+_TEXT_MIME_TYPES = frozenset({
+    "text/plain", "text/html", "text/css", "text/csv", "text/markdown",
+    "text/xml", "application/json", "application/javascript",
+    "application/xml", "application/csv",
+})
 
 
 class FileMiddleware(Middleware):
@@ -23,11 +28,11 @@ class FileMiddleware(Middleware):
         cfg = get_config()
         self.base_path = base_path or cfg.thread.storage_path
 
-    async def before_llm(self, state: ThreadState) -> None:
+    async def before_llm(self, state: ThreadState, signals: TurnSignals) -> None:
         if not state.thread_id:
             return
 
-        uploaded_files = state.metadata.get("uploaded_files", [])
+        uploaded_files = getattr(signals, "_uploaded_files", None)
         if not uploaded_files:
             return
 
@@ -35,27 +40,28 @@ class FileMiddleware(Middleware):
         root = self.base_path / state.thread_id / "user-data" / "uploads"
         root.mkdir(parents=True, exist_ok=True)
 
-        paths = []
         for file_info in uploaded_files:
-            if isinstance(file_info, dict):
-                filename = file_info.get("name", "unknown")
-                content = file_info.get("content", "")
-            else:
-                file_path = Path(file_info)
-                filename = file_path.name
-                try:
-                    content = file_path.read_text(encoding="utf-8", errors="replace")
-                except Exception:
-                    content = None
+            if not isinstance(file_info, dict):
+                continue
+            filename = file_info.get("name", "unknown")
+            content = file_info.get("content", b"") or b""
 
             dest = root / filename
-            if content is not None:
-                dest.write_text(content, encoding="utf-8")
+            mime_type = file_info.get("mime_type", "")
+
+            if self._is_text_mime(mime_type, filename):
+                try:
+                    text = content.decode("utf-8")
+                    dest.write_text(text, encoding="utf-8")
+                except UnicodeDecodeError:
+                    dest.write_bytes(content)
             else:
-                dest.touch()
+                dest.write_bytes(content)
 
-            paths.append(f"{virtual_uploads}/{filename}")
-
-        # Pass virtual paths to MemoryMiddleware and consume source
-        state.metadata["_uploaded_paths"] = paths
-        state.metadata["uploaded_files"] = []
+    def _is_text_mime(self, mime_type: str, filename: str) -> bool:
+        if mime_type:
+            return mime_type.startswith("text/") or mime_type in _TEXT_MIME_TYPES
+        guessed, _ = mimetypes.guess_type(filename)
+        if guessed:
+            return guessed.startswith("text/") or guessed in _TEXT_MIME_TYPES
+        return filename.endswith((".txt", ".md", ".csv", ".json", ".xml", ".html", ".css", ".js", ".ts"))
