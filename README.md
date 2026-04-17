@@ -9,7 +9,7 @@ English | [中文](./README_zh.md)
 - [Design Inspirations](#design-inspirations)
 - [Status](#status)
 - [Target Users & Tasks](#target-users--tasks)
-  - [What does it solve?](#what-does-it-solve)
+  - [What does it solve](#what-does-it-solve)
   - [Supported Channels](#supported-channels)
   - [Safety](#safety)
 - [Installation & Quick Start](#installation--quick-start)
@@ -56,7 +56,7 @@ English | [中文](./README_zh.md)
 | Individual developers | High | CLI commands, direct interaction |
 | Small teams (3-5 people) | Medium | Feishu/WeChat Work bot, message-driven |
 
-### What does it solve?
+### What does it solve
 
 **Lightweight tasks that web LLMs can't handle and OpenClaw is too heavy for:**
 

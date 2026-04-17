@@ -1,7 +1,7 @@
 [project]
 name = "nanodeer-ai"
 version = "0.1.0"
-description = "Lightweight AI Agent Harness — LangGraph-based agent with tool calling, memory, and sandbox isolation"
+description = "Lightweight AI Agent Harness — native ReAct agent with tool calling, memory, and sandbox isolation"
 readme = "../../README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -9,7 +9,6 @@ authors = [
     { name = "NanoDeer Authors" },
 ]
 dependencies = [
-    "langgraph>=0.2.0",
     "langchain-core>=0.3.0",
     "langchain-anthropic>=0.2.0",
     "pydantic>=2.0.0",
