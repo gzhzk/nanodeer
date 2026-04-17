@@ -5,8 +5,9 @@ import uuid
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
 from langchain_core.tools import BaseTool
+
+from nanodeer.agent.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
 
 
 async def run_subagent(
@@ -199,7 +200,7 @@ def generate_subagent_id() -> str:
 
 
 class SubagentRunner:
-    """Manages subagent lifecycle for builder integration.
+    """Manages subagent lifecycle for ReActExecutor.
 
     Collects spawn_subagent calls and executes pending subagents
     when get_subagent_results is called.
