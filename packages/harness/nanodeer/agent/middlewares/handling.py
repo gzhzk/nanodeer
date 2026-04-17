@@ -1,32 +1,31 @@
-"""HandlingMiddleware — retry on tool timeout, fallback on LLM error.
+"""HandlingMiddleware — response to detection signals across the execution chain.
 
-before_tools:  checks previous tool timeout, retries up to max_retries.
-after_llm:     on LLM error (connection / rate limit), fallback or retry.
+DetectionMiddleware detects issues and writes signals.
+HandlingMiddleware reads those signals and decides the response.
+
+Architecture:
+  before_tools: placeholder for tool-level error handling (none active currently)
+  after_llm:    placeholder for LLM-level error handling
+
+Loop detection removed: lightweight tasks don't need it (see DetectionMiddleware docstring).
+
+Future error types to handle:
+  - llm_error: retry? fallback? END?
+  - tool_error: retry? skip? END?
+  - memory_error: fallback? END?
+  ... (expand as needed)
 """
 
-import logging
-
-from nanodeer.agent.state import NextAction, ThreadState
+from nanodeer.agent.state import ThreadState, TurnSignals
 
 from .base import Middleware
 
-logger = logging.getLogger(__name__)
-
-# LLM error substrings that are retryable
-_RETRYABLE_LLM_ERRORS = (
-    "rate limit",
-    "429",
-    "connection",
-    "timeout",
-    "unavailable",
-)
-
 
 class HandlingMiddleware(Middleware):
-    """Handles tool retries and LLM fallback.
+    """Response handler for detection signals.
 
-    Retry: if previous tool timed out, re-execute up to max_retries times.
-    Fallback: on LLM error, attempt fallback LLM or degrade gracefully.
+    Currently: placeholder only (loop detection removed).
+    Future: handle llm_error, tool_error, memory_error, etc.
     """
 
     def __init__(
@@ -38,24 +37,16 @@ class HandlingMiddleware(Middleware):
         self.fallback_llm_name = fallback_llm_name
 
     async def before_tools(
-        self, state: ThreadState, tool_name: str, tool_args: dict
+        self, state: ThreadState, signals: TurnSignals, tool_name: str, tool_args: dict
     ) -> None:
-        # Skip if health was already bad
-        if state.metadata.get("health_error"):
-            return
+        # TODO(optimization): handle signals.error for future error types
+        # Currently: no active tool-level error handling
+        pass
 
-        # Check retry count for this tool
-        retry_key = f"_retry_{tool_name}"
-        retry_count = state.metadata.get(retry_key, 0)
-        state.metadata[retry_key] = retry_count + 1
+    async def after_llm(self, state: ThreadState, signals: TurnSignals) -> None:
+        """Handle LLM-level errors.
 
-        if retry_count >= self.max_retries:
-            logger.warning(f"HandlingMiddleware: max retries ({self.max_retries}) reached for {tool_name}, skipping")
-            state.next_action = NextAction.END
-
-    async def after_llm(self, state: ThreadState) -> None:
-        # Check if the last LLM call failed with a retryable error
-        # (In practice the LLM exception propagates before this hook runs,
-        # so this hook mainly handles fallback LLM selection.)
-        if self.fallback_llm_name:
-            logger.info(f"HandlingMiddleware: LLM fallback configured to {self.fallback_llm_name}")
+        TODO(optimization): if signals.error.type == "llm_error" → retry or fallback.
+        Currently a placeholder.
+        """
+        pass
