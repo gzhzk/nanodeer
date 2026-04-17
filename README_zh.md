@@ -17,7 +17,7 @@
 - [架构](#架构)
   - [5 层 Harness 设计](#5-层-harness-设计)
   - [项目结构](#项目结构)
-  - [信号驱动设计](#信号驱动设计)
+  - [信号与状态设计](#信号与状态设计)
 - [层级设计](#层级设计)
   - [Layer 1: 数据层](#layer-1-数据层)
   - [Layer 2: 沙箱隔离层](#layer-2-沙箱隔离层)
@@ -188,15 +188,37 @@ nanodeer/
 └── pyproject.toml
 ```
 
-### 信号驱动设计
+### 信号与状态设计
 
-NanoDeer 采用**信号驱动架构**，中间件通过 `ThreadState.next_action` 显式通信：
+NanoDeer 使用**信号**（临时数据）和**状态**（持久数据）进行中间件通信和控制流。
 
-| 信号 | 效果 |
+**TurnSignals** — 单 turn 临时数据：
+
+| 信号 | 写入方 | 读取方 | 作用 |
+|------|--------|--------|------|
+| `clarification_question` | ClarificationMiddleware | App 层 | 显示问题给用户，WAIT |
+| `memory_context` | MemoryMiddleware | Prompt | 注入记忆到 LLM 上下文 |
+| `error` | DetectionMiddleware | HandlingMiddleware | 决定：重试？降级？END？ |
+
+**ThreadState 字段** — 跨 turn 持久化：
+
+| 字段 | 写入方 | 读取方 | 作用 |
+|------|--------|--------|------|
+| `thread_id` | App 层 | 各组件 | 线程标识 |
+| `messages` | Human/AI/Tool messages | Prompt | 对话历史 |
+| `next_action` | 各中间件 | ReActExecutor | `PROCESS` → tools; `WAIT` → 返回调用方; `END` → 终止 |
+| `todos` | TodoMiddleware | Prompt | 注入任务列表到 LLM 上下文 |
+| `artifacts` | 工具 | App 层 | 追踪产物文件路径 |
+| `title` | TitleMiddleware | App 层 | 显示会话标题 |
+| `sandbox` | SandboxMiddleware | DetectionMiddleware | 容器状态 |
+
+**SandboxState 字段** — ThreadState.sandbox 的子字段：
+
+| 字段 | 含义 |
 |------|------|
-| `next_action = "process"` | 继续执行 tools |
-| `next_action = "wait"` | 路由到 END（暂停等待用户） |
-| `next_action = "end"` | 路由到 END（终止） |
+| `container_id` | Docker 容器 ID 或 "local-{thread_id}" |
+| `working_dir` | 执行工作目录 |
+| `status` | "ready" / "released" |
 
 ---
 
@@ -393,7 +415,6 @@ Harness 内部无 Agent 业务逻辑，memory/plan/subagent 由 App 注入。
 
 | 工具 | 描述 |
 |------|------|
-| `fetch_url` | 获取网页，提取纯文本 |
 | `web_search` | 通过 DuckDuckGo HTML 搜索 |
 | `read_image` | 读取图片文件，返回 base64 给视觉模型 |
 
@@ -402,7 +423,6 @@ Harness 内部无 Agent 业务逻辑，memory/plan/subagent 由 App 注入。
 | 工具 | 描述 |
 |------|------|
 | `save_memory` | 保存内容到 L3 记忆 |
-| `load_memory` | 从记忆存储加载 L3 + 近日期情景 |
 
 **待办事项**
 
@@ -416,7 +436,6 @@ Harness 内部无 Agent 业务逻辑，memory/plan/subagent 由 App 注入。
 | 工具 | 描述 |
 |------|------|
 | `spawn_subagent` | 注册并行子 Agent 任务 |
-| `get_subagent_results` | 从已完成的子 Agent 收集结果 |
 
 **技能**
 
@@ -428,9 +447,9 @@ Harness 内部无 Agent 业务逻辑，memory/plan/subagent 由 App 注入。
 
 ## 核心模式
 
-**信号驱动流**：中间件设置 `state.next_action` 而非注入消息或 strip tool_calls。信号是控制流的唯一真实来源。
+**信号与状态架构** — TurnSignals 携带跨钩子的临时数据；ThreadState 携带跨 turn 的持久数据。中间件写入信号/状态；其他层级读取并据此行动。
 
-**中间件**：横向拦截器，带钩子。读写 ThreadState 但不直接修改 LLM 或工具。
+**中间件**：横向拦截器，带钩子。读写 ThreadState/TurnSignals 但不直接修改 LLM 或工具。
 
 **ThreadState** — 跨 turn 持久化数据。**TurnSignals** — 单 turn 临时数据。
 

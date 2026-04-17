@@ -17,7 +17,7 @@
 - [Architecture](#architecture)
   - [5-Layer Harness Design](#5-layer-harness-design)
   - [Project Structure](#project-structure)
-  - [Signal-Driven Design](#signal-driven-design)
+  - [Signal & State Design](#signal--state-design)
 - [Layers Design](#layers-design)
   - [Layer 1: Data](#layer-1-data)
   - [Layer 2: Sandbox](#layer-2-sandbox)
@@ -190,15 +190,37 @@ nanodeer/
 └── pyproject.toml
 ```
 
-### Signal-Driven Design
+### Signal & State Design
 
-NanoDeer follows a **signal-driven architecture** where middlewares communicate through `ThreadState.next_action`:
+NanoDeer uses **signals** (ephemeral data) and **state** (persistent data) for middleware communication and control flow.
 
-| Signal | Effect |
-|--------|--------|
-| `next_action = "process"` | Continue to tools |
-| `next_action = "wait"` | Route to END (pause for user) |
-| `next_action = "end"` | Route to END (terminate) |
+**TurnSignals** — ephemeral, fresh each turn:
+
+| Signal | Written by | Read by | Effect |
+|--------|-----------|--------|--------|
+| `clarification_question` | ClarificationMiddleware | App layer | Display question to user, WAIT |
+| `memory_context` | MemoryMiddleware | Prompt | Inject memory into LLM context |
+| `error` | DetectionMiddleware | HandlingMiddleware | Decision: retry? fallback? END? |
+
+**ThreadState fields** — persistent across turns:
+
+| Field | Written by | Read by | Effect |
+|-------|-----------|---------|--------|
+| `thread_id` | App layer | All components | Thread identifier |
+| `messages` | Human/AI/Tool messages | Prompt | Conversation history |
+| `next_action` | Any middleware | ReActExecutor | `PROCESS` → tools; `WAIT` → return to caller; `END` → terminate |
+| `todos` | TodoMiddleware | Prompt | Inject task list into LLM context |
+| `artifacts` | Tools | App layer | Track generated file paths |
+| `title` | TitleMiddleware | App layer | Display conversation title |
+| `sandbox` | SandboxMiddleware | DetectionMiddleware | Container state |
+
+**SandboxState fields** — sub-field of ThreadState.sandbox:
+
+| Field | Meaning |
+|-------|---------|
+| `container_id` | Docker container ID or "local-{thread_id}" |
+| `working_dir` | Execution working directory |
+| `status` | "ready" / "released" |
 
 ---
 
@@ -396,7 +418,6 @@ memory/plan/subagent are injected by App, not imported by Harness.
 
 | Tool | Description |
 |------|-------------|
-| `fetch_url` | Fetch web page, extract clean text |
 | `web_search` | Search via DuckDuckGo HTML |
 | `read_image` | Read image file, return base64 for vision |
 
@@ -405,7 +426,6 @@ memory/plan/subagent are injected by App, not imported by Harness.
 | Tool | Description |
 |------|-------------|
 | `save_memory` | Save content to L3 memory |
-| `load_memory` | Load L3 + recent episodic from memory store |
 
 **Plan**
 
@@ -419,7 +439,6 @@ memory/plan/subagent are injected by App, not imported by Harness.
 | Tool | Description |
 |------|-------------|
 | `spawn_subagent` | Register parallel subagent task |
-| `get_subagent_results` | Collect results from completed subagents |
 
 **Skills**
 
@@ -431,9 +450,9 @@ memory/plan/subagent are injected by App, not imported by Harness.
 
 ## Core Patterns
 
-**Signal-Driven Flow** — Middlewares set `state.next_action` to control ReAct loop routing. No message injection, no tool stripping. The signal is the single source of truth for control flow.
+**Signal & State Architecture** — TurnSignals carry ephemeral data across hooks; ThreadState carries persistent data across turns. Middlewares write signals/state; other layers read and act on them.
 
-**Middleware** — Horizontal interceptor with hooks (`before_llm`, `after_llm`, `before_tools`, `after_tools_all`). Reads/writes `ThreadState` but does not modify LLM or tools directly.
+**Middleware** — Horizontal interceptor with hooks (`before_llm`, `after_llm`, `before_tools`, `after_tools_all`). Reads/writes `ThreadState`/`TurnSignals` but does not modify LLM or tools directly.
 
 **ThreadState** — Persistent data across turns. `TurnSignals` — ephemeral per-turn data.
 
