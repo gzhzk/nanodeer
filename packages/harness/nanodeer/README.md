@@ -7,32 +7,32 @@ Harness 是 NanoDeer 的核心，将 LLM 与外部工具/沙箱/记忆连接。
 ```
 ┌─────────────────────────────────────────────────────────┐
 │  Layer 5: 应用层                                         │
-│  create_nanodeer_agent                                   │
+│  NanoEngine / create_nanodeer_agent                      │
 └─────────────────────────────────────────────────────────┘
                             ▲
 ┌─────────────────────────────────────────────────────────┐
 │  Layer 4: 编排层                                         │
-│  AgentBuilder + NanoDeerFactory + Modules (可注入)       │
+│  NanoDeerFactory + ReActExecutor                         │
 └─────────────────────────────────────────────────────────┘
                             │
                             ▼
               ┌─────────────────────────────┐
               │  MiddlewareChain           │  ← 拦截机制，非独立层
-              │  (before_llm / before_tools│
+              │  (before_llm / before_tools │
               │   after_llm / after_tools) │
               └─────────────────────────────┘
                             │
 ┌─────────────────────────────────────────────────────────┐
 │  Layer 3: 工具层                                         │
 │  Tools + wrap_tool_for_sandbox                           │
-│           │                                             │
-│           ├── sandbox-aware 工具 ──→ 路由到 Layer 2     │
+│           │                                              │
+│           ├── sandbox-aware 工具 ──→ 路由到 Layer 2      │
 │           └── host 直连工具 (fetch_url, web_search)     │
 └─────────────────────────────────────────────────────────┘
                             │
 ┌─────────────────────────────────────────────────────────┐
 │  Layer 2: Sandbox                                        │
-│  DockerSandboxProvider / LocalSandboxProvider            │
+│  DockerSandboxProvider / LocalSandboxProvider             │
 └─────────────────────────────────────────────────────────┘
                             │
 ┌─────────────────────────────────────────────────────────┐
@@ -46,28 +46,34 @@ Harness 是 NanoDeer 的核心，将 LLM 与外部工具/沙箱/记忆连接。
 
 ### ThreadState
 
-唯一数据载体，LangGraph StateGraph 自动在节点间传递。
+唯一数据载体，pydantic BaseModel，ReActExecutor 直接使用。
 
 ```python
 class ThreadState(BaseModel):
-    messages      : Annotated[list[BaseMessage], add_messages]  # 对话历史
-    sandbox       : SandboxState                               # 容器引用
-    title         : str                                        # 对话标题
-    todos         : Annotated[list[dict], merge_todos]        # 任务列表
-    artifacts     : Annotated[list[str], merge_artifacts]      # 产物路径
-    next_action   : NextAction                                 # PROCESS | END | WAIT
-    thread_id     : str                                       # 线程标识
-    metadata      : dict                                      # 中间件黑板
+    thread_id     : str | None                           # 线程标识
+    messages      : list[BaseMessage]                     # 对话历史
+    next_action   : NextAction = PROCESS                  # PROCESS | WAIT | END
+    todos         : Annotated[list[dict], merge_todos]  # 任务列表
+    artifacts     : Annotated[list[str], merge_artifacts] # 产物路径
+    title         : str | None                           # 对话标题
+    sandbox       : SandboxState | None                   # 容器状态
 ```
 
-**关键 Reducer**：
-- `add_messages`：追加新消息
-- `merge_todos`：相同 id 覆盖
-- `merge_artifacts`：去重合并
+### TurnSignals
+
+单 turn 临时数据载体，每个 turn 新建实例，Executor 读完后丢弃。
+
+```python
+@dataclass
+class TurnSignals:
+    clarification_question : str | None   # <clarification>...</clarification> 内容
+    memory_context         : str | None   # MemoryMiddleware 写入的上下文
+    error                  : dict | None # {"type": "...", "detail": "..."} 检测-处理框架
+```
 
 **NextAction 控制流**：
 - `PROCESS`：继续执行 tools
-- `WAIT_FOR_CLARIFICATION`：等待用户输入 → END
+- `WAIT`：等待用户输入 → App 层读取 `clarification_question`
 - `END`：直接结束
 
 ---
@@ -80,14 +86,14 @@ sandbox-aware 工具在容器内执行。
 
 ```python
 class SandboxProvider:
-    async def acquire(thread_id: str) -> SandboxState  # 获取容器
-    async def release(sandbox: SandboxState) -> None   # 释放容器
-    async def run(sandbox: SandboxState, cmd: str) -> RunResult  # 容器内执行
+    async def acquire(thread_id: str) -> Sandbox   # 获取容器
+    async def release(sandbox: Sandbox) -> None    # 释放容器
+    async def run(sandbox: Sandbox, cmd: str) -> RunResult  # 容器内执行
 ```
 
 **两种实现**：
 - `DockerSandboxProvider`：Docker 容器，`network=none`，`read_only` rootfs
-- `LocalSandboxProvider`：子进程 fallback（无隔离）
+- `LocalSandboxProvider`：子进程 fallback（无隔离），working_dir 与 Docker 路径结构统一
 
 sandbox-aware 工具：`read_file` `write_file` `ls` `glob` `grep` `bash` `git` `exec_python`
 
@@ -108,33 +114,34 @@ host 工具：`fetch_url` `web_search` `read_image`
 | **沙箱感知** | `read_file` `write_file` `ls` `glob` `grep` `bash` `git` `exec_python` |
 | **Host 直连** | `fetch_url` `web_search` `read_image` |
 | **记忆** | `save_memory` `load_memory` |
-| **待办** | `write_todo` `list_todos` `complete_todo` |
+| **待办** | `write_todo` `list_todos` |
 | **子 Agent** | `spawn_subagent` `get_subagent_results` |
-| **其他** | `invoke_skill` `ask_clarification` |
+| **其他** | `invoke_skill` |
 
 ### MiddlewareChain
 
 4 个 Hooks，横切关注点：
 
 ```
-before_llm:       ThreadData → Uploads → Compression
+before_llm:       ThreadData → File → Memory → Todo
 after_llm:        Clarification → Title
-before_tools:     Security → Sandbox(audit) → LoopDetection
-after_tools_all:  Sandbox(release)
+before_tools:     Detection → Handling → Sandbox
+after_tools_all:  Sandbox
 ```
 
-### 8 个 Middlewares
+### 10 个 Middlewares（9 个在 Chain 中，1 个由 App 层调用）
 
 | 分组 | 中间件 | Hook | 职责 |
 |------|--------|------|------|
-| **Context Guard** | ThreadDataMiddleware | before_llm | 初始化 metadata，设置默认路径 |
-| | UploadsMiddleware | before_llm | 处理上传文件 |
-| | CompressionMiddleware | before_llm | token 超阈值时压缩 messages |
-| **Safety Gate** | SecurityMiddleware | before_tools | 验证文件路径，拒绝黑名单 |
-| | SandboxMiddleware | before_llm/before_tools/after_tools_all | 容器获取/命令审核/释放 |
-| **Recursion Limit** | LoopDetectionMiddleware | before_tools | 哈希追踪重复调用，超限断路 |
-| **Signal Handler** | ClarificationMiddleware | after_llm | 检测澄清需求，设置 WAIT signal |
+| **Context** | ThreadDataMiddleware | before_llm | 创建线程目录结构 |
+| | FileMiddleware | before_llm | 写上传文件到磁盘 |
+| | MemoryMiddleware | before_llm | 加载 memory context + file list |
+| | TodoMiddleware | before_llm | 解析 write_todo 结果 |
+| **Signal** | ClarificationMiddleware | after_llm | 检测 `<clarification>` 标签 |
 | | TitleMiddleware | after_llm | 首轮生成标题 |
+| **Safety** | DetectionMiddleware | before_llm | sandbox released 检测 |
+| | HandlingMiddleware | before_tools/after_llm | 错误处理框架（placeholder） |
+| | SandboxMiddleware | multi-hook | 容器获取/命令审计/释放 |
 
 ### wrap_tool_for_sandbox
 
@@ -149,99 +156,104 @@ wrap_tool_for_sandbox(tool, provider) → SandboxToolWrapper | None
 
 ## Layer 4: 编排层
 
-### Modules（业务能力，可注入）
+### ReActExecutor
 
-直接被 Builder 调用：
-- **MemoryStore** — L2 episodic + L3 memory
-- **SubagentRunner** — 并行子 Agent 执行
-- **PlanLoader** — todo 加载/持久化
-
-### AgentBuilder
-
-状态机执行器，定义 LangGraph 结构：
+原生 ReAct 循环执行器，无 LangGraph 依赖。
 
 ```
-START → llm → [next_action?] → tools → llm → ... → END
-                     ↓ (wait | end)
-                    END
+while True:
+    before_llm()  → END? break → WAIT? return
+    LLM.invoke()
+    after_llm()   → WAIT? return → END? break
+    for tool_call:
+        before_tools() → END? break
+        tool.invoke()
+    after_tools_all()
+    → PROCESS? continue
 ```
-
-**_llm_node 执行顺序**：
-1. 重置 `next_action = PROCESS` / 清理 `metadata`
-2. `before_llm` hooks（ThreadData → Uploads → Compression）
-3. `memory_store.load()` → `metadata["memory_context"]`
-4. `plan_loader.load()` → `metadata["plan_context"]`
-5. `llm.ainvoke()`
-6. `after_llm` hooks（Clarification → Title）**[try/finally 配对执行]**
-
-**_tools_node 执行顺序**：
-1. 遍历 `tool_calls`
-2. `before_tools` hooks（Security → Sandbox → LoopDetection）
-3. `tool.invoke()` — sandbox-aware 工具走容器，host 工具直连
-4. `after_tools_all` hooks（Sandbox release）**[try/finally 配对执行]**
 
 ### NanoDeerFactory
 
-组装工厂，将 `MiddlewareChain` + modules + LLM + tools 注入 `Builder`，通过 `RuntimeFeatures` 控制功能开关。
+组装工厂，将 `MiddlewareChain` + modules + LLM + tools 注入 `ReActExecutor`，通过 `RuntimeFeatures` 控制功能开关。
 
 ```python
 factory = NanoDeerFactory(features)
-graph = factory.build(llm, tools, modules=[...])
+executor, compression_mw = factory.build(llm, tools, modules=[...])
+```
+
+### CompressionMiddleware（App 层调用）
+
+Compression 不在 MiddlewareChain 中，由 App 层在 `executor.run()` 结束后主动调用：
+
+```python
+final_state = await executor.run(state)
+compressed = compression_mw.compress(final_state.messages)
+if compressed:
+    final_state.messages = compressed
 ```
 
 ---
 
 ## Layer 5: 应用层
 
+### NanoEngine
+
+用户入口，创建并运行 Agent。
+
+```python
+from nanodeer.engine import NanoEngine
+
+engine = NanoEngine(config)
+result = await engine.run("分析这个文件", thread_id="xxx")
+```
+
+内部持有 `ReActExecutor` + `CompressionMiddleware`，负责压缩触发时机。
+
 ### create_nanodeer_agent
 
-用户入口，创建完整 Agent。
+底层入口，直接返回 `(executor, compression_mw)`。
 
 ```python
 from nanodeer.agent.factory import create_nanodeer_agent
 
-graph = create_nanodeer_agent(
+executor, compression_mw = create_nanodeer_agent(
     model=llm,
     tools=my_tools,
     features=RuntimeFeatures(),
-    memory_store=...,    # agent 实现
-    subagent_runner=..., # agent 实现
-    plan_loader=...,    # agent 实现
+    memory_store=...,     # Agent 实现
+    subagent_runner=...,  # Agent 实现
+    plan_loader=...,      # Agent 实现
 )
 ```
 
 ---
 
-## 执行流程总览
+## Prompt 构建
 
+### PromptConfig
+
+按需渲染 sections，最小化 token 消耗。
+
+```python
+@dataclass
+class PromptConfig:
+    memory  : bool = True   # <memory> section
+    todos   : bool = True   # <todos> section
+    skills  : bool = True   # <skills> section
+    subagent: bool = True   # <subagent> section
 ```
-用户输入
-    ↓
-ThreadState.messages += HumanMessage
-    ↓
-llm_node():
-    before_llm (ThreadData → Uploads → Compression)
-    memory.load() → metadata["memory_context"]
-    plan.load() → metadata["plan_context"]
-    LLM.invoke()
-    memory.extract_and_save()
-    after_llm (Clarification → Title)
-    ↓
-[AIMessage with tool_calls]
-    ↓
-tools_node():
-    for each tool_call:
-        spawn_subagent → collect
-        before_tools (Security → Sandbox → LoopDetection)
-        tool_map[name].invoke()  ← wrap_tool_for_sandbox → Container
-        save_memory → handle
-        get_subagent_results → batch execute
-    after_tools_all (Sandbox release)
-    ↓
-[ToolMessage(s)]
-    ↓
-llm_node() 循环或 END
-```
+
+### Auto-Detection
+
+`sections` 根据实际数据和工具列表自动渲染：
+
+| Section | 渲染条件 |
+|---------|---------|
+| `<memory>` | `signals.memory_context` 非空 |
+| `<todos>` | `state.todos` 非空 |
+| `<skills>` | `config.skills=True` 且 `"invoke_skill"` 在 tools 里 |
+| `<subagent>` | `config.subagent=True` 且 `"spawn_subagent"` 在 tools 里 |
+| `<tools>` | 始终渲染 |
 
 ---
 
@@ -252,26 +264,22 @@ Feature gates 配置：
 ```python
 @dataclass
 class RuntimeFeatures:
-    # Context Guard
-    uploads: bool = True
-    compression: bool = True
+    # Middleware gates
+    uploads       : bool = True   # FileMiddleware
+    compression   : bool = True   # CompressionMiddleware
+    sandbox       : bool = True   # SandboxMiddleware
+    clarification : bool = True   # ClarificationMiddleware
 
-    # Safety Gate
-    sandbox: bool = True
-    security: bool = True
-
-    # Recursion Limit
-    loop_detection: bool = True
-
-    # Signal Handler
-    clarification: bool = True
-
-    # Tuning
-    context_window: int = 204800
-    compression_ratio: float = 0.7
+    # Compression config
+    context_window       : int = 204800
+    compression_ratio    : float = 0.7
     compression_keep_recent: int = 5
-    loop_warn_threshold: int = 3
-    loop_hard_limit: int = 5
+
+    # Prompt gates
+    prompt_memory  : bool = True
+    prompt_todos   : bool = True
+    prompt_skills  : bool = True
+    prompt_subagent: bool = True
 ```
 
 ---
@@ -283,13 +291,11 @@ class RuntimeFeatures:
 ```
 App 层  ──imports──→  Harness 层（框架）
                         │
-                        ├── ThreadState       （数据总线）
-                        ├── MiddlewareChain   （拦截机制）
-                        ├── Sandbox / ToolRunner（执行空间）
-                        ├── AgentBuilder      （图定义）
-                        └── Factory           （装配）
-
-Harness 内部无 Agent 业务逻辑，memory/plan/subagent 由 App 注入。
+                        ├── ThreadState / TurnSignals  （数据总线）
+                        ├── MiddlewareChain            （拦截机制）
+                        ├── Sandbox / ToolRunner       （执行空间）
+                        ├── ReActExecutor              （循环执行）
+                        └── Factory                    （装配）
 ```
 
 **单向依赖原则**：Agent 实现（memory/plan/subagent）可以依赖 Harness 接口，但 Harness 绝对不知道 Agent 的业务逻辑。
@@ -298,51 +304,18 @@ Harness 内部无 Agent 业务逻辑，memory/plan/subagent 由 App 注入。
 
 | 层级 | 谁 | 做什么 |
 |---|---|---|
-| **App** | 你的应用代码 | 调用 `create_nanodeer_agent()`，把 Agent 实现作为参数传入 |
-| **Harness** | nanodeer 框架 | 定义接口（ThreadState、MiddlewareChain、hooks）；执行状态流；不知道 memory/plan/subagent 的业务逻辑 |
+| **App** | 你的应用代码 | 调用 `NanoEngine.run()` 或 `create_nanodeer_agent()`，把 Agent 实现作为参数传入 |
+| **Harness** | nanodeer 框架 | 定义接口（ThreadState、MiddlewareChain、hooks）；执行 ReAct 循环；不知道 memory/plan/subagent 的业务逻辑 |
 | **Agent** | 你写的业务逻辑 | 实现 `MemoryStore`、`PlanLoader`、`SubagentRunner`；在构建时注入到 Harness |
-
-### 注入点
-
-Harness 定义以下注入点，Agent 提供实现，App 在装配时传入：
-
-| Harness 注入点 | Agent 实现什么 | App 传入 |
-|---|---|---|
-| `memory_store` | `load()`、`save()`、`append_episodic()`、`load_project_memory()` | `MyMemoryStore()` |
-| `plan_loader` | `load()`、`update()` | `MyPlanLoader()` |
-| `subagent_runner` | `spawn()`、`collect()` | `MySubagentRunner()` |
-| `extra_middlewares` | 按 hook 名的自定义中间件列表 | `{"before_llm": [...], "after_tools_all": [...]}` |
-| `tools` | `list[BaseTool]` | `my_custom_tools` |
-
-### 示例：App 层的装配
-
-```python
-from my_agent import MyMemoryStore, MyPlanLoader, MySubagentRunner
-
-graph = create_nanodeer_agent(
-    model=llm,
-    tools=my_custom_tools,
-    features=RuntimeFeatures(),
-    memory_store=MyMemoryStore(),       # ← Agent 实现，App 传入
-    subagent_runner=MySubagentRunner(), # ← Agent 实现，App 传入
-    plan_loader=MyPlanLoader(),         # ← Agent 实现，App 传入
-)
-```
-
-**依赖检查**：
-- App 知道 MyMemoryStore 的实现 ✅
-- Harness 不知道 MyMemoryStore，只接收一个 `memory_store` 参数 ✅
-- 方向：App → Harness，不是 memory → harness
-```
 
 ---
 
 ## 关键设计原则
 
 1. **单向依赖**：Agent → Harness，Harness 不知道业务逻辑
-2. **关注点分离**：State / Sandbox（两条执行路径）/ Tools / Middleware / Builder 各司其职
+2. **关注点分离**：State / Sandbox / Tools / Middleware / Executor 各司其职
 3. **Middleware 做横切**：不做业务逻辑，只做拦截
-4. **Modules 可注入**：MemoryStore / SubagentRunner / PlanLoader 是 agent 提供的实现
-5. **工具是纯执行**：无文件 I/O，无横切逻辑
-6. **Sandbox + Host 双路径**：敏感操作走容器，host 工具直连宿主机
-7. **Hook 配对执行**：`try/finally` 保证 before/after 一定配对执行
+4. **Detection/Handling 分离**：Detection 写 signals，Handling 决定处理
+5. **Compression App 层控制**：触发时机由 NanoEngine 决定，不在 before_llm 预检
+6. **Prompt 按需渲染**：sections 根据数据和工具自动激活，最小化 token
+7. **Sandbox + Host 双路径**：敏感操作走容器，host 工具直连宿主机
