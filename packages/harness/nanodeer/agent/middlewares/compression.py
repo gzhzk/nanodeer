@@ -5,9 +5,8 @@ reach ~70% of the model's context window. Uses the LLM's built-in
 get_num_tokens_from_messages() for accurate token counting.
 """
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
 
-from nanodeer.agent.state import ThreadState
+from nanodeer.agent.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
 
 from .base import Middleware
 
@@ -15,12 +14,11 @@ from .base import Middleware
 class CompressionMiddleware(Middleware):
     """Compresses conversation history via summarization when context is near limit.
 
-    Uses token-based triggering (not message count) — triggers when total
-    tokens reach `context_window * compression_ratio`. Always keeps the last
-    N messages intact and summarizes everything before that.
+    Uses token-based triggering — triggers when total tokens reach
+    `context_window * compression_ratio`. Always keeps the last N messages
+    intact and summarizes everything before that.
 
-    Compression only runs once per compression cycle to avoid repeated summarization
-    of the same content.
+    Call compress() from App layer after each turn to trigger.
     """
 
     # Fallback: how many messages to keep when token counting is unavailable
@@ -58,38 +56,31 @@ class CompressionMiddleware(Middleware):
         """Set the LLM after middleware construction."""
         self._llm = llm
 
-    async def before_llm(self, state: ThreadState) -> None:
-        """Compress messages if token count exceeds threshold."""
-        # Handle both ThreadState and dict
-        if isinstance(state, dict):
-            messages = state.get("messages", [])
-        else:
-            messages = state.messages
+    def compress(self, messages: list[BaseMessage]) -> list[BaseMessage] | None:
+        """Compress messages if token count exceeds threshold.
 
+        Returns None if compression not needed or failed.
+        Returns a new compressed message list otherwise.
+        """
         # Count tokens using the LLM's built-in method
         try:
             total_tokens = self.llm.get_num_tokens_from_messages(list(messages))
         except Exception:
-            # Fallback to message count if token counting fails
-            total_tokens = len(messages) * 200  # rough estimate
+            total_tokens = len(messages) * 200
 
         if total_tokens <= self._threshold:
-            return
+            return None
 
-        # Keep recent messages intact
         recent = messages[-self.keep_recent:]
         to_summarize = messages[:-self.keep_recent]
-
         if not to_summarize:
-            return
+            return None
 
-        # Build conversation text for summarization
         conversation = "\n".join(
             f"{type(msg).__name__}: {msg.content}"
             for msg in to_summarize
         )
 
-        # Prompt for summarization
         summarize_prompt = (
             "Summarize this conversation concisely, preserving key facts, "
             "decisions, and any important context:\n\n"
@@ -97,19 +88,11 @@ class CompressionMiddleware(Middleware):
         )
 
         try:
-            response = await self.llm.ainvoke([HumanMessage(content=summarize_prompt)])
+            response = self.llm.invoke([HumanMessage(content=summarize_prompt)])
             summary = response.content if hasattr(response, "content") else str(response)
         except Exception:
-            summary = "[Summary failed - original messages preserved]"
+            return None
 
-        # Replace old messages with summary
-        compressed = [
-            SystemMessage(
-                content=f"[Earlier conversation summarized: {summary}]"
-            )
+        return [
+            SystemMessage(content=f"[Earlier conversation summarized: {summary}]")
         ] + recent
-
-        if isinstance(state, dict):
-            state["messages"] = compressed
-        else:
-            state.messages = compressed
