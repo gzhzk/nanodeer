@@ -4,7 +4,7 @@ from typing import Optional
 
 from langchain_core.tools import tool
 
-from ..subagents import generate_subagent_id, get_runner
+from ..subagent import generate_subagent_id, get_runner
 
 
 @tool

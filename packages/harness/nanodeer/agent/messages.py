@@ -60,6 +60,7 @@ class SystemMessage(BaseMessage):
 @dataclass
 class AIMessage(BaseMessage):
     """LLM response message."""
+    role: MessageRole = field(default=MessageRole.AI, init=False)
     tool_calls: list[ToolCall] | None = None
 
     def to_dict(self) -> dict[str, Any]:

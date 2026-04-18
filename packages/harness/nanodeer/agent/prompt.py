@@ -46,7 +46,7 @@ _TOOL_DESCRIPTIONS = {
     "read_image": "Describe an image. Args: image_path (str), description_request (str, optional)",
     "exec_python": "Execute Python code. Args: code (str), timeout (int, optional)",
     "invoke_skill": "Load a skill workflow. Args: skill_name (str)",
-    "save_memory": "Save information to memory. Args: content (str), project (str, optional)",
+    "save_memory": "Save to long-term memory. Args: content (str), target (str: 'user'|'memory')",
     "write_todo": "Create or update a task. Args: content (str, optional), id (str, optional), status (str, optional), priority (int, optional)",
     "list_todos": "List all tasks. No args.",
     "spawn_subagent": "Spawn a subagent and get results. Args: name (str), task (str), subagent_type (str, optional), thread_id (str, optional)",
@@ -131,7 +131,7 @@ def _todos_section(todos: list[dict]) -> str:
     for todo in todos:
         status = todo.get("status", "pending")
         content = todo.get("content", "")
-        checkbox = "[x]" if status == "completed" else "[>]" if status == "in_progress" else "[ ]"
+        checkbox = "[x]" if status == "completed" else "[*]" if status == "in_progress" else "[ ]"
         lines.append(f"{checkbox} {content}")
     return "<todos>\n" + "\n".join(lines) + "\n</todos>"
 

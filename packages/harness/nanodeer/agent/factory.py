@@ -63,7 +63,6 @@ class NanoDeerFactory:
         *,
         memory_store=None,
         subagent_runner=None,
-        plan_loader=None,
         extra_middlewares: dict[str, list] | None = None,
     ):
         from .middlewares import MiddlewareChain
@@ -96,7 +95,7 @@ class NanoDeerFactory:
             before_llm=self._chain(
                 (ThreadDataMiddleware, None, {}),
                 (FileMiddleware, "uploads", {}),
-                (MemoryMiddleware, None, {"memory_store": memory_store, "plan_loader": plan_loader}),
+                (MemoryMiddleware, None, {"memory_store": memory_store}),
                 (TodoMiddleware, None, {}),
                 extras=extra.get("before_llm"),
             ),
@@ -119,7 +118,7 @@ class NanoDeerFactory:
 
         if subagent_runner and hasattr(subagent_runner, "set_llm"):
             subagent_runner.set_llm(llm)
-            from ..subagents import set_runner
+            from ..subagent import set_runner
             set_runner(subagent_runner)
 
         executor = ReActExecutor(
@@ -146,7 +145,6 @@ def create_nanodeer_agent(
     *,
     features: RuntimeFeatures | None = None,
     memory_store: Any = None,
-    plan_loader: Any = None,
     subagent_runner: Any = None,
     extra_middlewares: dict[str, list] | None = None,
 ):
@@ -159,7 +157,6 @@ def create_nanodeer_agent(
         model,
         effective_tools,
         memory_store=memory_store,
-        plan_loader=plan_loader,
         subagent_runner=subagent_runner,
         extra_middlewares=extra_middlewares,
     )  # returns (executor, compression_mw)

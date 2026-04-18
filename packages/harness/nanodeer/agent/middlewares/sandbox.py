@@ -79,7 +79,7 @@ class SandboxMiddleware(Middleware):
             return
 
         # Hard block: command chaining metacharacters are never allowed in user bash commands.
-        if self._SHELL_METACHAR.intersection(cmd):
+        if any(meta in cmd for meta in self._SHELL_METACHAR):
             logger.warning(f"Shell metacharacters blocked: {cmd[:80]!r}")
             state.next_action = NextAction.END
             return
