@@ -71,8 +71,8 @@
 ### 支持的入口
 
 - **CLI**: `nanodeer cli "分析这份数据"`
-- **飞书机器人**: 消息式交互
-- **企业微信机器人**: 消息式交互
+- **API**: HTTP API（重建中）
+- **渠道**: IM 机器人集成（规划中）
 
 ### 安全模型
 
@@ -134,11 +134,8 @@ nanodeer cli "分析这份数据"
 
 ```
 nanodeer/
-├── app/                      # FastAPI 应用层
-│   ├── main.py               # FastAPI 入口
-│   ├── runner.py             # 封装 NanoEngine 适配 HTTP
-│   ├── api/                  # REST 接口
-│   └── config.py
+├── app/                      # 应用层（API/渠道 — 重建中）
+│   └── config.py             # App 级路径配置（uploads, schedules, history）
 │
 ├── packages/harness/         # Agent Harness（框架包）
 │   └── nanodeer/
@@ -160,33 +157,84 @@ nanodeer/
 │       │       ├── handling.py         # 错误处理框架（placeholder）
 │       │       └── sandbox.py        # 容器生命周期 + bash 审计
 │       │   └── compression.py  # App 层调用，不在链中
-│       ├── sandbox/          # Docker 沙箱隔离
-│       │   ├── __init__.py   # SandboxProvider 抽象基类
-│       │   ├── docker.py    # DockerSandboxProvider（卷挂载）
-│       │   ├── local.py      # LocalSandboxProvider 回退方案
-│       │   ├── path.py       # 虚拟 ↔ 物理路径映射
-│       │   └── tools.py      # SandboxExecTool（配置驱动）
-│       ├── tools/            # 内置工具（纯执行）
-│       │   ├── file.py       # read_file / write_file
-│       │   ├── list_dir.py   # ls
-│       │   ├── search.py     # glob / grep
-│       │   ├── shell.py      # bash
-│       │   ├── git.py        # git
-│       │   ├── fetch_url.py  # fetch_url
-│       │   ├── web_search.py # web_search
-│       │   ├── read_image.py # read_image
+│       ├── memory/              # L3 记忆存储
+│       │   └── storage.py       # MemoryStore（USER.md / MEMORY.md / episodic）
+│       ├── plan/                # 任务规划
+│       │   └── loader.py        # TodoStore（文件存储的待办事项）
+│       ├── sandbox/            # Docker 沙箱隔离
+│       │   ├── __init__.py    # SandboxProvider 抽象基类
+│       │   ├── docker.py      # DockerSandboxProvider（卷挂载）
+│       │   ├── local.py        # LocalSandboxProvider 回退方案
+│       │   ├── path.py         # 虚拟 ↔ 物理路径映射
+│       │   └── tools.py        # SandboxExecTool（配置驱动）
+│       ├── subagent/           # 子 Agent 执行
+│       │   ├── runner.py      # SubagentRunner + run_subagent
+│       │   └── types.py       # SubagentType 枚举
+│       ├── skills/             # 技能加载器
+│       │   └── loader.py      # SkillLoader + parse_frontmatter
+│       ├── tools/              # 内置工具（纯执行）
+│       │   ├── read_file.py   # read_file
+│       │   ├── write_file.py  # write_file
+│       │   ├── ls.py          # ls
+│       │   ├── glob.py        # glob
+│       │   ├── grep.py        # grep
+│       │   ├── bash.py        # bash
+│       │   ├── git.py         # git
+│       │   ├── web_search.py  # web_search
+│       │   ├── read_image.py  # read_image
 │       │   ├── exec_python.py # exec_python
-│       │   ├── memory.py     # save_memory / load_memory
-│       │   ├── plan.py       # write_todo / list_todos
-│       │   ├── subagent.py   # spawn_subagent / get_subagent_results
-│       │   └── invoke_skill.py # invoke_skill
-│       └── engine.py         # NanoEngine（应用层入口）
+│       │   ├── invoke_skill.py # invoke_skill
+│       │   ├── save_memory.py # save_memory
+│       │   ├── write_todo.py  # write_todo
+│       │   ├── list_todos.py  # list_todos
+│       │   └── spawn_subagent.py # spawn_subagent
+│       ├── config.py          # HarnessConfig（LLM providers, sandbox, thread）
+│       └── engine.py          # NanoEngine（应用层入口）
 │
 ├── sandbox/                  # Sandbox 镜像（Dockerfile）
 ├── tests/                    # 测试套件
+├── docs/                     # 架构文档
 ├── examples/                 # 使用示例
 └── pyproject.toml
 ```
+
+### 存储路径
+
+所有运行时数据统一存放在 `~/.nanodeer/` 下。Harness 层和 App 层各自维护独立的子目录。
+
+```
+~/.nanodeer/
+├── memory/                  # L3 记忆（Agent 主动维护的知识）
+│   ├── USER.md              # 用户偏好和上下文
+│   ├── MEMORY.md            # 长期事实和知识
+│   └── episodic/            # 会话日志（仅追加）
+│
+├── todos/                   # 任务规划
+│   └── {slug}.json         # 按项目 slug 存储的待办列表
+│
+├── threads/                 # Harness 沙箱工作目录
+│   └── {thread_id}/         # 每线程沙箱
+│       └── user-data/       # 挂载到容器内 /mnt/user-data/
+│           ├── workspace/   # 用户工作区
+│           ├── uploads/     # 上传文件
+│           └── outputs/     # 生成产物
+│
+└── app/                     # App 层（API 服务 — 重建中）
+    ├── uploads/             # 上传文件存储
+    ├── schedules/           # 定时任务定义
+    └── history/             # 运行历史（JSONL）
+```
+
+| 路径 | 所属 | 用途 | 运行后是否保留 |
+|------|------|------|--------------|
+| `~/.nanodeer/memory/` | Agent | L3 记忆（USER/MEMORY/episodic） | 是 |
+| `~/.nanodeer/todos/` | Agent | 任务追踪 | 是 |
+| `~/.nanodeer/threads/{id}/` | Harness | 沙箱工作目录 | 否（容器清理） |
+| `~/.nanodeer/app/uploads/` | App | 文件上传 | 可配置 |
+| `~/.nanodeer/app/schedules/` | App | 定时任务 | 是 |
+| `~/.nanodeer/app/history/` | App | 运行历史 | 是 |
+
+**核心原则**：`~/.nanodeer/threads/` 是沙箱工作区（临时容器），而 `~/.nanodeer/app/` 存储持久的应用数据。两者关注点不同，不合并。
 
 ### 信号与状态设计
 
@@ -350,9 +398,8 @@ executor, compression_mw = create_nanodeer_agent(
     model=llm,
     tools=my_tools,
     features=RuntimeFeatures(),
-    memory_store=...,     # Agent 实现
-    subagent_runner=..., # Agent 实现
-    plan_loader=...,     # Agent 实现
+    memory_store=...,       # Agent 实现（MemoryStore）
+    subagent_runner=...,   # Agent 实现（SubagentRunner）
 )
 ```
 
@@ -381,16 +428,15 @@ Harness 内部无 Agent 业务逻辑，memory/plan/subagent 由 App 注入。
 | 层级 | 谁 | 做什么 |
 |---|---|---|
 | **App** | 你的应用代码 | 调用 `NanoEngine.run()` 或 `create_nanodeer_agent()`，把 Agent 实现作为参数传入 |
-| **Harness** | nanodeer 框架 | 定义接口；执行 ReAct 循环；不知道 memory/plan/subagent 的业务逻辑 |
-| **Agent** | 你写的业务逻辑 | 实现 `MemoryStore`、`PlanLoader`、`SubagentRunner`；在构建时注入到 Harness |
+| **Harness** | nanodeer 框架 | 定义接口；执行 ReAct 循环；不知道 memory/subagent 的业务逻辑 |
+| **Agent** | 你写的业务逻辑 | 实现 `MemoryStore`、`SubagentRunner`；在构建时注入到 Harness |
 
 ### 注入点
 
 | Harness 注入点 | Agent 实现什么 | App 传入 |
 |---|---|---|
-| `memory_store` | `load()`、`save()`、`append_episodic()`、`load_project_memory()` | `MyMemoryStore()` |
-| `plan_loader` | `load()`、`update()` | `MyPlanLoader()` |
-| `subagent_runner` | `spawn()`、`collect()` | `MySubagentRunner()` |
+| `memory_store` | `load()`、`save()`、`load_for_prompt()` | `MyMemoryStore()` |
+| `subagent_runner` | `collect_spawn()`、`get_results()` | `MySubagentRunner()` |
 | `extra_middlewares` | 按 hook 名的自定义中间件列表 | `{"before_llm": [...], "after_tools_all": [...]}` |
 | `tools` | `list[BaseTool]` | `my_custom_tools` |
 
@@ -422,20 +468,20 @@ Harness 内部无 Agent 业务逻辑，memory/plan/subagent 由 App 注入。
 
 | 工具 | 描述 |
 |------|------|
-| `save_memory` | 保存内容到 L3 记忆 |
+| `save_memory` | 保存内容到 USER.md 或 MEMORY.md（target 参数） |
 
 **待办事项**
 
 | 工具 | 描述 |
 |------|------|
-| `write_todo` | 创建带状态/优先级的待办事项 |
+| `write_todo` | 创建/更新待办，含 content、status、priority |
 | `list_todos` | 列出所有当前待办事项 |
 
 **子 Agent**
 
 | 工具 | 描述 |
 |------|------|
-| `spawn_subagent` | 注册并行子 Agent 任务 |
+| `spawn_subagent` | 在独立沙箱容器中运行并行子 Agent 任务 |
 
 **技能**
 

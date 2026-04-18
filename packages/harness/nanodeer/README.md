@@ -306,7 +306,7 @@ App 层  ──imports──→  Harness 层（框架）
 |---|---|---|
 | **App** | 你的应用代码 | 调用 `NanoEngine.run()` 或 `create_nanodeer_agent()`，把 Agent 实现作为参数传入 |
 | **Harness** | nanodeer 框架 | 定义接口（ThreadState、MiddlewareChain、hooks）；执行 ReAct 循环；不知道 memory/plan/subagent 的业务逻辑 |
-| **Agent** | 你写的业务逻辑 | 实现 `MemoryStore`、`PlanLoader`、`SubagentRunner`；在构建时注入到 Harness |
+| **Agent** | 你写的业务逻辑 | 实现 `MemoryStore`、`TodoStore`、`SubagentRunner`；在构建时注入到 Harness |
 
 ---
 

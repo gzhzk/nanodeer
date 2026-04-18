@@ -73,8 +73,8 @@ Task examples:
 ### Supported Channels
 
 - **CLI**: `nanodeer cli "analyze this data"`
-- **Feishu bot**: message-based interaction
-- **WeChat Work bot**: message-based interaction
+- **API**: HTTP API (rebuilding)
+- **Channels**: IM bot integration (planned)
 
 ### Safety
 
@@ -136,11 +136,8 @@ The story might have ended there. But on the last evening of March, I attended B
 
 ```
 nanodeer/
-├── app/                      # FastAPI application layer
-│   ├── main.py               # FastAPI entry point
-│   ├── runner.py             # Wraps NanoEngine for HTTP
-│   ├── api/                  # REST endpoints
-│   └── config.py
+├── app/                      # Application layer (API/channels — rebuilding)
+│   └── config.py             # App-level paths (uploads, schedules, history)
 │
 ├── packages/harness/         # Agent harness (framework package)
 │   └── nanodeer/
@@ -162,33 +159,84 @@ nanodeer/
 │       │       ├── handling.py         # Error handling framework (placeholder)
 │       │       └── sandbox.py        # Container lifecycle + bash audit
 │       │   └── compression.py  # App-layer call, not in chain
-│       ├── sandbox/          # Docker sandbox isolation
-│       │   ├── __init__.py   # SandboxProvider ABC
-│       │   ├── docker.py    # DockerSandboxProvider (volume mount)
-│       │   ├── local.py      # LocalSandboxProvider fallback
-│       │   ├── path.py       # Path validation and translation
-│       │   └── tools.py      # SandboxExecTool (config-driven)
-│       ├── tools/            # Built-in tools (pure execution)
-│       │   ├── file.py       # read_file / write_file
-│       │   ├── list_dir.py   # ls
-│       │   ├── search.py     # glob / grep
-│       │   ├── shell.py      # bash
-│       │   ├── git.py        # git
-│       │   ├── fetch_url.py  # fetch_url
-│       │   ├── web_search.py # web_search
-│       │   ├── read_image.py # read_image
+│       ├── memory/             # L3 memory storage
+│       │   └── storage.py      # MemoryStore (USER.md / MEMORY.md / episodic)
+│       ├── plan/               # Task planning
+│       │   └── loader.py       # TodoStore (file-based todos)
+│       ├── sandbox/            # Docker sandbox isolation
+│       │   ├── __init__.py    # SandboxProvider ABC
+│       │   ├── docker.py      # DockerSandboxProvider (volume mount)
+│       │   ├── local.py        # LocalSandboxProvider fallback
+│       │   ├── path.py         # Path validation and translation
+│       │   └── tools.py        # SandboxExecTool (config-driven)
+│       ├── subagent/           # Subagent execution
+│       │   ├── runner.py      # SubagentRunner + run_subagent
+│       │   └── types.py       # SubagentType enum
+│       ├── skills/             # Skill loader
+│       │   └── loader.py      # SkillLoader + parse_frontmatter
+│       ├── tools/              # Built-in tools (pure execution)
+│       │   ├── read_file.py   # read_file
+│       │   ├── write_file.py  # write_file
+│       │   ├── ls.py          # ls
+│       │   ├── glob.py        # glob
+│       │   ├── grep.py        # grep
+│       │   ├── bash.py        # bash
+│       │   ├── git.py         # git
+│       │   ├── web_search.py  # web_search
+│       │   ├── read_image.py  # read_image
 │       │   ├── exec_python.py # exec_python
-│       │   ├── memory.py     # save_memory / load_memory
-│       │   ├── plan.py       # write_todo / list_todos
-│       │   ├── subagent.py   # spawn_subagent / get_subagent_results
-│       │   └── invoke_skill.py # invoke_skill
-│       └── engine.py         # NanoEngine (App layer entry)
+│       │   ├── invoke_skill.py # invoke_skill
+│       │   ├── save_memory.py # save_memory
+│       │   ├── write_todo.py  # write_todo
+│       │   ├── list_todos.py  # list_todos
+│       │   └── spawn_subagent.py # spawn_subagent
+│       ├── config.py          # HarnessConfig (LLM providers, sandbox, thread)
+│       └── engine.py          # NanoEngine (App layer entry)
 │
 ├── sandbox/                  # Sandbox image (Dockerfile)
 ├── tests/                    # Test suite
+├── docs/                     # Architecture docs
 ├── examples/                 # Usage examples
 └── pyproject.toml
 ```
+
+### Storage Paths
+
+All runtime data is stored under `~/.nanodeer/`. Harness and App layers maintain separate subtrees.
+
+```
+~/.nanodeer/
+├── memory/                  # L3 Memory (agent-maintained knowledge)
+│   ├── USER.md              # User preferences and context
+│   ├── MEMORY.md            # Long-term facts and knowledge
+│   └── episodic/            # Session logs (append-only)
+│
+├── todos/                   # Task planning
+│   └── {slug}.json          # Todo list per project slug
+│
+├── threads/                 # Harness sandbox working dirs
+│   └── {thread_id}/         # Per-thread sandbox
+│       └── user-data/       # Volume-mounted to container /mnt/user-data/
+│           ├── workspace/   # User workspace
+│           ├── uploads/     # Uploaded files
+│           └── outputs/     # Generated outputs
+│
+└── app/                     # App layer (API server — rebuilding)
+    ├── uploads/             # Uploaded file storage
+    ├── schedules/           # Scheduled job definitions
+    └── history/             # Thread run history (JSONL)
+```
+
+| Path | Owner | Purpose | Persists After Run |
+|------|-------|---------|-------------------|
+| `~/.nanodeer/memory/` | Agent | L3 memory (USER/MEMORY/episodic) | Yes |
+| `~/.nanodeer/todos/` | Agent | Task tracking | Yes |
+| `~/.nanodeer/threads/{id}/` | Harness | Sandbox working directory | No (container cleanup) |
+| `~/.nanodeer/app/uploads/` | App | File uploads | Configurable |
+| `~/.nanodeer/app/schedules/` | App | Scheduled jobs | Yes |
+| `~/.nanodeer/app/history/` | App | Run history | Yes |
+
+**Key principle**: `~/.nanodeer/threads/` is a sandbox workspace (ephemeral containers), while `~/.nanodeer/app/` stores persistent application data. They are separate concerns, not merged.
 
 ### Signal & State Design
 
@@ -352,9 +400,8 @@ executor, compression_mw = create_nanodeer_agent(
     model=llm,
     tools=my_tools,
     features=RuntimeFeatures(),
-    memory_store=...,     # Agent implementation
-    subagent_runner=..., # Agent implementation
-    plan_loader=...,     # Agent implementation
+    memory_store=...,       # Agent implementation (MemoryStore)
+    subagent_runner=...,   # Agent implementation (SubagentRunner)
 )
 ```
 
@@ -384,16 +431,15 @@ memory/plan/subagent are injected by App, not imported by Harness.
 | Part | Who | Does |
 |---|---|---|
 | **App** | Your application code | Calls `NanoEngine.run()` or `create_nanodeer_agent()`, passes Agent implementations as arguments |
-| **Harness** | nanodeer framework | Defines interfaces; executes ReAct loop; knows nothing about memory/plan/subagent business |
-| **Agent** | Your implementation | Implements `MemoryStore`, `PlanLoader`, `SubagentRunner`; injected into Harness at build time |
+| **Harness** | nanodeer framework | Defines interfaces; executes ReAct loop; knows nothing about memory/subagent business |
+| **Agent** | Your implementation | Implements `MemoryStore`, `SubagentRunner`; injected into Harness at build time |
 
 ### Injection Points
 
 | Harness Injection Point | Agent Implements | App Passes |
 |---|---|---|
-| `memory_store` | `load()`, `save()`, `append_episodic()`, `load_project_memory()` | `MyMemoryStore()` |
-| `plan_loader` | `load()`, `update()` | `MyPlanLoader()` |
-| `subagent_runner` | `spawn()`, `collect()` | `MySubagentRunner()` |
+| `memory_store` | `load()`, `save()`, `load_for_prompt()` | `MyMemoryStore()` |
+| `subagent_runner` | `collect_spawn()`, `get_results()` | `MySubagentRunner()` |
 | `extra_middlewares` | Custom middleware list per hook | `{"before_llm": [...], "after_tools_all": [...]}` |
 | `tools` | `list[BaseTool]` | `my_custom_tools` |
 
@@ -425,20 +471,20 @@ memory/plan/subagent are injected by App, not imported by Harness.
 
 | Tool | Description |
 |------|-------------|
-| `save_memory` | Save content to L3 memory |
+| `save_memory` | Save to USER.md or MEMORY.md (target parameter) |
 
 **Plan**
 
 | Tool | Description |
 |------|-------------|
-| `write_todo` | Create todo item with status/priority |
+| `write_todo` | Create/update todo with content, status, priority |
 | `list_todos` | List all current todos |
 
 **Subagent**
 
 | Tool | Description |
 |------|-------------|
-| `spawn_subagent` | Register parallel subagent task |
+| `spawn_subagent` | Run parallel subagent task in own sandbox container |
 
 **Skills**
 
