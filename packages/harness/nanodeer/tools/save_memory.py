@@ -1,4 +1,4 @@
-"""Memory tool - direct MemoryStore integration."""
+"""Memory tool - save to USER.md or MEMORY.md."""
 
 from langchain_core.tools import tool
 
@@ -6,26 +6,25 @@ from ..agent.memory.storage import MemoryStore
 
 
 @tool
-def save_memory(content: str, project: str | None = None) -> str:
-    """Save important information to the memory system.
-
-    Use this to remember key information across sessions, such as:
-    - User preferences and working style
-    - Project-specific context and conventions
-    - Important decisions and patterns
-    - Technical constraints or requirements
+def save_memory(content: str, target: str = "memory") -> str:
+    """Save important information to long-term memory.
 
     Args:
         content: The information to remember.
-        project: Project slug. If provided, saves as project memory.
-                 Otherwise saves as user-level L3 memory.
+        target: "user" for USER.md (preferences/context),
+                "memory" for MEMORY.md (facts/knowledge).
+                Defaults to "memory".
 
     Returns:
-        Success message with memory details.
+        Success message.
     """
     store = MemoryStore()
-    if project:
-        store.save_project_memory(project, content)
-        return f"Memory saved (project={project}): {content[:80]}{'...' if len(content) > 80 else ''}"
-    store.save_memory(content)
-    return f"Memory saved: {content[:80]}{'...' if len(content) > 80 else ''}"
+
+    if target == "user":
+        store.save_user_memory(content)
+        preview = content[:200] + "..." if len(content) > 200 else content
+        return f"User memory saved: {preview}"
+    else:
+        store.save_memory(content)
+        preview = content[:200] + "..." if len(content) > 200 else content
+        return f"Memory saved: {preview}"

@@ -1,17 +1,6 @@
-"""File-based memory storage for NanoDeer.
+"""Memory storage: USER.md (user preferences) + MEMORY.md (long-term facts) + episodic (session logs)."""
 
-L1: ThreadState.messages (native, no storage needed)
-L2: Episodic — raw append-only daily logs (episodic/YYYY-MM-DD.md)
-L3: Long-term — MEMORY.md (manually maintained or external cron job)
-
-Storage structure:
-~/.nanodeer/memory/
-├── episodic/
-│   └── YYYY-MM-DD.md   # Raw daily session log, append-only
-└── MEMORY.md            # L3: long-term memory, external job updates
-"""
-
-import re
+import json
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Optional
@@ -22,11 +11,12 @@ from .types import MemoryEntry
 MEMORY_ROOT = Path.home() / ".nanodeer" / "memory"
 
 EPISODIC_DIR = "episodic"
+USER_FILE = "USER.md"
 MEMORY_FILE = "MEMORY.md"
 
 
 class MemoryStore:
-    """File-based L2/L3 memory. L2 is append-only raw logs. L3 is external."""
+    """USER.md + MEMORY.md + episodic storage."""
 
     def __init__(self, root: Optional[Path] = None):
         self.root = root or MEMORY_ROOT
@@ -37,7 +27,65 @@ class MemoryStore:
         (self.root / EPISODIC_DIR).mkdir(exist_ok=True)
 
     # -------------------------------------------------------------------------
-    # L2: Episodic (raw append-only daily session logs)
+    # USER memory
+    # -------------------------------------------------------------------------
+
+    def load_user_memory(self) -> str:
+        """Load USER.md - user preferences and context."""
+        user_file = self.root / USER_FILE
+        if not user_file.exists():
+            return ""
+        try:
+            raw = user_file.read_text(encoding="utf-8").strip()
+            if raw.startswith("---"):
+                entry = MemoryEntry.from_frontmatter(raw)
+                return entry.content
+            return raw
+        except Exception:
+            return ""
+
+    def save_user_memory(self, content: str) -> None:
+        """Save USER.md - user preferences and context."""
+        entry = MemoryEntry(
+            name="user-memory",
+            description="User preferences and context",
+            memory_type="user",
+            content=content,
+        )
+        user_file = self.root / USER_FILE
+        user_file.write_text(entry.to_frontmatter(), encoding="utf-8")
+
+    # -------------------------------------------------------------------------
+    # General memory
+    # -------------------------------------------------------------------------
+
+    def load_memory(self) -> str:
+        """Load MEMORY.md - long-term facts and knowledge."""
+        memory_file = self.root / MEMORY_FILE
+        if not memory_file.exists():
+            return ""
+        try:
+            raw = memory_file.read_text(encoding="utf-8").strip()
+            if raw.startswith("---"):
+                entry = MemoryEntry.from_frontmatter(raw)
+                return entry.content
+            return raw
+        except Exception:
+            return ""
+
+    def save_memory(self, content: str) -> None:
+        """Save MEMORY.md - long-term facts and knowledge."""
+        entry = MemoryEntry(
+            name="long-term-memory",
+            description="Long-term facts and knowledge",
+            memory_type="user",
+            content=content,
+        )
+        memory_file = self.root / MEMORY_FILE
+        memory_file.write_text(entry.to_frontmatter(), encoding="utf-8")
+
+    # -------------------------------------------------------------------------
+    # Episodic (session logs)
     # -------------------------------------------------------------------------
 
     def episodic_path(self, d: date) -> Path:
@@ -90,117 +138,22 @@ class MemoryStore:
         return sorted(dates)
 
     # -------------------------------------------------------------------------
-    # L3: Long-term memory (MEMORY.md)
+    # Prompt injection
     # -------------------------------------------------------------------------
 
-    def load_memory(self) -> str:
-        """Load L3 long-term memory. Returns raw content, no tags."""
-        memory_file = self.root / MEMORY_FILE
-        if not memory_file.exists():
-            return ""
-        try:
-            raw = memory_file.read_text(encoding="utf-8").strip()
-            if raw.startswith("---"):
-                entry = MemoryEntry.from_frontmatter(raw)
-                return entry.content
-            return raw
-        except Exception:
-            return ""
+    def load_for_prompt(self) -> str:
+        """Load combined memories for prompt injection.
 
-    def save_memory(
-        self,
-        content: str,
-        name: str = "long-term-memory",
-        description: str = "精选长期记忆",
-    ) -> None:
-        """Save L3 long-term memory (called by save_memory tool)."""
-        entry = MemoryEntry(
-            name=name,
-            description=description,
-            memory_type="user",
-            content=content,
-        )
-        memory_file = self.root / MEMORY_FILE
-        memory_file.write_text(entry.to_frontmatter(), encoding="utf-8")
-
-    def load_for_prompt(self, project_slug: str = "default") -> str:
-        """Load combined L3 + recent episodic + project memory for prompt injection.
-
-        Returns tagged content for consistent prompt formatting.
+        Returns tagged content: USER + MEMORY + episodic.
         """
         parts = []
-        l3 = self.load_memory()
-        if l3:
-            parts.append(f"<memory>\n{l3}\n</memory>")
+        user = self.load_user_memory()
+        if user:
+            parts.append(f"<user_memory>\n{user}\n</user_memory>")
+        memory = self.load_memory()
+        if memory:
+            parts.append(f"<memory>\n{memory}\n</memory>")
         recent = self.load_recent_episodic()
         if recent:
             parts.append(f"<episodic>\n{recent}\n</episodic>")
-        project_mem = self.load_project_memory(project_slug)
-        if project_mem:
-            parts.append(f"<project_memory>\n{project_mem}\n</project_memory>")
         return "\n\n".join(parts)
-
-    # -------------------------------------------------------------------------
-    # Project memory
-    # -------------------------------------------------------------------------
-
-    def load_project_memory(self, project_slug: str) -> str:
-        """Load project-specific memory."""
-        safe_slug = re.sub(r"[^a-zA-Z0-9_-]", "_", project_slug)
-        project_file = self.root / "project" / f"{safe_slug}.md"
-        if not project_file.exists():
-            return ""
-        try:
-            raw = project_file.read_text(encoding="utf-8").strip()
-            if raw.startswith("---"):
-                entry = MemoryEntry.from_frontmatter(raw)
-                return entry.content
-            return raw
-        except Exception:
-            return ""
-
-    def save_project_memory(
-        self,
-        project_slug: str,
-        content: str,
-        name: Optional[str] = None,
-        description: Optional[str] = None,
-    ) -> None:
-        """Save project-specific memory."""
-        safe_slug = re.sub(r"[^a-zA-Z0-9_-]", "_", project_slug)
-        project_dir = self.root / "project"
-        project_dir.mkdir(exist_ok=True)
-        project_file = project_dir / f"{safe_slug}.md"
-        entry = MemoryEntry(
-            name=name or project_slug,
-            description=description or f"Project: {project_slug}",
-            memory_type="project",
-            content=content,
-        )
-        project_file.write_text(entry.to_frontmatter(), encoding="utf-8")
-
-    # -------------------------------------------------------------------------
-    # Todo operations (via plan loader)
-    # -------------------------------------------------------------------------
-
-    def load_todos(self, project_slug: str = "default") -> list[dict]:
-        """Load todos for a project."""
-        import json
-
-        todos_file = self.root / "todos" / f"{project_slug}.json"
-        if not todos_file.exists():
-            return []
-        try:
-            data = json.loads(todos_file.read_text(encoding="utf-8"))
-            return data if isinstance(data, list) else []
-        except Exception:
-            return []
-
-    def save_todos(self, project_slug: str, todos: list[dict]) -> None:
-        """Save todos for a project."""
-        import json
-
-        todos_dir = self.root / "todos"
-        todos_dir.mkdir(exist_ok=True)
-        todos_file = todos_dir / f"{project_slug}.json"
-        todos_file.write_text(json.dumps(todos, indent=2, ensure_ascii=False))

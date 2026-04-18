@@ -4,7 +4,7 @@ import uuid
 
 from langchain_core.tools import tool
 
-from ..agent.memory.storage import MemoryStore
+from ..plan.loader import TodoStore
 from ..plan.types import TodoItem, TodoStatus
 
 
@@ -32,8 +32,8 @@ def write_todo(
     Returns:
         Confirmation message with todo details and ID.
     """
-    store = MemoryStore()
-    todos = store.load_todos("default")
+    store = TodoStore()
+    todos = store.load("default")
 
     if id is not None:
         # Update existing todo
@@ -46,7 +46,7 @@ def write_todo(
                     t["status"] = status
                 if priority is not None:
                     t["priority"] = priority
-                store.save_todos("default", todos)
+                store.save("default", todos)
                 found = True
                 item = TodoItem.from_dict(t)
                 return f"Todo updated: {item.to_markdown()}\nID: {item.id}"
@@ -63,5 +63,5 @@ def write_todo(
         priority=priority or 0,
     )
     todos.append(item.to_dict())
-    store.save_todos("default", todos)
+    store.save("default", todos)
     return f"Todo added: {item.to_markdown()}\nID: {item.id}"

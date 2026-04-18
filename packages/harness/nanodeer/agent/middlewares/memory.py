@@ -1,7 +1,7 @@
 """MemoryMiddleware — loads memory context into signals.
 
 before_llm:
-  - Loads L3 + episodic + project memory from MemoryStore
+  - Loads USER + MEMORY + episodic from MemoryStore
   - Appends uploaded file summaries → signals.memory_context
 """
 
@@ -11,22 +11,16 @@ from .base import Middleware
 
 
 class MemoryMiddleware(Middleware):
-    """Loads memory and todos into state before LLM call."""
+    """Loads memory into state before LLM call."""
 
-    def __init__(
-        self,
-        memory_store=None,
-        plan_loader=None,
-    ):
+    def __init__(self, memory_store=None):
         self._memory_store = memory_store
-        self._plan_loader = plan_loader
 
     async def before_llm(self, state: ThreadState, signals: TurnSignals) -> None:
         if not self._memory_store:
             return
 
-        project_slug = state.thread_id or "default"
-        memory_context = self._memory_store.load_for_prompt(project_slug)
+        memory_context = self._memory_store.load_for_prompt()
 
         # Append uploaded file summaries
         uploaded_files = getattr(signals, "_uploaded_files", None)

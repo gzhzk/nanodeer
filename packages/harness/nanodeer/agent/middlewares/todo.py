@@ -47,10 +47,10 @@ class TodoMiddleware(Middleware):
         status = "pending"
         if "[x]" in content:
             status = "completed"
-        elif "[>]" in content:
+        elif "[*]" in content:
             status = "in_progress"
 
-        match = re.search(r"\[[x >]\]\s+(.+?)(?:\s+\(id=|$)", content)
+        match = re.search(r"\[[x *]\]\s+(.+?)(?:\s+\(id=|$)", content)
         todo_content = match.group(1).strip() if match else ""
 
         return {"id": todo_id, "content": todo_content, "status": status}

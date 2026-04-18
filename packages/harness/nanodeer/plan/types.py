@@ -34,9 +34,10 @@ class TodoItem:
 
     def to_markdown(self) -> str:
         """Convert to markdown checkbox format."""
-        checkbox = "[ ]" if self.status == TodoStatus.PENDING else "[ ]"
-        if self.status == TodoStatus.IN_PROGRESS:
-            checkbox = "[>]"
+        if self.status == TodoStatus.PENDING:
+            checkbox = "[ ]"
+        elif self.status == TodoStatus.IN_PROGRESS:
+            checkbox = "[*]"
         elif self.status == TodoStatus.COMPLETED:
             checkbox = "[x]"
         return f"{checkbox} {self.content}"

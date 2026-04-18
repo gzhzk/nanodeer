@@ -2,7 +2,7 @@
 
 from langchain_core.tools import tool
 
-from ..agent.memory.storage import MemoryStore
+from ..plan.loader import TodoStore
 from ..plan.types import TodoItem
 
 
@@ -16,8 +16,8 @@ def list_todos() -> str:
         Formatted list of todos with status indicators.
         "(no todos)" if empty.
     """
-    store = MemoryStore()
-    todos = store.load_todos("default")
+    store = TodoStore()
+    todos = store.load("default")
     if not todos:
         return "(no todos)"
     lines = []
@@ -25,7 +25,7 @@ def list_todos() -> str:
         item = TodoItem.from_dict(t)
         status_icon = {
             "pending": "[ ]",
-            "in_progress": "[>]",
+            "in_progress": "[*]",
             "completed": "[x]",
         }.get(item.status.value, "[ ]")
         lines.append(f"{status_icon} {item.content}  `(id={item.id})`")
