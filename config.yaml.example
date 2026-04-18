@@ -80,37 +80,22 @@ ollama:
 sandbox:
   use: nanodeer.sandbox.docker:DockerSandboxProvider
   image: enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:latest
-  replicas: 3
   container_prefix: nanodeer-sandbox
-  port: 8080
 
 # ============================================================================
 # Subagents Configuration
 # ============================================================================
 
 subagents:
-  timeout_seconds: 900
+  timeout_seconds: 300
   max_concurrent: 3
-
-# ============================================================================
-# Memory Configuration
-# ============================================================================
-
-memory:
-  enabled: true
-  storage_path: memory.json
-  debounce_seconds: 30
-  max_facts: 100
-  fact_confidence_threshold: 0.7
-  injection_enabled: true
-  max_injection_tokens: 2000
 
 # ============================================================================
 # Thread Storage Configuration
 # ============================================================================
 
 thread:
-  storage_path: /tmp/nanodeer/threads
+  storage_path: ~/.nanodeer/threads
   checkpointer_type: memory
 
 # ============================================================================

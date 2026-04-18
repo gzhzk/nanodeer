@@ -23,12 +23,12 @@ class AppConfig(BaseSettings):
 
     host: str = "0.0.0.0"
     port: int = 20264
-    # Upload storage: /tmp/nanodeer/uploads/{upload_id}/{filename}
-    upload_dir: Path = Field(default=Path("/tmp/nanodeer/uploads"))
-    # Schedule JSON files: /tmp/nanodeer/schedules/{job_id}.json
-    schedule_dir: Path = Field(default=Path("/tmp/nanodeer/schedules"))
-    # Thread history: /tmp/nanodeer/threads/{thread_id}/history.jsonl
-    thread_dir: Path = Field(default=Path("/tmp/nanodeer/threads"))
+    # Upload storage: ~/.nanodeer/app/uploads/{upload_id}/{filename}
+    upload_dir: Path = Field(default=Path.home() / ".nanodeer" / "app" / "uploads")
+    # Schedule JSON files: ~/.nanodeer/app/schedules/{job_id}.json
+    schedule_dir: Path = Field(default=Path.home() / ".nanodeer" / "app" / "schedules")
+    # Thread history: ~/.nanodeer/app/history/{thread_id}/history.jsonl
+    thread_dir: Path = Field(default=Path.home() / ".nanodeer" / "app" / "history")
 
     class Config:
         env_prefix = "NANODEER_APP_"

@@ -98,10 +98,8 @@ class SandboxConfig(Base):
 
     use: str = "nanodeer.sandbox.docker:DockerSandboxProvider"
     image: str = "nanodeer/sandbox:latest"
-    replicas: int = 3
     container_prefix: str = "nanodeer-sandbox"
-    port: int = 8080
-    network_mode: str = "none"  # "none"=无网络(安全), "bridge"=有网络, "host"=宿主机网络
+    network_mode: str = "none"  # "none"=no network, "bridge"=with network, "host"=host network
 
 
 class SubagentsConfig(Base):
@@ -112,21 +110,15 @@ class SubagentsConfig(Base):
 
 
 class MemoryConfig(Base):
-    """Memory configuration."""
+    """Memory configuration (placeholder for future use)."""
 
     enabled: bool = True
-    storage_path: str = "memory.json"
-    debounce_seconds: float = 30.0
-    max_facts: int = 100
-    fact_confidence_threshold: float = 0.7
-    injection_enabled: bool = True
-    max_injection_tokens: int = 2000
 
 
 class ThreadConfig(Base):
     """Thread storage configuration."""
 
-    storage_path: Path = Field(default=Path("/tmp/nanodeer/threads"))
+    storage_path: Path = Field(default=Path.home() / ".nanodeer" / "threads")
     checkpointer_type: str = "memory"
 
 
