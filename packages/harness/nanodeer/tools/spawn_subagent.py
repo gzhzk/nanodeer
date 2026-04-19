@@ -1,42 +1,55 @@
-"""Subagent tools - direct SubagentRunner integration."""
+"""Subagent tools - spawn and retrieve subagent results."""
 
-from typing import Optional
+import asyncio
+import uuid
 
 from langchain_core.tools import tool
 
-from ..subagent import generate_subagent_id, get_runner
+from ..subagent import get_executor, format_result
 
 
 @tool
 async def spawn_subagent(
-    name: str,
     task: str,
-    subagent_type: str = "general",
-    thread_id: Optional[str] = None,
+    name: str = "worker",
 ) -> str:
-    """Spawn a subagent to execute a task and return its results.
+    """Spawn a subagent to execute a task in parallel with the main agent.
 
-    Use this when a task can be broken into independent parts that run simultaneously.
+    The subagent runs in the background. Use get_subagent_results
+    to retrieve the result after the subagent completes.
 
     Args:
-        name: Subagent name/role (e.g., "researcher", "coder", "writer").
         task: Detailed description of what this subagent should do.
-        subagent_type: Type of subagent capabilities:
-            - "general": Full-featured, can use all tools
-            - "bash": Bash-only
-        thread_id: Thread identifier for multi-threaded environments.
+        name: Subagent name/role (e.g., "researcher", "coder", "writer").
 
     Returns:
-        Formatted summary of subagent results (status, output, duration).
+        A message with the subagent ID. Use get_subagent_results(sub_id) to get results.
     """
-    runner = get_runner()
-    subagent_id = generate_subagent_id()
-    runner.collect_spawn(
-        subagent_id=subagent_id,
-        name=name,
-        task=task,
-        subagent_type=subagent_type,
-        thread_id=thread_id or "default",
-    )
-    # Execute and return results in one call
-    return await runner.get_results(thread_id or "default")
+    executor = get_executor()
+    sub_id = f"sub-{uuid.uuid4().hex[:8]}"
+
+    # Run in background, don't wait
+    asyncio.create_task(executor.run(task, sub_id))
+
+    return f"Subagent {name} started: {sub_id}"
+
+
+@tool
+async def get_subagent_results(sub_id: str) -> str:
+    """Get the result of a previously spawned subagent.
+
+    Call this after spawn_subagent returns to get the execution results.
+
+    Args:
+        sub_id: The subagent ID returned by spawn_subagent.
+
+    Returns:
+        Formatted subagent results (status, output, error, duration).
+    """
+    executor = get_executor()
+    result = executor.get_result(sub_id)
+
+    if result is None:
+        return f"Subagent {sub_id} is still running or not found."
+
+    return format_result(result)

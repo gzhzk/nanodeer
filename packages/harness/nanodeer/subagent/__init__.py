@@ -1,29 +1,26 @@
-"""Subagents module - lightweight parallel task execution."""
+"""Subagent module - lightweight parallel task execution."""
 
-from .runner import run_subagent, run_subagents_in_parallel, generate_subagent_id, SubagentRunner
-from .types import SubagentType
+from .runner import SubagentExecutor, run_many, format_result
 
 __all__ = [
-    "run_subagent",
-    "run_subagents_in_parallel",
-    "generate_subagent_id",
-    "SubagentType",
-    "SubagentRunner",
-    "set_runner",
-    "get_runner",
+    "SubagentExecutor",
+    "run_many",
+    "format_result",
+    "set_executor",
+    "get_executor",
 ]
 
-_runner: SubagentRunner | None = None
+_executor: SubagentExecutor | None = None
 
 
-def set_runner(runner: SubagentRunner) -> None:
-    """Set the global SubagentRunner instance (called by factory)."""
-    global _runner
-    _runner = runner
+def set_executor(executor: SubagentExecutor) -> None:
+    """Set the global SubagentExecutor instance (called by factory)."""
+    global _executor
+    _executor = executor
 
 
-def get_runner() -> SubagentRunner:
-    """Get the global SubagentRunner instance."""
-    if _runner is None:
-        raise RuntimeError("SubagentRunner not initialized")
-    return _runner
+def get_executor() -> SubagentExecutor:
+    """Get the global SubagentExecutor instance."""
+    if _executor is None:
+        raise RuntimeError("SubagentExecutor not initialized")
+    return _executor

@@ -1,298 +1,225 @@
-"""Subagent runner - lightweight async execution."""
+"""Subagent executor - lightweight parallel task execution."""
 
 import asyncio
 import uuid
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from langchain_core.tools import BaseTool
 
-from nanodeer.agent.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
+from nanodeer.agent.messages import ToolMessage
+from nanodeer.sandbox import set_sandbox, clear_sandbox
 
 
-async def run_subagent(
-    subagent_id: str,
-    name: str,
-    task: str,
-    tools: list[BaseTool],
-    llm: BaseChatModel,
-    timeout: int = 900,
-    max_iterations: int = 10,
-) -> dict[str, Any]:
-    """Run a subagent task asynchronously.
+class SubagentExecutor:
+    """Lightweight parallel task executor.
 
-    Simplified implementation using asyncio for parallel execution.
-    No complex thread pool or lifecycle management.
-
-    Args:
-        subagent_id: Unique identifier for this subagent.
-        name: Subagent name (e.g., "researcher", "coder").
-        task: Task description.
-        tools: List of tools available to this subagent.
-        llm: LLM to use for this subagent.
-        timeout: Timeout in seconds (default 15 minutes).
-        max_iterations: Max ReAct loop iterations (default 10).
-
-    Returns:
-        Dict with subagent_id, status, output, artifacts, error.
-    """
-    import time
-    start_time = time.time()
-
-    try:
-        # Bind tools to LLM
-        llm_with_tools = llm.bind_tools(tools) if tools else llm
-
-        # Build system prompt for subagent
-        system_prompt = f"""You are {name}, a specialized subagent.
-
-Your task: {task}
-
-Guidelines:
-- Complete the task thoroughly
-- Use tools when needed
-- Report your findings in clear, structured format
-- If you encounter errors, explain what happened and what you tried
-"""
-
-        messages = [
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=f"Please complete this task: {task}"),
-        ]
-
-        # Simple ReAct loop
-        for _ in range(max_iterations):
-            response = await llm_with_tools.ainvoke(messages)
-
-            if not hasattr(response, "tool_calls") or not response.tool_calls:
-                # No tool calls - we're done
-                duration = time.time() - start_time
-                return {
-                    "subagent_id": subagent_id,
-                    "name": name,
-                    "status": "completed",
-                    "output": response.content if hasattr(response, "content") else str(response),
-                    "artifacts": [],
-                    "error": None,
-                    "duration_seconds": duration,
-                }
-
-            # Execute tool calls
-            tool_results = []
-            for tc in response.tool_calls:
-                tool_name = tc["name"]
-                tool_args = tc["args"]
-
-                # Find the tool
-                tool = next((t for t in tools if t.name == tool_name), None)
-                if not tool:
-                    tool_results.append(f"Tool {tool_name} not found")
-                    continue
-
-                try:
-                    result = await tool.ainvoke(tool_args)
-                    tool_results.append(str(result))
-                except Exception as e:
-                    tool_results.append(f"Error: {str(e)}")
-
-            # Add response and tool results to messages
-            messages.append(response)
-            for i, tc in enumerate(response.tool_calls):
-                result_content = tool_results[i] if i < len(tool_results) else "No result"
-                messages.append(ToolMessage(
-                    tool_call_id=tc["id"],
-                    name=tc["name"],
-                    content=result_content,
-                ))
-
-        # Max iterations reached
-        duration = time.time() - start_time
-        return {
-            "subagent_id": subagent_id,
-            "name": name,
-            "status": "failed",
-            "output": "Max iterations reached",
-            "artifacts": [],
-            "error": "Max iterations reached",
-            "duration_seconds": duration,
-        }
-
-    except asyncio.TimeoutError:
-        duration = time.time() - start_time
-        return {
-            "subagent_id": subagent_id,
-            "name": name,
-            "status": "timeout",
-            "output": "",
-            "artifacts": [],
-            "error": f"Task timed out after {timeout} seconds",
-            "duration_seconds": duration,
-        }
-    except Exception as e:
-        duration = time.time() - start_time
-        return {
-            "subagent_id": subagent_id,
-            "name": name,
-            "status": "failed",
-            "output": "",
-            "artifacts": [],
-            "error": str(e),
-            "duration_seconds": duration,
-        }
-
-
-async def run_subagents_in_parallel(
-    subagent_specs: list[dict[str, Any]],
-    llm: BaseChatModel,
-    timeout: int = 900,
-    max_iterations: int = 10,
-) -> list[dict[str, Any]]:
-    """Run multiple subagents in parallel using asyncio.gather.
-
-    Args:
-        subagent_specs: List of dicts with keys: subagent_id, name, task, tools
-        llm: LLM to use for all subagents
-        timeout: Timeout per subagent in seconds
-        max_iterations: Max ReAct iterations per subagent (default 10)
-
-    Returns:
-        List of result dicts
-    """
-    tasks = []
-    for spec in subagent_specs:
-        task = asyncio.create_task(
-            run_subagent(
-                subagent_id=spec["subagent_id"],
-                name=spec["name"],
-                task=spec["task"],
-                tools=spec.get("tools", []),
-                llm=llm,
-                timeout=timeout,
-                max_iterations=max_iterations,
-            )
-        )
-        tasks.append(task)
-
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-
-    # Convert exceptions to error dicts
-    processed_results = []
-    for i, result in enumerate(results):
-        if isinstance(result, Exception):
-            processed_results.append({
-                "subagent_id": subagent_specs[i]["subagent_id"],
-                "name": subagent_specs[i]["name"],
-                "status": "failed",
-                "output": "",
-                "artifacts": [],
-                "error": str(result),
-                "duration_seconds": 0,
-            })
-        else:
-            processed_results.append(result)
-
-    return processed_results
-
-
-def generate_subagent_id() -> str:
-    """Generate a unique subagent ID."""
-    return f"subagent-{uuid.uuid4().hex[:8]}"
-
-
-class SubagentRunner:
-    """Manages subagent lifecycle for ReActExecutor.
-
-    Collects spawn_subagent calls and executes pending subagents
-    when get_subagent_results is called.
+    Each subagent runs in its own sandbox context (exec_id),
+    reusing the same tools and sandbox provider as the main agent.
     """
 
     MAX_CONCURRENT = 3
-    DEFAULT_TIMEOUT = 900  # 15 minutes
+    MAX_ITERATIONS = 10
 
-    def __init__(
-        self,
-        llm=None,
-        max_concurrent: int | None = None,
-        timeout: int | None = None,
-    ):
-        from langchain_core.language_models import BaseChatModel
-        self._llm = llm
-        self.max_concurrent = max_concurrent or self.MAX_CONCURRENT
-        self.timeout = timeout or self.DEFAULT_TIMEOUT
+    def __init__(self, llm: BaseChatModel, tools: list[BaseTool], sandbox_provider):
+        """Initialize executor.
 
-        # Per-thread pending subagent queue
-        self._pending: dict[str, list[dict[str, Any]]] = {}
-        self._results: dict[str, list[dict[str, Any]]] = {}
+        Args:
+            llm: Chat model for subagent reasoning.
+            tools: List of tools available to subagents.
+            sandbox_provider: SandboxProvider instance for execution isolation.
+        """
+        self.llm = llm
+        self.tools = tools
+        self.sandbox_provider = sandbox_provider
+        self._semaphore = asyncio.Semaphore(self.MAX_CONCURRENT)
+        self._results: dict[str, dict[str, Any]] = {}
 
-    @property
-    def llm(self):
-        if self._llm is None:
-            raise RuntimeError("SubagentRunner.llm not set")
-        return self._llm
+    def _find_tool(self, name: str) -> BaseTool | None:
+        """Find tool by name."""
+        return next((t for t in self.tools if t.name == name), None)
 
-    def set_llm(self, llm) -> None:
-        self._llm = llm
+    async def run(self, task: str, sub_id: str | None = None) -> dict[str, Any]:
+        """Execute a single subagent task.
 
-    def _get_queue(self, thread_id: str) -> tuple:
-        """Get or create pending/results queues for thread."""
-        if thread_id not in self._pending:
-            self._pending[thread_id] = []
-            self._results[thread_id] = []
-        return self._pending[thread_id], self._results[thread_id]
+        Args:
+            task: Task description for the subagent.
+            sub_id: Optional subagent ID. Generated if not provided.
 
-    def collect_spawn(
-        self,
-        subagent_id: str,
-        name: str,
-        task: str,
-        subagent_type: str = "general",
-        thread_id: str = "default",
-    ) -> None:
-        """Collect a spawn_subagent call into pending queue."""
-        spec = {
-            "subagent_id": subagent_id,
-            "name": name,
-            "task": task,
-            "tools": [],
-        }
-        self._pending[thread_id].append(spec)
+        Returns:
+            Dict with sub_id, status, output, error, duration_seconds.
+        """
+        import time
 
-    async def get_results(self, thread_id: str = "default") -> str:
-        """Execute pending subagents and return formatted results."""
-        pending, results = self._get_queue(thread_id)
+        sub_id = sub_id or f"sub-{uuid.uuid4().hex[:8]}"
+        start_time = time.time()
 
-        # Execute all pending subagents in parallel
-        if pending:
-            executed = await run_subagents_in_parallel(
-                subagent_specs=pending,
-                llm=self.llm,
-                timeout=self.timeout,
-                max_iterations=10,
-            )
-            self._results[thread_id].extend(executed)
-            self._pending[thread_id] = []
+        async with self._semaphore:
+            sandbox = await self.sandbox_provider.acquire(sub_id)
+            set_sandbox(sub_id, sandbox)
 
-        if not results:
-            return "[No subagent results available]"
+            try:
+                messages = [
+                    SystemMessage(content=f"你是一个专业助手。\n\n任务：{task}"),
+                    HumanMessage(content=task),
+                ]
 
-        return self._format_results(results)
+                for _ in range(self.MAX_ITERATIONS):
+                    response = await self.llm.bind_tools(self.tools).ainvoke(messages)
 
-    def _format_results(self, results: list[dict[str, Any]]) -> str:
-        """Format subagent results for injection into conversation."""
-        lines = ["<subagent_results>"]
-        for r in results:
-            status = r.get("status", "unknown")
-            name = r.get("name", "subagent")
-            output = r.get("output", "")
-            error = r.get("error", "")
-            duration = r.get("duration_seconds", 0)
+                    if not hasattr(response, "tool_calls") or not response.tool_calls:
+                        duration = time.time() - start_time
+                        result = {
+                            "sub_id": sub_id,
+                            "status": "completed",
+                            "output": response.content if hasattr(response, "content") else str(response),
+                            "error": None,
+                            "duration_seconds": duration,
+                        }
+                        self._results[sub_id] = result
+                        return result
 
-            lines.append(f"## {name} ({status}) [{duration:.1f}s]")
-            if error:
-                lines.append(f"Error: {error}")
-            else:
-                lines.append(f"Output: {output[:500]}")
-            lines.append("")
+                    # Execute tool calls
+                    for tc in response.tool_calls:
+                        tool_name = tc["name"]
+                        tool_args = tc.get("args", {})
 
-        lines.append("</subagent_results>")
-        return "\n".join(lines)
+                        tool = self._find_tool(tool_name)
+                        if tool is None:
+                            messages.append(ToolMessage(
+                                content=f"Tool {tool_name} not found",
+                                tool_call_id=tc.get("id", ""),
+                                name=tool_name,
+                            ))
+                            continue
+
+                        try:
+                            # Route to sandbox via exec_id
+                            tool_result = await tool.ainvoke(tool_args, exec_id=sub_id)
+                            messages.append(ToolMessage(
+                                content=str(tool_result),
+                                tool_call_id=tc.get("id", ""),
+                                name=tool_name,
+                            ))
+                        except Exception as e:
+                            messages.append(ToolMessage(
+                                content=f"Error: {str(e)}",
+                                tool_call_id=tc.get("id", ""),
+                                name=tool_name,
+                            ))
+
+                # Max iterations reached
+                duration = time.time() - start_time
+                result = {
+                    "sub_id": sub_id,
+                    "status": "max_iterations",
+                    "output": "",
+                    "error": "Max iterations reached",
+                    "duration_seconds": duration,
+                }
+                self._results[sub_id] = result
+                return result
+
+            except asyncio.TimeoutError:
+                duration = time.time() - start_time
+                result = {
+                    "sub_id": sub_id,
+                    "status": "timeout",
+                    "output": "",
+                    "error": "Task timed out",
+                    "duration_seconds": duration,
+                }
+                self._results[sub_id] = result
+                return result
+
+            except Exception as e:
+                duration = time.time() - start_time
+                result = {
+                    "sub_id": sub_id,
+                    "status": "error",
+                    "output": "",
+                    "error": str(e),
+                    "duration_seconds": duration,
+                }
+                self._results[sub_id] = result
+                return result
+
+            finally:
+                await self.sandbox_provider.release(sandbox)
+                clear_sandbox(sub_id)
+
+    def get_result(self, sub_id: str) -> dict[str, Any] | None:
+        """Get result of a completed subagent.
+
+        Args:
+            sub_id: The subagent ID.
+
+        Returns:
+            Result dict if completed, None if still running or not found.
+        """
+        return self._results.get(sub_id)
+
+
+async def run_many(tasks: list[dict[str, Any]], executor: SubagentExecutor) -> list[dict[str, Any]]:
+    """Run multiple subagent tasks in parallel.
+
+    Args:
+        tasks: List of dicts with "task" (required) and "sub_id" (optional).
+        executor: SubagentExecutor instance.
+
+    Returns:
+        List of result dicts.
+    """
+    coros = [
+        executor.run(t["task"], t.get("sub_id"))
+        for t in tasks
+    ]
+
+    results = await asyncio.gather(*coros, return_exceptions=True)
+
+    # Process exceptions into result dicts
+    processed = []
+    for i, r in enumerate(results):
+        if isinstance(r, Exception):
+            processed.append({
+                "sub_id": tasks[i].get("sub_id", f"unknown-{i}"),
+                "status": "error",
+                "output": "",
+                "error": str(r),
+                "duration_seconds": 0,
+            })
+        else:
+            processed.append(r)
+
+    return processed
+
+
+def format_result(result: dict[str, Any]) -> str:
+    """Format a subagent result for display.
+
+    Args:
+        result: Result dict from SubagentExecutor.
+
+    Returns:
+        Human-readable formatted string.
+    """
+    sub_id = result.get("sub_id", "unknown")
+    status = result.get("status", "unknown")
+    duration = result.get("duration_seconds", 0)
+    error = result.get("error")
+    output = result.get("output", "")
+
+    lines = [f"<subagent_result>"]
+    lines.append(f"## {sub_id} ({status}) [{duration:.1f}s]")
+
+    if error:
+        lines.append(f"Error: {error}")
+    elif output:
+        # Truncate long output
+        if len(output) > 1000:
+            output = output[:1000] + "\n... (truncated)"
+        lines.append(f"Output:\n{output}")
+
+    lines.append("</subagent_result>")
+    return "\n".join(lines)
