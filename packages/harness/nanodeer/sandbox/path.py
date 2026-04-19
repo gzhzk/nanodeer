@@ -34,28 +34,28 @@ def validate_path(path: str) -> str | None:
     return normalized
 
 
-def virtual2physical(virtual_path: str, thread_id: str) -> str:
-    """Translate to physical path with thread-level isolation."""
-    safe_thread_id = re.sub(r'[^a-zA-Z0-9_-]', '', thread_id)
+def virtual2physical(virtual_path: str, exec_id: str) -> str:
+    """Translate to physical path with exec-level isolation."""
+    safe_exec_id = re.sub(r'[^a-zA-Z0-9_-]', '', exec_id)
 
     # Mount point: already physical
     if virtual_path.startswith(VIRTUAL_PREFIX):
         return virtual_path
 
-    # Workspace paths: force-isolate to current thread_id
+    # Workspace paths: force-isolate to current exec_id
     if virtual_path.startswith(WORKSPACE_BASE):
         rel = os.path.relpath(virtual_path, WORKSPACE_BASE)
         if rel == ".":
-            return os.path.join(WORKSPACE_BASE, safe_thread_id)
-        return os.path.join(WORKSPACE_BASE, safe_thread_id, rel)
+            return os.path.join(WORKSPACE_BASE, safe_exec_id)
+        return os.path.join(WORKSPACE_BASE, safe_exec_id, rel)
 
     # Relative paths: route to workspace
-    return f"{WORKSPACE_BASE}/{safe_thread_id}/{virtual_path.lstrip('/')}"
+    return f"{WORKSPACE_BASE}/{safe_exec_id}/{virtual_path.lstrip('/')}"
 
 
-def translate_and_validate(virtual_path: str, thread_id: str) -> str:
+def translate_and_validate(virtual_path: str, exec_id: str) -> str:
     """Validate then translate."""
     validated = validate_path(virtual_path)
     if validated is None:
         raise ValueError(f"Security violation: access denied for path '{virtual_path}'")
-    return virtual2physical(validated, thread_id)
+    return virtual2physical(validated, exec_id)

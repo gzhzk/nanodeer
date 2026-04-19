@@ -51,7 +51,7 @@ def merge_artifacts(existing, new):
 
 
 class SandboxState(BaseModel):
-    thread_id: str | None = None
+    exec_id: str | None = None
     container_id: str | None = None
     working_dir: str | None = None
     status: str | None = None

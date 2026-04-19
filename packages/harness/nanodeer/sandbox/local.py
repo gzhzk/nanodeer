@@ -34,15 +34,15 @@ class LocalSandboxProvider(SandboxProvider):
         """
         self.container_prefix = container_prefix
 
-    async def acquire(self, thread_id: str) -> Sandbox:
-        """Create a local workspace directory for the thread."""
+    async def acquire(self, exec_id: str) -> Sandbox:
+        """Create a local workspace directory for the exec context."""
         from ..config import get_config
-        safe_id = re.sub(r'[^a-zA-Z0-9_-]', '', thread_id)
+        safe_id = re.sub(r'[^a-zA-Z0-9_-]', '', exec_id)
         base = get_config().thread.storage_path
         working_dir = base / safe_id / "user-data"
         working_dir.mkdir(parents=True, exist_ok=True)
         return Sandbox(
-            thread_id=thread_id,
+            exec_id=exec_id,
             container_id=f"local-{safe_id}",
             working_dir=str(working_dir),
         )

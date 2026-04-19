@@ -18,7 +18,7 @@ class RunResult:
 
 @dataclass
 class Sandbox:
-    thread_id: str
+    exec_id: str
     container_id: str
     working_dir: str
 
@@ -31,7 +31,7 @@ class SandboxCommand:
 
 class SandboxProvider(ABC):
     @abstractmethod
-    async def acquire(self, thread_id: str) -> Sandbox: ...
+    async def acquire(self, exec_id: str) -> Sandbox: ...
 
     @abstractmethod
     async def release(self, sandbox: Sandbox) -> None: ...
@@ -45,16 +45,16 @@ _sandbox_context: dict[str, Sandbox] = {}
 _sandbox_lock = threading.Lock()
 
 
-def set_sandbox(thread_id: str, sandbox: Sandbox) -> None:
+def set_sandbox(exec_id: str, sandbox: Sandbox) -> None:
     with _sandbox_lock:
-        _sandbox_context[thread_id] = sandbox
+        _sandbox_context[exec_id] = sandbox
 
 
-def get_sandbox(thread_id: str) -> Sandbox | None:
+def get_sandbox(exec_id: str) -> Sandbox | None:
     with _sandbox_lock:
-        return _sandbox_context.get(thread_id)
+        return _sandbox_context.get(exec_id)
 
 
-def clear_sandbox(thread_id: str) -> None:
+def clear_sandbox(exec_id: str) -> None:
     with _sandbox_lock:
-        _sandbox_context.pop(thread_id, None)
+        _sandbox_context.pop(exec_id, None)

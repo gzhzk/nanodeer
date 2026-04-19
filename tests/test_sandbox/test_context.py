@@ -17,7 +17,7 @@ def clean_context():
 @pytest.fixture
 def sandbox_a(thread_id):
     return Sandbox(
-        thread_id=thread_id,
+        exec_id=thread_id,
         container_id=f"container-{thread_id}",
         working_dir=f"/tmp/{thread_id}",
     )
@@ -26,7 +26,7 @@ def sandbox_a(thread_id):
 @pytest.fixture
 def sandbox_b(alt_thread_id):
     return Sandbox(
-        thread_id=alt_thread_id,
+        exec_id=alt_thread_id,
         container_id=f"container-{alt_thread_id}",
         working_dir=f"/tmp/{alt_thread_id}",
     )
@@ -39,7 +39,7 @@ class TestSandboxContext:
         set_sandbox(thread_id, sandbox_a)
         result = get_sandbox(thread_id)
         assert result is sandbox_a
-        assert result.thread_id == thread_id
+        assert result.exec_id == thread_id
         assert result.container_id == f"container-{thread_id}"
 
     def test_get_nonexistent_returns_none(self, thread_id):
@@ -68,7 +68,7 @@ class TestSandboxContextThreadSafety:
 
         def writer(i):
             tid = f"thread-{i}"
-            s = Sandbox(tid, f"c-{i}", f"/tmp/{i}")
+            s = Sandbox(exec_id=tid, container_id=f"c-{i}", working_dir=f"/tmp/{i}")
             try:
                 set_sandbox(tid, s)
             except Exception as e:
@@ -110,7 +110,7 @@ class TestSandboxContextThreadSafety:
 
         def writer(i):
             tid = f"thread-{i}"
-            s = Sandbox(tid, f"c-{i}", f"/tmp/{i}")
+            s = Sandbox(exec_id=tid, container_id=f"c-{i}", working_dir=f"/tmp/{i}")
             try:
                 set_sandbox(tid, s)
             except Exception as e:

@@ -91,13 +91,13 @@ class DockerSandboxProvider(SandboxProvider):
         except Exception:
             pass  # Best-effort cleanup
 
-    async def acquire(self, thread_id: str) -> Sandbox:
-        """Create ephemeral container for thread (reuses existing if already running)."""
+    async def acquire(self, exec_id: str) -> Sandbox:
+        """Create ephemeral container for exec context (reuses existing if already running)."""
         # Cleanup stale containers on each acquire attempt
         self._cleanup_stale_containers()
 
-        container_name = f"{self.container_prefix}-{thread_id}"
-        working_dir = f"/workspace/{thread_id}"
+        container_name = f"{self.container_prefix}-{exec_id}"
+        working_dir = f"/workspace/{exec_id}"
 
         loop = asyncio.get_event_loop()
 
@@ -114,19 +114,19 @@ class DockerSandboxProvider(SandboxProvider):
         existing = await loop.run_in_executor(None, _get_existing)
         if existing:
             return Sandbox(
-                thread_id=thread_id,
+                exec_id=exec_id,
                 container_id=existing.id,
                 working_dir=working_dir,
             )
 
         await loop.run_in_executor(None, self._pull_image)
 
-        # Volume mount: host {base_path}/{thread_id}/user-data → container /mnt/user-data
+        # Volume mount: host {base_path}/{exec_id}/user-data → container /mnt/user-data
         # This makes uploads written by UploadsMiddleware visible inside the container
         # at the virtual path /mnt/user-data/uploads/.
         base_path = self._get_base_path()
         volumes = {
-            str(base_path / thread_id / "user-data"): {"bind": "/mnt/user-data", "mode": "rw"},
+            str(base_path / exec_id / "user-data"): {"bind": "/mnt/user-data", "mode": "rw"},
         }
 
         container = await loop.run_in_executor(
@@ -148,7 +148,7 @@ class DockerSandboxProvider(SandboxProvider):
         )
 
         return Sandbox(
-            thread_id=thread_id,
+            exec_id=exec_id,
             container_id=container.id,
             working_dir=working_dir,
         )
