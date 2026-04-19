@@ -15,16 +15,14 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from langchain_core.language_models import BaseChatModel
-
 from .agent.state import NextAction, ThreadState
-from .agent.messages import HumanMessage, AIMessage, ToolMessage, SystemMessage
+from .agent.messages import HumanMessage
 from .config import HarnessConfig
 from .agent.factory import create_nanodeer_agent, RuntimeFeatures
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["NanoEngine", "RunResult", "StreamEvent"]
+__all__ = ["NanoEngine", "RunResult"]
 
 
 @dataclass
@@ -38,14 +36,7 @@ class RunResult:
     duration_ms: int = 0
 
 
-@dataclass
-class StreamEvent:
-    """Streaming event type."""
-    type: str  # "messages-tuple" | "end"
-    data: dict[str, Any] = field(default_factory=dict)
-
-
-def _create_llm(config: HarnessConfig, model_name: str | None = None) -> BaseChatModel:
+def _create_llm(config: HarnessConfig, model_name: str | None = None):
     """Create a ChatModel from HarnessConfig."""
     from langchain_anthropic import ChatAnthropic
 
@@ -70,7 +61,11 @@ def _create_llm(config: HarnessConfig, model_name: str | None = None) -> BaseCha
 
 
 class NanoEngine:
-    """Thin execution wrapper around ReActExecutor."""
+    """Thin execution wrapper around ReActExecutor.
+
+    App layer entry point. Creates ThreadState from prompt,
+    calls executor.run(), returns RunResult.
+    """
 
     def __init__(
         self,
@@ -78,10 +73,20 @@ class NanoEngine:
         *,
         model_name: str | None = None,
         features: RuntimeFeatures | None = None,
+        tools: list | None = None,
     ):
+        """Initialize engine.
+
+        Args:
+            config: HarnessConfig instance.
+            model_name: Optional model override.
+            features: Optional RuntimeFeatures for feature gating.
+            tools: Optional custom tool list. None = use default tools.
+        """
         self.config = config
         self._model_name = model_name
         self._features = features
+        self._tools = tools
         self._executor = None
         self._compression_mw = None
 
@@ -91,6 +96,7 @@ class NanoEngine:
             llm = _create_llm(self.config, self._model_name)
             self._executor, self._compression_mw = create_nanodeer_agent(
                 model=llm,
+                tools=self._tools,
                 features=self._features,
             )
         return self._executor
@@ -102,7 +108,16 @@ class NanoEngine:
         thread_id: str | None = None,
         uploaded_files: list[dict] | None = None,
     ) -> RunResult:
-        """Run agent to completion or WAIT state."""
+        """Run agent to completion or WAIT state.
+
+        Args:
+            prompt: User message.
+            thread_id: Optional thread ID. Auto-generated if None.
+            uploaded_files: Optional list of {name, content, mime_type} dicts.
+
+        Returns:
+            RunResult with thread_id, message, next_action, artifacts, tool_calls, duration_ms.
+        """
         thread_id = thread_id or uuid.uuid4().hex
         start_ms = int(time.time() * 1000)
 
@@ -112,10 +127,9 @@ class NanoEngine:
         )
 
         executor = self._get_executor()
-        # uploaded_files passed separately — consumed by FileMiddleware, not stored in state
         final_state = await executor.run(state, uploaded_files=uploaded_files)
 
-        # App-layer compression: check after turn completes
+        # App-layer compression after turn completes
         if self._compression_mw is not None:
             compressed = self._compression_mw.compress(final_state.messages)
             if compressed is not None:
@@ -126,18 +140,24 @@ class NanoEngine:
 
     def _extract_result(self, state: ThreadState, thread_id: str, duration_ms: int) -> RunResult:
         """Extract RunResult from ThreadState."""
+        # Last message with content is the final response
         final_message = ""
         for msg in reversed(state.messages):
             if hasattr(msg, "content") and msg.content:
                 final_message = msg.content
                 break
 
+        # Collect tool calls
         tool_calls = []
         for msg in state.messages:
-            if hasattr(msg, "tool_calls") and msg.tool_calls:
-                for tc in msg.tool_calls:
-                    tool_calls.append({"name": tc.get("name", ""), "args": tc.get("args", {})})
-
+            if not hasattr(msg, "tool_calls") or not msg.tool_calls:
+                continue
+            for tc in msg.tool_calls:
+                tool_calls.append({
+                    "name": tc.name if hasattr(tc, "name") else str(tc),
+                    "args": tc.args if hasattr(tc, "args") else {},
+                    "id": tc.id if hasattr(tc, "id") else None,
+                })
 
         return RunResult(
             thread_id=thread_id,
@@ -147,20 +167,3 @@ class NanoEngine:
             tool_calls=tool_calls,
             duration_ms=duration_ms,
         )
-
-    @staticmethod
-    def _serialize_message(msg) -> dict[str, Any]:
-
-        if isinstance(msg, AIMessage):
-            d: dict[str, Any] = {"type": "ai", "content": msg.content, "id": getattr(msg, "id", None)}
-            if msg.tool_calls:
-                d["tool_calls"] = [{"name": tc["name"], "args": tc["args"], "id": tc.get("id")} for tc in msg.tool_calls]
-            return d
-        if isinstance(msg, ToolMessage):
-            return {"type": "tool", "content": msg.content, "name": getattr(msg, "name", None),
-                    "tool_call_id": getattr(msg, "tool_call_id", None), "id": getattr(msg, "id", None)}
-        if isinstance(msg, HumanMessage):
-            return {"type": "human", "content": msg.content, "id": getattr(msg, "id", None)}
-        if isinstance(msg, SystemMessage):
-            return {"type": "system", "content": msg.content, "id": getattr(msg, "id", None)}
-        return {"type": "unknown", "content": str(msg), "id": getattr(msg, "id", None)}

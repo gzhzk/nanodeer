@@ -44,10 +44,7 @@ class TitleMiddleware(Middleware):
 
         first_user_msg = None
         for msg in state.messages:
-            if hasattr(msg, "type") and msg.type == "human":
-                first_user_msg = msg.content
-                break
-            elif hasattr(msg, "__class__") and msg.__class__.__name__ == "HumanMessage":
+            if isinstance(msg, HumanMessage):
                 first_user_msg = msg.content
                 break
 
