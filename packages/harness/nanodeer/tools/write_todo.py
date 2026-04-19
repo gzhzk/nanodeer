@@ -33,7 +33,8 @@ def write_todo(
         Confirmation message with todo details and ID.
     """
     store = TodoStore()
-    todos = store.load("default")
+    slug = "default"
+    todos = store.load(slug)
 
     if id is not None:
         # Update existing todo
@@ -46,7 +47,7 @@ def write_todo(
                     t["status"] = status
                 if priority is not None:
                     t["priority"] = priority
-                store.save("default", todos)
+                store.save(slug, todos)
                 found = True
                 item = TodoItem.from_dict(t)
                 return f"Todo updated: {item.to_markdown()}\nID: {item.id}"
@@ -63,5 +64,5 @@ def write_todo(
         priority=priority or 0,
     )
     todos.append(item.to_dict())
-    store.save("default", todos)
+    store.save(slug, todos)
     return f"Todo added: {item.to_markdown()}\nID: {item.id}"
