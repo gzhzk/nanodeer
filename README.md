@@ -2,7 +2,9 @@
 
 [English](./README.md) | 中文
 
-🚀 **NanoDeer** is a lightweight AI Agent Harness framework built on Python (no LangGraph dependency).
+🚀 **NanoDeer** is a minimal AI agent harness with native async ReAct, middleware interception, and Docker-sandbox isolation.
+
+Built-in capabilities: file/git/bash tools with sandbox routing, async parallel subagents, memory & todo persistence, and a skill system for extensible behaviors.
 
 ## Table of Contents
 
@@ -112,25 +114,80 @@ The story might have ended there. But on the last evening of March, I attended B
 
 ## Architecture
 
-### 5-Layer Harness Design
+### 5-Layer Architecture
 
 ```
-  Layer 5: Application
-    NanoEngine / create_nanodeer_agent
+Layer 5: Application         ← App code calls this directly
+  NanoEngine                 # Thin wrapper around ReActExecutor; protocol adapter for App
 
-  Layer 4: Orchestration
-    NanoDeerFactory + ReActExecutor
-      MiddlewareChain (interception mechanism)
+Layer 4: Orchestration       ← harness internal assembly logic
+  create_nanodeer_agent      # Factory function; NanoDeerFactory.build() exposed to App
+  NanoDeerFactory            # Assembles MiddlewareChain + modules + LLM + tools
+  ReActExecutor              # Native async ReAct loop
+  MiddlewareChain            # Interception mechanism with 4 hook points
 
-  Layer 3: Tools
-    Tools + wrap_tool_for_sandbox
+Layer 3: Tools
+  Tools + wrap_tool_for_sandbox  # Sandbox-aware tool routing
 
-  Layer 2: Sandbox
-    DockerSandboxProvider / LocalSandboxProvider
+Layer 2: Sandbox
+  DockerSandboxProvider / LocalSandboxProvider
 
-  Layer 1: Data
-    ThreadState + TurnSignals
+Layer 1: Data
+  ThreadState + TurnSignals
 ```
+
+**Notes**:
+- Layer 5 is the App layer entry point (`NanoEngine`), not part of harness internals
+- `create_nanodeer_agent` is a Layer 4 factory function, not Layer 5
+- The `packages/harness/nanodeer/` package starts from Layer 4 down, but also exports `engine.py` (Layer 5 entry point)
+
+### Execution Flow
+
+```
+NanoEngine.run(prompt)                         [Layer 5 — App entry]
+  ↓
+ThreadState(thread_id, HumanMessage(prompt))
+  ↓
+ReActExecutor.run(state)                       [Layer 4]
+  ┌──────────────────────────────────────────────────────────────┐
+  │  while True:                                                  │
+  │    before_llm():   ← 4 hooks, executed in order              │
+  │      1. ThreadDataMiddleware → mkdir {thread_id}/user-data/  │
+  │      2. FileMiddleware     → write uploads to user-data/      │
+  │      3. MemoryMiddleware   → load USER/MEMORY → signals        │
+  │      4. TodoMiddleware     → load default.json → state.todos   │
+  │      5. SandboxMiddleware → check _sandbox_context            │
+  │                             acquire Docker container if absent│
+  │    LLM.ainvoke(prompt + messages)                            │
+  │    after_llm():                                              │
+  │      ClarificationMiddleware → WAIT? return to caller         │
+  │      TitleMiddleware                                       │
+  │      [END? → release sandbox → break]                       │
+  │    [no tool_calls? → after_tools_all → END → break]          │
+  │    for tc in resp.tool_calls:  ← tool loop                  │
+  │      before_tools():                                          │
+  │        DetectionMiddleware                                    │
+  │        HandlingMiddleware                                     │
+  │        SandboxMiddleware → bash command security audit        │
+  │      tool.ainvoke(args, exec_id)                            │
+  │        → SandboxExecTool.ainvoke()                           │
+  │          → get_sandbox(exec_id) from module context          │
+  │          → DockerSandboxProvider.run(container, cmd)          │
+  │            → virtual path translation                        │
+  │            → b64 encode → exec inside container → stdout     │
+  │    after_tools_all():                                        │
+  │      [END? → release sandbox + idempotent guard]             │
+  │    [PROCESS? → next turn]  [END? → break]                   │
+  └──────────────────────────────────────────────────────────────┘
+  ↓
+RunResult(message, tool_calls, artifacts, duration_ms)
+```
+
+**Key design points**:
+- `before_llm` SandboxMiddleware checks module-level `_sandbox_context` for idempotent acquire across turns
+- `after_tools_all` releases sandbox only on `END`; `PROCESS` keeps container alive for next turn
+- `SandboxExecTool` wraps 9 tools (bash/git/read_file etc.) for Docker routing; virtual paths `/mnt/user-data/...` translate to host physical paths
+- `wrap_tool_for_sandbox` in the factory wraps tools at assembly time; routing is automatic at runtime
 
 ### Project Structure
 
@@ -147,31 +204,25 @@ nanodeer/
 │       │   ├── react.py      # ReActExecutor — native loop (no LangGraph)
 │       │   ├── prompt.py     # System prompt + PromptConfig
 │       │   ├── messages.py   # Message types
+│       │   ├── memory/       # L3 memory storage
+│       │   │   └── storage.py # MemoryStore (USER.md / MEMORY.md / episodic)
+│       │   ├── plan/         # Task planning
+│       │   │   └── loader.py # TodoStore (file-based todos)
 │       │   └── middlewares/  # 9 in chain + 1 App-layer
 │       │       ├── base.py               # Middleware + MiddlewareChain
-│       │       ├── thread_data.py       # Per-thread directory init
+│       │       ├── thread_data.py        # Per-thread directory init
 │       │       ├── file.py              # User-uploaded file handling
-│       │       ├── memory.py           # Memory context injection
-│       │       ├── todo.py            # Todo tool result parsing
-│       │       ├── clarification.py   # <clarification> tag detection
-│       │       ├── title.py           # Thread title generation
-│       │       ├── detection.py        # Health check (sandbox released)
+│       │       ├── memory.py            # Memory context injection
+│       │       ├── todo.py              # Todo tool result parsing
+│       │       ├── clarification.py     # <clarification> tag detection
+│       │       ├── title.py             # Thread title generation
+│       │       ├── detection.py         # Health check (sandbox released)
 │       │       ├── handling.py         # Error handling framework (placeholder)
-│       │       └── sandbox.py        # Container lifecycle + bash audit
-│       │   └── compression.py  # App-layer call, not in chain
-│       ├── memory/             # L3 memory storage
-│       │   └── storage.py      # MemoryStore (USER.md / MEMORY.md / episodic)
-│       ├── plan/               # Task planning
-│       │   └── loader.py       # TodoStore (file-based todos)
+│       │       └── sandbox.py          # Container lifecycle + bash audit
+│       │   └── compression.py   # App-layer call, not in chain
 │       ├── sandbox/            # Docker sandbox isolation
-│       │   ├── __init__.py    # SandboxProvider ABC
-│       │   ├── docker.py      # DockerSandboxProvider (volume mount)
-│       │   ├── local.py        # LocalSandboxProvider fallback
-│       │   ├── path.py         # Path validation and translation
-│       │   └── tools.py        # SandboxExecTool (config-driven)
 │       ├── subagent/           # Subagent execution
-│       │   ├── runner.py      # SubagentRunner + run_subagent
-│       │   └── types.py       # SubagentType enum
+│       │   └── runner.py      # SubagentExecutor + run_many + format_result
 │       ├── skills/             # Skill loader
 │       │   └── loader.py      # SkillLoader + parse_frontmatter
 │       ├── tools/              # Built-in tools (pure execution)
@@ -527,7 +578,7 @@ memory/plan/subagent are injected by App, not imported by Harness.
 
 ## Acknowledgments
 
-To my mother — for her silent support and endless patience, which made this possible.
+To my family — for their silent support and endless patience, which made this possible.
 
 To my mentor — for opening the door to Agent and Harness Engineering, and encouraging me to explore.
 

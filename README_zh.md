@@ -2,7 +2,9 @@
 
 [English](./README.md) | 中文
 
-🚀 **NanoDeer** 是一款基于 Python 构建的轻量级 AI Agent Harness 框架（无 LangGraph 依赖）。
+🚀 **NanoDeer** 是一款基于 Python 构建的轻量级 AI Agent Harness 框架，内置原生 async ReAct、4 钩子 middleware 拦截链和可插拔的 Docker 沙箱隔离。
+
+内置能力：file/git/bash 工具自动路由至沙箱、异步并行子 Agent、Memory & Todo 持久化，以及可扩展的 Skill 系统。
 
 ## 目录
 
@@ -129,6 +131,54 @@ nanodeer cli "分析这份数据"
   Layer 1: 数据层
     ThreadState + TurnSignals
 ```
+
+### 执行流程
+
+```
+NanoEngine.run(prompt)                         [第5层 — 应用入口]
+  ↓
+ThreadState(thread_id, HumanMessage(prompt))
+  ↓
+ReActExecutor.run(state)                       [第4层]
+  ┌──────────────────────────────────────────────────────────────┐
+  │  while True:                                                  │
+  │    before_llm():   ← 4 钩子，按序执行                         │
+  │      1. ThreadDataMiddleware → 创建 {thread_id}/user-data/   │
+  │      2. FileMiddleware     → 写上传文件到 user-data/         │
+  │      3. MemoryMiddleware   → 加载 USER/MEMORY → signals       │
+  │      4. TodoMiddleware    → 加载 default.json → state.todos  │
+  │      5. SandboxMiddleware → 从模块级上下文获取 sandbox          │
+  │                             无则 acquire(Docker容器)          │
+  │    LLM.ainvoke(prompt + messages)                            │
+  │    after_llm():                                              │
+  │      ClarificationMiddleware → WAIT? 直接返回给调用方         │
+  │      TitleMiddleware                                       │
+  │      [END? → release sandbox → break]                       │
+  │    [无 tool_calls? → after_tools_all → END → break]         │
+  │    for tc in resp.tool_calls:  ← 工具循环                    │
+  │      before_tools():                                          │
+  │        DetectionMiddleware                                    │
+  │        HandlingMiddleware                                     │
+  │        SandboxMiddleware → bash 命令安全审计                   │
+  │      tool.ainvoke(args, exec_id)                            │
+  │        → SandboxExecTool.ainvoke()                           │
+  │          → get_sandbox(exec_id) 从模块上下文查询              │
+  │          → DockerSandboxProvider.run(container, cmd)          │
+  │            → 虚拟路径翻译                                     │
+  │            → b64 编码 → 容器内执行 → 返回 stdout              │
+  │    after_tools_all():                                        │
+  │      [END? → release sandbox + 幂等保护]                    │
+  │    [PROCESS? → 下一轮]  [END? → break]                      │
+  └──────────────────────────────────────────────────────────────┘
+  ↓
+RunResult(message, tool_calls, artifacts, duration_ms)
+```
+
+**关键设计点**：
+- `before_llm` 中 SandboxMiddleware 通过模块级 `_sandbox_context` 判断是否已 acquire，跨 turn 幂等
+- `after_tools_all` 仅在 `END` 时释放；`PROCESS` 时保持容器存活供下一轮复用
+- `SandboxExecTool` 封装 9 个工具（bash/git/read_file 等）路由至 Docker 容器；虚拟路径 `/mnt/user-data/...` 自动翻译为宿主机物理路径
+- `wrap_tool_for_sandbox` 在工厂组装时封装工具；运行时自动路由
 
 ### 项目结构
 
@@ -524,19 +574,19 @@ Harness 内部无 Agent 业务逻辑，memory/plan/subagent 由 App 注入。
 
 ## 致谢
 
-感谢我的母亲 —— 无声的支持和无限的耐心，让这一切成为可能。
+感谢我的家人 —— 无声的支持和无限的耐心，让这一切成为可能。
 
 感谢我的导师 —— 为我打开了 Agent 和 Harness Engineering 的大门，并鼓励我探索。
 
-[Claude Code](https://claude.com/product/claude-code) — 我最好的编程伙伴，让我的 AI 工作流程如虎添翼，并向我展示了产品可以既强大又优雅。
+[Claude Code](https://claude.com/product/claude-code) —— 我最好的编程伙伴，让我的 AI 工作流程如虎添翼，并向我展示了产品可以既强大又优雅。
 
-[DeerFlow](https://github.com/bytedance/deer-flow) — 让我第一次看到企业级 Agent 框架应该是什么样子。
+[DeerFlow](https://github.com/bytedance/deer-flow) —— 让我第一次看到企业级 Agent 框架应该是什么样子。
 
-[OpenClaw](https://github.com/openclaw/openclaw) — 分层记忆和 IM 渠道的灵感来源。
+[OpenClaw](https://github.com/openclaw/openclaw) —— 分层记忆和 IM 渠道的灵感来源。
 
-[NanoClaw](https://github.com/qwibitai/nanoclaw) — Docker 沙箱隔离模式的启发。
+[NanoClaw](https://github.com/qwibitai/nanoclaw) —— Docker 沙箱隔离模式的启发。
 
-[MiniMax](https://www.minimaxi.com/) — 提供驱动本项目的 MiniMax-M2.7 模型服务。
+[MiniMax](https://www.minimaxi.com/) —— 提供驱动本项目的 MiniMax-M2.7 模型服务。
 
 ## 许可证
 
