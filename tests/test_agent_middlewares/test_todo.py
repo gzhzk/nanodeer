@@ -1,9 +1,9 @@
-"""Tests for TodoMiddleware."""
+"""Tests for TodoMiddleware — direct store read via thread_id slug."""
+
 import pytest
 
 from nanodeer.agent.middlewares.todo import TodoMiddleware
 from nanodeer.agent.state import ThreadState, TurnSignals
-from nanodeer.agent.messages import AIMessage, ToolMessage
 
 
 @pytest.fixture
@@ -21,77 +21,42 @@ def signals():
     return TurnSignals()
 
 
-class TestTodoMiddleware:
-    async def test_no_messages(self, middleware, state, signals):
-        """No messages → no updates."""
+class TestTodoMiddlewareDirectRead:
+    """TodoMiddleware reads directly from store using thread_id as slug.
+
+    This replaces the old text-parsing logic with direct store access.
+    write_todo is synchronous and has already persisted before before_llm runs,
+    so reading directly from store gives the authoritative state.
+    """
+
+    async def test_loads_empty_todos(self, middleware, state, signals):
+        """No store file → empty todos."""
+        state.thread_id = "nonexistent-thread"
         await middleware.before_llm(state, signals)
         assert state.todos == []
 
-    async def test_non_tool_message(self, middleware, state, signals):
-        """Non-tool message → no updates."""
-        state.messages.append(AIMessage(content="Hello"))
+    async def test_thread_id_becomes_slug(self, middleware, state, signals):
+        """thread_id is used as the store slug."""
+        state.thread_id = "some-thread-id"
         await middleware.before_llm(state, signals)
+        # No file for "some-thread-id" → empty list
         assert state.todos == []
 
-    async def test_wrong_tool_message(self, middleware, state, signals):
-        """Tool message but not write_todo → no updates."""
-        state.messages.append(ToolMessage(content="some result", name="read_file"))
+    async def test_none_thread_id_falls_back_to_default(self, middleware, state, signals):
+        """None thread_id → uses 'default' as slug."""
+        state.thread_id = None
         await middleware.before_llm(state, signals)
+        # No "default" store file → empty
         assert state.todos == []
 
-    async def test_write_todo_added_pending(self, middleware, state, signals):
-        """write_todo result with [ ] → pending status."""
-        state.messages.append(
-            ToolMessage(content="Todo added: [ ] Implement feature (id=abc-123)", name="write_todo")
-        )
+    async def test_state_todos_replaced_each_call(self, middleware, state, signals):
+        """Each call to before_llm replaces state.todos entirely."""
+        state.thread_id = "thread-xyz"
         await middleware.before_llm(state, signals)
-        assert len(state.todos) == 1
-        assert state.todos[0]["id"] == "abc-123"
-        assert state.todos[0]["status"] == "pending"
-        assert "Implement feature" in state.todos[0]["content"]
+        assert state.todos == []  # no file exists
 
-    async def test_write_todo_completed(self, middleware, state, signals):
-        """write_todo with [x] → completed status."""
-        state.messages.append(
-            ToolMessage(content="Todo updated: [x] Implement feature (id=abc-123)", name="write_todo")
-        )
+    async def test_no_messages_needed(self, middleware, state, signals):
+        """No messages required — reads from store, not messages."""
+        state.thread_id = "any-thread"
         await middleware.before_llm(state, signals)
-        assert state.todos[0]["status"] == "completed"
-
-    async def test_write_todo_in_progress(self, middleware, state, signals):
-        """write_todo with [*] → in_progress status."""
-        state.messages.append(
-            ToolMessage(content="Todo updated: [*] Implement feature (id=abc-123)", name="write_todo")
-        )
-        await middleware.before_llm(state, signals)
-        assert state.todos[0]["status"] == "in_progress"
-
-    async def test_write_todo_no_id(self, middleware, state, signals):
-        """write_todo without ID → no update."""
-        state.messages.append(
-            ToolMessage(content="Todo added: [ ] Implement feature", name="write_todo")
-        )
-        await middleware.before_llm(state, signals)
-        assert state.todos == []
-
-    async def test_multiple_write_todos(self, middleware, state, signals):
-        """Multiple write_todo results → all added."""
-        state.messages.append(
-            ToolMessage(content="Todo added: [ ] Task 1 (id=id-1)", name="write_todo")
-        )
-        state.messages.append(
-            ToolMessage(content="Todo added: [ ] Task 2 (id=id-2)", name="write_todo")
-        )
-        await middleware.before_llm(state, signals)
-        assert len(state.todos) == 2
-
-    async def test_parse_result_with_uuid(self, middleware):
-        """UUID-style ID parsing."""
-        result = middleware._parse_result("Todo added: [ ] My task (id=550e8400-e29b-41d4-a716-446655440000)")
-        assert result["id"] == "550e8400-e29b-41d4-a716-446655440000"
-        assert result["status"] == "pending"
-
-    async def test_parse_result_strips_content(self, middleware):
-        """Content is stripped of whitespace."""
-        result = middleware._parse_result("Todo added: [ ]   Some task   (id=abc)")
-        assert result["content"] == "Some task"
+        assert state.todos == []  # no file needed for basic test

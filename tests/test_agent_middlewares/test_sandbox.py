@@ -10,7 +10,7 @@ from nanodeer.agent.state import NextAction, SandboxState, ThreadState, TurnSign
 def mock_provider():
     provider = MagicMock()
     sandbox = MagicMock()
-    sandbox.thread_id = "test-thread"
+    sandbox.exec_id = "test-thread"
     sandbox.container_id = "container-123"
     sandbox.working_dir = "/workspace"
     provider.acquire = AsyncMock(return_value=sandbox)
@@ -40,7 +40,7 @@ class TestSandboxMiddleware:
 
         assert state.sandbox is not None
         assert state.sandbox.container_id == "container-123"
-        assert state.sandbox.thread_id == "test-thread"
+        assert state.sandbox.exec_id == "test-thread"
         assert state.sandbox.status == "ready"
         mock_provider.acquire.assert_called_once_with("test-thread")
 

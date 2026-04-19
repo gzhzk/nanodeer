@@ -114,13 +114,13 @@ class TestToolSchema:
         assert len(required) == 0
 
     def test_spawn_subagent_schema(self):
-        """spawn_subagent takes name, task, subagent_type, thread_id."""
+        """spawn_subagent takes name (optional), task (required)."""
         schema = get_schema(spawn_subagent)
         props = schema["properties"]
         assert "name" in props
         assert "task" in props
-        assert "subagent_type" in props
-        assert "thread_id" in props
+        # name has a default value
+        assert props["name"].get("default") == "worker"
 
     def test_read_file_required_fields(self):
         """read_file requires file_path."""
@@ -142,10 +142,8 @@ class TestToolSchema:
         assert "command" in required
 
     def test_spawn_subagent_optional_fields(self):
-        """spawn_subagent has optional subagent_type and thread_id."""
+        """spawn_subagent: task is required, name is optional (has default)."""
         schema = get_schema(spawn_subagent)
         required = schema.get("required", [])
-        assert "name" in required
         assert "task" in required
-        assert "subagent_type" not in required
-        assert "thread_id" not in required
+        assert "name" not in required  # has default
