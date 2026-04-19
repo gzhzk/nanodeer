@@ -50,19 +50,30 @@ class SandboxMiddleware(Middleware):
         if state.sandbox is None:
             state.sandbox = SandboxState()
         if state.sandbox.container_id:
-            return
+            return  # already acquired this turn
+
+        # Check module-level context (persists across turns for WAIT scenarios)
+        if state.thread_id:
+            existing = get_sandbox(state.thread_id)
+            if existing:
+                state.sandbox.exec_id = existing.exec_id
+                state.sandbox.container_id = existing.container_id
+                state.sandbox.working_dir = existing.working_dir
+                state.sandbox.status = "ready"
+                return
+
         if not state.thread_id:
             raise ValueError("SandboxMiddleware requires thread_id in state")
 
         sandbox = await self._provider.acquire(state.thread_id)
-        state.sandbox.thread_id = sandbox.thread_id
+        state.sandbox.exec_id = sandbox.exec_id
         state.sandbox.container_id = sandbox.container_id
         state.sandbox.working_dir = sandbox.working_dir
         state.sandbox.status = "ready"
         set_sandbox(state.thread_id, sandbox)
 
     async def after_llm(self, state: ThreadState, signals: TurnSignals) -> None:
-        """Release container on END — covers the path where tools_node is skipped."""
+        """Release container on END after LLM — covers LLM-ended sessions (no tools loop)."""
         if state.next_action == NextAction.END:
             await self._release_if_needed(state)
 
@@ -92,7 +103,10 @@ class SandboxMiddleware(Middleware):
             logger.warning(f"MEDIUM_RISK warning: {cmd[:80]!r}")
 
     async def after_tools_all(self, state: ThreadState, signals: TurnSignals) -> None:
-        await self._release_if_needed(state)
+        # Release only when session is done (END), not between turns.
+        # Sandbox must persist across PROCESS turns — react.py reuses it.
+        if state.next_action == NextAction.END:
+            await self._release_if_needed(state)
 
     def _classify(self, command: str) -> tuple[str, str]:
         """Classify command risk by pattern-matching the full command string.
@@ -112,11 +126,15 @@ class SandboxMiddleware(Middleware):
     async def _release_if_needed(self, state: ThreadState) -> None:
         if not state.sandbox or not state.sandbox.container_id:
             return
-        tid = state.sandbox.thread_id
+        # Idempotent: skip if already released (prevents double-release)
+        if state.sandbox.status == "released":
+            return
+        exec_id = state.sandbox.exec_id
         try:
             await self._provider.release(state.sandbox)
         except Exception:
             pass
         finally:
-            clear_sandbox(tid)
+            if exec_id:
+                clear_sandbox(exec_id)
             state.sandbox.status = "released"  # always update, even on error

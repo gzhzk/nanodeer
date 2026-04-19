@@ -89,11 +89,13 @@ class ReActExecutor:
             if state.next_action == NextAction.END:
                 break
 
-            # tools loop
+            # tools loop — no tool calls means LLM returned a final answer
             if not hasattr(resp, "tool_calls") or not resp.tool_calls:
-                continue
+                # LLM ended session without tool calls: release sandbox before returning
+                await self._chain.after_tools_all(state, signals)
+                break
 
-            thread_id = state.thread_id or "default"
+            exec_id = state.thread_id or "default"
             for tc in resp.tool_calls:
                 tool = self._tool_map.get(tc["name"])
 
@@ -101,7 +103,7 @@ class ReActExecutor:
                 if state.next_action == NextAction.END:
                     break
 
-                content = await tool.ainvoke(tc["args"], thread_id=thread_id) if tool else f"Tool {tc['name']} not found"
+                content = await tool.ainvoke(tc["args"], exec_id=exec_id) if tool else f"Tool {tc['name']} not found"
 
                 state.messages.append(
                     ToolMessage(
