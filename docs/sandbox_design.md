@@ -55,52 +55,66 @@ class SandboxProvider(ABC):
 
 ## 路径模型
 
-### 两类路径
+### 宿主机存储
 
-| 路径类别 | 来源 | 翻译规则 |
-|---------|------|---------|
-| `/mnt/user-data/...` | 宿主机挂载（持久化） | 原样返回（已是物理路径） |
-| `/workspace/...` | 容器根文件系统（临时） | 强制路由到 `/workspace/{thread_id}/` |
-
-### 宿主机与容器映射
+Agent 的所有文件存在宿主机的固定位置：
 
 ```
-宿主机                              容器内
-───────────────────────────────────────────────────────────────
-{base_path}/{thread_id}/user-data  →  /mnt/user-data/     (挂载点)
-                                         /workspace/{thread_id}/  (临时文件系统)
+~/.nanodeer/threads/{thread_id}/user-data/
+├── uploads/      ← 用户上传的文件
+├── workspace/    ← 工作文件
+└── outputs/     ← 生成的图表、报告等
 ```
 
-- **虚拟路径**：Agent 看到的路径（`/mnt/user-data/...`）
-- **物理路径**：容器内实际的路径
+### 容器内视图
 
-### 路径验证 (`validate_path`)
+容器能看到两个路径：
 
-阻止：
-1. 路径穿越（`..`）
-2. 非法前缀（非 `/mnt/user-data/` 或 `/workspace/`）
-3. 危险系统路径：`/etc/passwd`、`/etc/shadow`、`/etc/sudoers`、`/root/.ssh/`、`/dev/`
+| 容器内路径 | 含义 | 可写？ |
+|-----------|------|--------|
+| `/mnt/user-data/` | 宿主机 `user-data` 的映射，文件持久化 | ✅ 可写 |
+| `/workspace/{thread_id}/` | 容器工作目录，线程隔离 | ❌ 只读（根文件系统） |
+| `/tmp/` | tmpfs，64MB | ✅ 可写（唯一可写位置） |
 
-```python
-# 被阻止的攻击路径：
-"/workspace/../../../etc/passwd"  → normpath → "/etc/passwd" → blocked
-"/workspace/../../../dev/sda"     → blocked by /dev/ check
+### Agent 视角的路径
+
+Agent 不需要知道底层细节，只用两种"虚拟路径"：
+
+```
+/mnt/user-data/uploads/foo.txt   ← 上传的文件，需要持久化
+/workspace/report.md             ← 临时工作文件
 ```
 
-### 线程隔离 (`virtual2physical`)
+### 翻译规则
 
-所有非挂载点路径都强制隔离到当前 `thread_id`：
+当工具执行时，虚拟路径被翻译成容器内的实际路径：
 
-```python
-# 线程 A 尝试访问线程 B 的文件：
-virtual_path = "/workspace/thread_B/secret.txt"
-thread_id = "thread_A"
-→ os.path.relpath("/workspace/thread_B/secret.txt", "/workspace") = "thread_B/secret.txt"
-→ os.path.join("/workspace", "thread_A", "thread_B/secret.txt")
-→ "/workspace/thread_A/thread_B/secret.txt"  ← 隔离成功！
+| Agent 写的路径 | 翻译结果 | 说明 |
+|---------------|---------|------|
+| `/mnt/user-data/...` | `/mnt/user-data/...` | 挂载点，原样不变 |
+| `/workspace/foo.txt` | `/workspace/{thread_id}/foo.txt` | 自动加上线程 ID |
+
+### 线程隔离原理
+
+```
+线程 A 的容器内：          线程 B 的容器内：
+/workspace/abc/           /workspace/def/
+  ├── foo.txt              ├── foo.txt
+  └── bar.txt              └── bar.txt
+
+线程 A 看不到线程 B 的文件
+因为翻译时自动加了线程前缀
 ```
 
-`thread_id` 做净化处理，只允许 `[a-zA-Z0-9_-]`。
+### 安全校验
+
+所有路径都经过检查，拒绝：
+
+- `..` 路径穿越：`/workspace/../../../etc/passwd`
+- 危险路径：`/etc/passwd`、`/dev/sda`、`/root/.ssh/`
+- 非法前缀：只允许 `/mnt/user-data/` 和 `/workspace/`
+
+`thread_id` 本身也被净化，只允许字母数字下划线。`[a-zA-Z0-9_-]`
 
 ---
 
@@ -282,8 +296,11 @@ clean_env = {
 
 ```python
 safe_id = re.sub(r'[^a-zA-Z0-9_-]', '', thread_id)
-working_dir = self.base_dir / safe_id
+base = get_config().thread.storage_path
+working_dir = base / safe_id / "user-data"
 ```
+
+注：Local 模式下 `working_dir` 直接使用宿主机的 `{storage_path}/{thread_id}/user-data`，不需要翻译。
 
 ### 路径加固（Symbolic Link Attack 防御）
 
@@ -325,33 +342,33 @@ except asyncio.TimeoutError:
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│  宿主机                                                           │
-│  {base_path}/{thread_id}/user-data/                              │
-│      ├── uploads/                                                │
-│      ├── workspace/                                              │
-│      └── outputs/                                                │
+│  宿主机：~/.nanodeer/threads/abc123/user-data/                   │
+│      ├── uploads/foo.txt                                         │
+│      ├── workspace/report.md                                     │
+│      └── outputs/chart.png                                       │
 └────────────────────────────┬─────────────────────────────────────┘
-                             │ 卷挂载
+                             │ docker -v 挂载
 ┌────────────────────────────▼─────────────────────────────────────┐
 │  容器内                                                           │
-│  /mnt/user-data/  ←─────────────────────────────────────────    │
-│      (与宿主机同一份内容)                                          │
+│  /mnt/user-data/  ←─────────────── 同一份内容（持久化）            │
+│      ├── uploads/foo.txt                                         │
+│      ├── workspace/report.md                                     │
+│      └── outputs/chart.png                                       │
 │                                                                   │
-│  /workspace/{thread_id}/  (临时文件系统，运行时创建)               │
-│      ├── 临时文件                                                 │
-│      └── 构建产物                                                 │
+│  /workspace/abc123/  ←─────────── 线程隔离工作目录（只读根fs）     │
+│                                                                   │
+│  /tmp/  ←────────────────────── 唯一可写位置（tmpfs 64MB）         │
 └───────────────────────────────────────────────────────────────────┘
 
 工具调用示例：
+
   tool(file_path="/mnt/user-data/uploads/foo.txt")
       ↓
-  translate_and_validate("/mnt/user-data/uploads/foo.txt", "abc123")
+  validate_path() ✓ → virtual2physical()
       ↓
-  validate_path() → "/mnt/user-data/uploads/foo.txt" ✓
+  /mnt/user-data/uploads/foo.txt  （挂载点路径，原样翻译）
       ↓
-  virtual2physical() → "/mnt/user-data/uploads/foo.txt" (挂载点，原样)
-      ↓
-  provider.run(sandbox, "python3 -c \"...\" /mnt/user-data/uploads/foo.txt")
+  provider.run(sandbox, "python3 read_file.py /mnt/user-data/uploads/foo.txt")
       ↓
   result.stdout
 ```
@@ -368,7 +385,7 @@ except asyncio.TimeoutError:
 | CPU 限制 | ✅ `nano_cpus=500000000` | ❌ 无 |
 | 进程树清理 | ✅ `auto_remove` | ⚠️ `start_new_session` |
 | 环境变量隔离 | N/A | ✅ `clean_env` |
-| 路径隔离 | ✅ 容器级 | ⚠️ 工作目录级 |
+| 路径隔离 | ✅ 容器级 | ⚠️ 目录级（`thread_id` 隔离） |
 | 容器复用+清理 | ✅ | N/A |
 
 **生产环境必须使用 DockerSandboxProvider。**
