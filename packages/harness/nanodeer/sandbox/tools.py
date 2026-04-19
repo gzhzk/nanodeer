@@ -120,8 +120,8 @@ class SandboxToolWrapper:
     def name(self) -> str:
         return self._tool.name
 
-    async def ainvoke(self, args: dict, thread_id: str | None = None):
-        sandbox = get_sandbox(thread_id) if thread_id else None
+    async def ainvoke(self, args: dict, exec_id: str | None = None):
+        sandbox = get_sandbox(exec_id) if exec_id else None
 
         if sandbox is None or self._provider is None:
             result = self._tool.ainvoke(args)
@@ -131,7 +131,7 @@ class SandboxToolWrapper:
                 return f"Error: {getattr(result, 'stderr', '') or getattr(result, 'stdout', '')}"
             return str(result)
 
-        cmd = self.get_sandbox_command(args, thread_id)
+        cmd = self.get_sandbox_command(args, exec_id)
         if cmd is None:
             result = self._tool.ainvoke(args)
             if inspect.iscoroutine(result):
@@ -145,7 +145,7 @@ class SandboxToolWrapper:
             return f"Error: {result.stderr or result.stdout}"
         return result.stdout
 
-    def get_sandbox_command(self, args: dict, thread_id: str) -> SandboxCommand | None:
+    def get_sandbox_command(self, args: dict, exec_id: str) -> SandboxCommand | None:
         raise NotImplementedError
 
 
@@ -161,19 +161,19 @@ class SandboxExecTool(SandboxToolWrapper):
         self._translate_vars: list[str] = cfg.get("translate_vars", [])
         self._timeout: int = cfg.get("timeout", 30)
 
-    def get_sandbox_command(self, args: dict, thread_id: str) -> SandboxCommand | None:
+    def get_sandbox_command(self, args: dict, exec_id: str) -> SandboxCommand | None:
         from .path import translate_and_validate
 
         subs: dict[str, str] = {}
 
         # path_vars: translate and substitute directly into template
         for var in self._path_vars:
-            phys = translate_and_validate(args.get(var, ""), thread_id)
+            phys = translate_and_validate(args.get(var, ""), exec_id)
             subs[f"{{{var}}}"] = phys
 
         # translate_vars: replace virtual paths inside the string, then b64-encode
         for var in self._translate_vars:
-            translated = self._translate_paths_in_string(str(args.get(var, "")), thread_id)
+            translated = self._translate_paths_in_string(str(args.get(var, "")), exec_id)
             subs[f"{{b64_{var}}}"] = base64.b64encode(translated.encode()).decode()
 
         # b64_vars: b64-encode directly
@@ -194,11 +194,11 @@ class SandboxExecTool(SandboxToolWrapper):
 
         return SandboxCommand(cmd=cmd, timeout=self._timeout)
 
-    def _translate_paths_in_string(self, s: str, thread_id: str) -> str:
+    def _translate_paths_in_string(self, s: str, exec_id: str) -> str:
         """Replace virtual paths in a command string before b64 encoding.
 
         Regex-scans for /mnt/user-data/..., validates each match, then
-        translates it to the physical path using the real thread_id.
+        translates it to the physical path using the real exec_id.
         """
         from .path import validate_path, virtual2physical
         import re
@@ -206,7 +206,7 @@ class SandboxExecTool(SandboxToolWrapper):
         def replacer(match):
             vpath = match.group(0)
             validated = validate_path(vpath)
-            return virtual2physical(validated, thread_id) if validated else vpath
+            return virtual2physical(validated, exec_id) if validated else vpath
 
         # Match /mnt/user-data/ followed by non-quote chars (handles spaces in paths)
         return re.sub(r"/mnt/user-data/[^'\"]+", replacer, s)
