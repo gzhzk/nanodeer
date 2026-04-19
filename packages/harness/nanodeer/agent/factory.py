@@ -45,6 +45,16 @@ class NanoDeerFactory:
         except Exception:
             return LocalSandboxProvider()
 
+    def _wrap_tools(self, tools, sandbox):
+        """Wrap sandbox-aware tools with SandboxExecTool. Others pass through."""
+        if not sandbox:
+            return tools
+        from ..sandbox.tools import wrap_tool_for_sandbox
+        return [
+            wrap_tool_for_sandbox(t, sandbox) or t
+            for t in tools
+        ]
+
     def _chain(self, *specs, extras=None):
         """Build chain from specs: (cls, feature_flag, kwargs)."""
         result = []
@@ -116,14 +126,22 @@ class NanoDeerFactory:
             ),
         )
 
-        if subagent_runner and hasattr(subagent_runner, "set_llm"):
-            subagent_runner.set_llm(llm)
-            from ..subagent import set_runner
-            set_runner(subagent_runner)
+        wrapped_tools = self._wrap_tools(tools, sandbox)
+
+        # Create SubagentExecutor if enabled
+        if subagent_runner is not False:  # None means create default, False means disable
+            from ..subagent import SubagentExecutor, set_executor
+            if subagent_runner is None:
+                subagent_runner = SubagentExecutor(
+                    llm=llm,
+                    tools=wrapped_tools,
+                    sandbox_provider=sandbox,
+                )
+            set_executor(subagent_runner)
 
         executor = ReActExecutor(
             llm=llm,
-            tools=tools,
+            tools=wrapped_tools,
             chain=chain,
             prompt_config=PromptConfig(
                 memory=self.features.prompt_memory,
@@ -149,7 +167,7 @@ def create_nanodeer_agent(
     extra_middlewares: dict[str, list] | None = None,
 ):
     """Create ReActExecutor (was: CompiledStateGraph)."""
-    from .tools import default_tools
+    from ..tools import default_tools
 
     feat = features or RuntimeFeatures()
     effective_tools = tools or default_tools()
