@@ -6,7 +6,7 @@ from ..agent.memory.storage import MemoryStore
 
 
 @tool
-def save_memory(content: str, target: str = "memory") -> str:
+def save_memory(content: str, target: str = "memory", mode: str = "append") -> str:
     """Save important information to long-term memory.
 
     Args:
@@ -14,6 +14,8 @@ def save_memory(content: str, target: str = "memory") -> str:
         target: "user" for USER.md (preferences/context),
                 "memory" for MEMORY.md (facts/knowledge).
                 Defaults to "memory".
+        mode: "append" (default) adds to existing content below.
+              "replace" overwrites entirely — use when rewriting sections.
 
     Returns:
         Success message.
@@ -25,6 +27,6 @@ def save_memory(content: str, target: str = "memory") -> str:
         preview = content[:200] + "..." if len(content) > 200 else content
         return f"User memory saved: {preview}"
     else:
-        store.save_memory(content)
+        store.save_memory(content, mode=mode)
         preview = content[:200] + "..." if len(content) > 200 else content
-        return f"Memory saved: {preview}"
+        return f"Memory {'replaced' if mode == 'replace' else 'saved'}: {preview}"

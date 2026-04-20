@@ -46,7 +46,7 @@ _TOOL_DESCRIPTIONS = {
     "read_image": "Describe an image. Args: image_path (str), description_request (str, optional)",
     "exec_python": "Execute Python code. Args: code (str), timeout (int, optional)",
     "invoke_skill": "Load a skill workflow. Args: skill_name (str)",
-    "save_memory": "Save to long-term memory. Args: content (str), target (str: 'user'|'memory')",
+    "save_memory": "Save to long-term memory. Args: content (str), target (str: 'user'|'memory'), mode (str: 'append'|'replace')",
     "write_todo": "Create or update a task. Args: content (str, optional), id (str, optional), status (str, optional), priority (int, optional)",
     "list_todos": "List all tasks. No args.",
     "spawn_subagent": "Spawn a subagent and get results. Args: name (str), task (str), subagent_type (str, optional), thread_id (str, optional)",
@@ -80,6 +80,8 @@ _MEMORY_MAINTENANCE = """When you discover genuinely lasting information, use sa
 - User's working style and preferences
 - Important technical decisions and conventions
 - Long-term project context
+Use mode="append" to add new information to existing memory.
+Use mode="replace" to rewrite a section entirely (pass the complete updated content).
 Only save things that are truly durable — not ephemeral task details."""
 
 _RESPONSE_STYLE = """- Clear and concise

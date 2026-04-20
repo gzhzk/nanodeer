@@ -73,13 +73,24 @@ class MemoryStore:
         except Exception:
             return ""
 
-    def save_memory(self, content: str) -> None:
-        """Save MEMORY.md - long-term facts and knowledge."""
+    def save_memory(self, content: str, mode: str = "append") -> None:
+        """Save to MEMORY.md - LLM chooses append or replace.
+
+        Args:
+            content: The content to save.
+            mode: "append" (default) adds to existing content.
+                  "replace" overwrites entirely with new content.
+        """
+        if mode == "replace":
+            merged = content.strip()
+        else:
+            existing = self.load_memory()
+            merged = (existing + "\n\n" + content).strip()
         entry = MemoryEntry(
             name="long-term-memory",
             description="Long-term facts and knowledge",
             memory_type="user",
-            content=content,
+            content=merged,
         )
         memory_file = self.root / MEMORY_FILE
         memory_file.write_text(entry.to_frontmatter(), encoding="utf-8")
