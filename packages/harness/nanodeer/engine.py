@@ -144,7 +144,8 @@ class NanoEngine:
         final_message = ""
         for msg in reversed(state.messages):
             if hasattr(msg, "content") and msg.content:
-                final_message = msg.content
+                content = msg.content
+                final_message = content if isinstance(content, str) else str(content or "")
                 break
 
         # Collect tool calls

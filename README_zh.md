@@ -140,36 +140,36 @@ NanoEngine.run(prompt)                         [第5层 — 应用入口]
 ThreadState(thread_id, HumanMessage(prompt))
   ↓
 ReActExecutor.run(state)                       [第4层]
-  ┌──────────────────────────────────────────────────────────────┐
+  ┌───────────────────────────────────────────────────────────────┐
   │  while True:                                                  │
-  │    before_llm():   ← 4 钩子，按序执行                         │
-  │      1. ThreadDataMiddleware → 创建 {thread_id}/user-data/   │
-  │      2. FileMiddleware     → 写上传文件到 user-data/         │
+  │    before_llm():   ← 4 钩子，按序执行                          │
+  │      1. ThreadDataMiddleware → 创建 {thread_id}/user-data/    │
+  │      2. FileMiddleware     → 写上传文件到 user-data/           │
   │      3. MemoryMiddleware   → 加载 USER/MEMORY → signals       │
-  │      4. TodoMiddleware    → 加载 default.json → state.todos  │
-  │      5. SandboxMiddleware → 从模块级上下文获取 sandbox          │
+  │      4. TodoMiddleware    → 加载 default.json → state.todos   │
+  │      5. SandboxMiddleware → 从模块级上下文获取 sandbox         │
   │                             无则 acquire(Docker容器)          │
   │    LLM.ainvoke(prompt + messages)                            │
   │    after_llm():                                              │
-  │      ClarificationMiddleware → WAIT? 直接返回给调用方         │
-  │      TitleMiddleware                                       │
-  │      [END? → release sandbox → break]                       │
-  │    [无 tool_calls? → after_tools_all → END → break]         │
-  │    for tc in resp.tool_calls:  ← 工具循环                    │
+  │      ClarificationMiddleware → WAIT? 直接返回给调用方          │
+  │      TitleMiddleware                                          │
+  │      [END? → release sandbox → break]                         │
+  │    [无 tool_calls? → after_tools_all → END → break]           │
+  │    for tc in resp.tool_calls:  ← 工具循环                      │
   │      before_tools():                                          │
   │        DetectionMiddleware                                    │
   │        HandlingMiddleware                                     │
   │        SandboxMiddleware → bash 命令安全审计                   │
-  │      tool.ainvoke(args, exec_id)                            │
-  │        → SandboxExecTool.ainvoke()                           │
-  │          → get_sandbox(exec_id) 从模块上下文查询              │
+  │      tool.ainvoke(args, exec_id)                              │
+  │        → SandboxExecTool.ainvoke()                            │
+  │          → get_sandbox(exec_id) 从模块上下文查询                │
   │          → DockerSandboxProvider.run(container, cmd)          │
-  │            → 虚拟路径翻译                                     │
-  │            → b64 编码 → 容器内执行 → 返回 stdout              │
-  │    after_tools_all():                                        │
-  │      [END? → release sandbox + 幂等保护]                    │
-  │    [PROCESS? → 下一轮]  [END? → break]                      │
-  └──────────────────────────────────────────────────────────────┘
+  │            → 虚拟路径翻译                                      │
+  │            → b64 编码 → 容器内执行 → 返回 stdout                │
+  │    after_tools_all():                                         │
+  │      [END? → release sandbox + 幂等保护]                       │
+  │    [PROCESS? → 下一轮]  [END? → break]                         │
+  └───────────────────────────────────────────────────────────────┘
   ↓
 RunResult(message, tool_calls, artifacts, duration_ms)
 ```

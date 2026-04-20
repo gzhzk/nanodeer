@@ -141,7 +141,7 @@ class NanoDeerFactory:
 
         executor = ReActExecutor(
             llm=llm,
-            tools=wrapped_tools,
+            tools=tools,  # original tools for llm.bind_tools()
             chain=chain,
             prompt_config=PromptConfig(
                 memory=self.features.prompt_memory,
@@ -150,6 +150,9 @@ class NanoDeerFactory:
                 subagent=self.features.prompt_subagent,
             ),
         )
+        # Replace with wrapped tools for actual execution (sandbox routing)
+        executor._tools = wrapped_tools
+        executor._tool_map = {t.name: t for t in wrapped_tools}
 
         if compression_mw:
             compression_mw.set_llm(llm)

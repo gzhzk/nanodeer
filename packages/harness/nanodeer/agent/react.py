@@ -28,7 +28,10 @@ Loop:
       → END?   break
 """
 
-from .messages import SystemMessage, ToolMessage
+from langchain_core.messages import HumanMessage as LCHumanMessage, AIMessage as LAIMessage
+from langchain_core.messages import SystemMessage as LCSystemMessage
+
+from .messages import ToolMessage, HumanMessage, AIMessage, BaseMessage, ToolCall
 from .state import NextAction, ThreadState, TurnSignals
 from .prompt import build_lead_agent_prompt, PromptConfig
 from .middlewares.base import MiddlewareChain
@@ -77,10 +80,26 @@ class ReActExecutor:
             # LLM call
             tools_names = [t.name for t in self._tools]
             prompt = build_lead_agent_prompt(state, tools_names, signals, self._prompt_config)
-            resp = await self.llm.ainvoke(
-                [SystemMessage(content=prompt)] + list(state.messages)
-            )
-            state.messages.append(resp)
+            # Convert custom messages to LangChain types for LLM compatibility
+            lc_messages = [LCSystemMessage(content=prompt)]
+            for msg in state.messages:
+                if isinstance(msg, HumanMessage):
+                    lc_messages.append(LCHumanMessage(content=msg.content))
+                elif isinstance(msg, AIMessage):
+                    lc_messages.append(LAIMessage(content=msg.content))
+                elif isinstance(msg, ToolMessage):
+                    lc_messages.append(LCHumanMessage(content=f"[tool: {msg.name}] {msg.content}"))
+            resp = await self.llm.ainvoke(lc_messages)
+            # Convert LangChain response to our custom type for state compatibility
+            raw_tcs = getattr(resp, "tool_calls", None) or []
+            our_tcs = [
+                ToolCall(name=tc.get("name", ""), args=tc.get("args", {}), id=tc.get("id"))
+                for tc in raw_tcs
+            ]
+            state.messages.append(AIMessage(
+                content=resp.content if isinstance(resp.content, str) else str(resp.content or ""),
+                tool_calls=our_tcs or None,
+            ))
 
             # after_llm chain
             await self._chain.after_llm(state, signals)

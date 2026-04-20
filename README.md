@@ -149,36 +149,36 @@ NanoEngine.run(prompt)                         [Layer 5 — App entry]
 ThreadState(thread_id, HumanMessage(prompt))
   ↓
 ReActExecutor.run(state)                       [Layer 4]
-  ┌──────────────────────────────────────────────────────────────┐
-  │  while True:                                                  │
-  │    before_llm():   ← 4 hooks, executed in order              │
-  │      1. ThreadDataMiddleware → mkdir {thread_id}/user-data/  │
-  │      2. FileMiddleware     → write uploads to user-data/      │
+  ┌────────────────────────────────────────────────────────────────┐
+  │  while True:                                                   │
+  │    before_llm():   ← 4 hooks, executed in order                │
+  │      1. ThreadDataMiddleware → mkdir {thread_id}/user-data/    │
+  │      2. FileMiddleware     → write uploads to user-data/       │
   │      3. MemoryMiddleware   → load USER/MEMORY → signals        │
   │      4. TodoMiddleware     → load default.json → state.todos   │
-  │      5. SandboxMiddleware → check _sandbox_context            │
-  │                             acquire Docker container if absent│
-  │    LLM.ainvoke(prompt + messages)                            │
-  │    after_llm():                                              │
-  │      ClarificationMiddleware → WAIT? return to caller         │
-  │      TitleMiddleware                                       │
-  │      [END? → release sandbox → break]                       │
-  │    [no tool_calls? → after_tools_all → END → break]          │
-  │    for tc in resp.tool_calls:  ← tool loop                  │
-  │      before_tools():                                          │
-  │        DetectionMiddleware                                    │
-  │        HandlingMiddleware                                     │
-  │        SandboxMiddleware → bash command security audit        │
-  │      tool.ainvoke(args, exec_id)                            │
-  │        → SandboxExecTool.ainvoke()                           │
-  │          → get_sandbox(exec_id) from module context          │
-  │          → DockerSandboxProvider.run(container, cmd)          │
-  │            → virtual path translation                        │
-  │            → b64 encode → exec inside container → stdout     │
-  │    after_tools_all():                                        │
-  │      [END? → release sandbox + idempotent guard]             │
-  │    [PROCESS? → next turn]  [END? → break]                   │
-  └──────────────────────────────────────────────────────────────┘
+  │      5. SandboxMiddleware → check _sandbox_context             │
+  │                             acquire Docker container if absent │
+  │    LLM.ainvoke(prompt + messages)                              │
+  │    after_llm():                                                │
+  │      ClarificationMiddleware → WAIT? return to caller          │
+  │      TitleMiddleware                                           │
+  │      [END? → release sandbox → break]                          │
+  │    [no tool_calls? → after_tools_all → END → break]            │
+  │    for tc in resp.tool_calls:  ← tool loop                     │
+  │      before_tools():                                           │
+  │        DetectionMiddleware                                     │
+  │        HandlingMiddleware                                      │
+  │        SandboxMiddleware → bash command security audit         │
+  │      tool.ainvoke(args, exec_id)                               │
+  │        → SandboxExecTool.ainvoke()                             │
+  │          → get_sandbox(exec_id) from module context            │
+  │          → DockerSandboxProvider.run(container, cmd)           │
+  │            → virtual path translation                          │
+  │            → b64 encode → exec inside container → stdout       │
+  │    after_tools_all():                                          │
+  │      [END? → release sandbox + idempotent guard]               │
+  │    [PROCESS? → next turn]  [END? → break]                      │
+  └────────────────────────────────────────────────────────────────┘
   ↓
 RunResult(message, tool_calls, artifacts, duration_ms)
 ```

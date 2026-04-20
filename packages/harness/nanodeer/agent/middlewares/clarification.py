@@ -28,7 +28,8 @@ class ClarificationMiddleware(Middleware):
             return
 
         # Check for <clarification>...</clarification> tag in content
-        match = _CLARIFICATION_TAG.search(last.content or "")
+        content = last.content if isinstance(last.content, str) else str(last.content or "")
+        match = _CLARIFICATION_TAG.search(content)
         if match:
             # Store the question in signals for app layer to display
             signals.clarification_question = match.group(1).strip()

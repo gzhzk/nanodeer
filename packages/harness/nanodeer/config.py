@@ -15,7 +15,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Load .env file for development
-load_dotenv()
+# Search upward from this file's location for .env
+from pathlib import Path as _P
+_env = _P(__file__).resolve().parents[3] / ".env"
+load_dotenv(_env)
 
 
 def _resolve_env_vars(value: Any) -> Any:
