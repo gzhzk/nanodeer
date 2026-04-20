@@ -79,7 +79,7 @@ ollama:
 
 sandbox:
   use: nanodeer.sandbox.docker:DockerSandboxProvider
-  image: enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:latest
+  image: nanodeer/sandbox:latest
   container_prefix: nanodeer-sandbox
 
 # ============================================================================
