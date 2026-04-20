@@ -117,6 +117,7 @@ class NanoDeerFactory:
             before_tools=self._chain(
                 (DetectionMiddleware, None, {}),
                 (HandlingMiddleware, None, {}),
+                (MemoryMiddleware, None, {"memory_store": memory_store}),  # must run before Sandbox to intercept save_memory
                 (SandboxMiddleware, "sandbox", sp_kw),
                 extras=extra.get("before_tools"),
             ),
