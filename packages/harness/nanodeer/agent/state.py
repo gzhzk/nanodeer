@@ -25,6 +25,8 @@ class TurnSignals:
     clarification_question: str | None = None
     memory_context: str | None = None
     error: dict | None = None       # {"type": "...", "detail": "..."} set by Detection, handled by Handling
+    skip_tool: bool = False          # If True, tools loop skips sandbox exec and uses skip_tool_result
+    skip_tool_result: str | None = None  # Pre-computed result when skip_tool is True
 
 
 def _merge_by_id(existing, new, id_key="id"):

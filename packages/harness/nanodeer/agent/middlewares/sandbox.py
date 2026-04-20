@@ -83,6 +83,9 @@ class SandboxMiddleware(Middleware):
     async def before_tools(
         self, state: ThreadState, signals: TurnSignals, tool_name: str, tool_args: dict
     ) -> None:
+        # Memory tools are handled directly on the host by MemoryMiddleware — skip sandbox routing.
+        if getattr(signals, "skip_tool", False):
+            return
         if tool_name != "bash":
             return
         cmd = tool_args.get("command", "")

@@ -122,7 +122,12 @@ class ReActExecutor:
                 if state.next_action == NextAction.END:
                     break
 
-                content = await tool.ainvoke(tc["args"], exec_id=exec_id) if tool else f"Tool {tc['name']} not found"
+                if signals.skip_tool:
+                    content = signals.skip_tool_result or "Done"
+                    signals.skip_tool = False
+                    signals.skip_tool_result = None
+                else:
+                    content = await tool.ainvoke(tc["args"], exec_id=exec_id) if tool else f"Tool {tc['name']} not found"
 
                 state.messages.append(
                     ToolMessage(
