@@ -172,7 +172,10 @@ class HarnessConfig(BaseSettings):
             if key not in standard_sections and isinstance(value, dict):
                 config_dict[key] = value
 
-        return cls(**config_dict)
+        inst = cls(**config_dict)
+        # Expand ~ in thread storage path (Path field default_factory doesn't auto-expand)
+        inst.thread.storage_path = inst.thread.storage_path.expanduser()
+        return inst
 
     def get_provider_config(self, name: str) -> ProviderConfig | None:
         """Get provider config by name."""
