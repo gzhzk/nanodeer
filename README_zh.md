@@ -52,7 +52,7 @@
 | 用户 | 技术水平 | 使用方式 |
 |------|----------|----------|
 | 开发者本人 | 高 | CLI 命令，直接交互 |
-| 小团队（3-5人） | 中 | 飞书/企微机器人，消息驱动 |
+| 小团队（3-5人） | 中 | 飞书/企业微信机器人，消息驱动 |
 
 ### 解决的问题
 
@@ -142,7 +142,7 @@ ThreadState(thread_id, HumanMessage(prompt))
 ReActExecutor.run(state)                       [第4层]
   ┌───────────────────────────────────────────────────────────────┐
   │  while True:                                                  │
-  │    before_llm():   ← 4 钩子，按序执行                          │
+  │    before_llm():   ← 5 钩子，按序执行                          │
   │      1. ThreadDataMiddleware → 创建 {thread_id}/user-data/    │
   │      2. FileMiddleware     → 写上传文件到 user-data/           │
   │      3. MemoryMiddleware   → 加载 USER/MEMORY → signals       │
@@ -159,7 +159,8 @@ ReActExecutor.run(state)                       [第4层]
   │      before_tools():                                          │
   │        DetectionMiddleware                                    │
   │        HandlingMiddleware                                     │
-  │        SandboxMiddleware → bash 命令安全审计                   │
+  │        MemoryMiddleware → save_memory 拦截，写宿主机 + skip_tool │
+  │        SandboxMiddleware → bash 命令安全审计（skip 时跳过）     │
   │      tool.ainvoke(args, exec_id)                              │
   │        → SandboxExecTool.ainvoke()                            │
   │          → get_sandbox(exec_id) 从模块上下文查询                │
@@ -179,6 +180,10 @@ RunResult(message, tool_calls, artifacts, duration_ms)
 - `after_tools_all` 仅在 `END` 时释放；`PROCESS` 时保持容器存活供下一轮复用
 - `SandboxExecTool` 封装 9 个工具（bash/git/read_file 等）路由至 Docker 容器；虚拟路径 `/mnt/user-data/...` 自动翻译为宿主机物理路径
 - `wrap_tool_for_sandbox` 在工厂组装时封装工具；运行时自动路由
+- `save_memory`/`save_user_memory` 通过 `skip_tool` 信号绕过沙箱，直接在宿主机写入 MemoryStore
+- `save_memory` 支持 `mode="append"`（追加）或 `mode="replace"`（覆盖），由 LLM 自主决定
+- `save_memory`/`save_user_memory` 通过 `skip_tool` 信号绕过沙箱，直接在宿主机写入 MemoryStore
+- `save_memory` 支持 `mode="append"`（追加）或 `mode="replace"`（覆盖），由 LLM 自主决定
 
 ### 项目结构
 
@@ -344,6 +349,8 @@ class TurnSignals:
     clarification_question : str | None   # <clarification>...</clarification>
     memory_context       : str | None   # MemoryMiddleware 写入
     error                : dict | None  # {"type": "...", "detail": "..."}
+    skip_tool            : bool = False  # 跳过 tool.ainvoke()，用 skip_tool_result
+    skip_tool_result     : str | None    # skip_tool=True 时作为工具结果返回
 ```
 
 ### Layer 2: 沙箱隔离层
@@ -360,18 +367,18 @@ class TurnSignals:
 
 sandbox-aware 工具：`read_file` `write_file` `ls` `glob` `grep` `bash` `git` `exec_python`
 
-Host 直连工具（无沙箱路由）：`fetch_url` `web_search` `read_image`
+Host 直连工具（无沙箱路由）：`web_search` `read_image` `save_memory` `save_user_memory` `write_todo` `list_todos` `spawn_subagent`
 
 ### Layer 3: 工具层
 
 **Tools** — 纯执行单元，LangChain `@tool` 装饰，无沙箱感知。Skills（`invoke_skill`）是工具的数据扩展。sandbox-aware 工具通过 `wrap_tool_for_sandbox` 路由到 Layer 2；host 工具直连。
 
-**MiddlewareChain** — 4 个钩子，9 个拦截器：
+**MiddlewareChain** — 4 个钩子，9 个链中拦截器 + 1 个 App 层：
 
 ```
-before_llm:       ThreadData → File → Memory → Todo
+before_llm:       ThreadData → File → Memory → Todo → Sandbox
 after_llm:        Clarification → Title
-before_tools:     Detection → Handling → Sandbox
+before_tools:     Detection → Handling → MemoryMiddleware → Sandbox
 after_tools_all:  Sandbox
 ```
 
@@ -388,6 +395,7 @@ after_tools_all:  Sandbox
 | **Safety** | DetectionMiddleware | before_llm | 沙箱已释放检查 |
 | | HandlingMiddleware | before_tools/after_llm | 错误处理框架（placeholder） |
 | | SandboxMiddleware | multi-hook | 容器获取/释放 + bash 审计 |
+| **Intercept** | MemoryMiddleware | before_llm + before_tools | before_llm: 加载记忆上下文；before_tools: 拦截 save_memory，写宿主机 |
 | **App 层** | CompressionMiddleware | NanoEngine 调用 | Token 阈值压缩 |
 
 **wrap_tool_for_sandbox** — 把 sandbox-aware 工具路由到 Layer 2 容器内执行。配置驱动（`SANDBOX_TOOL_CONFIGS`），单一 `SandboxExecTool` 类。
@@ -518,7 +526,7 @@ Harness 内部无 Agent 业务逻辑，memory/plan/subagent 由 App 注入。
 
 | 工具 | 描述 |
 |------|------|
-| `save_memory` | 保存内容到 USER.md 或 MEMORY.md（target 参数） |
+| `save_memory` | 保存内容到 USER.md 或 MEMORY.md（target 参数）；`mode="append"` 追加，`mode="replace"` 覆盖 |
 
 **待办事项**
 

@@ -54,7 +54,7 @@ Built-in capabilities: file/git/bash tools with sandbox routing, async parallel 
 | User | Technical Level | Usage |
 |------|-----------------|-------|
 | Individual developers | High | CLI commands, direct interaction |
-| Small teams (3-5 people) | Medium | Feishu/WeChat Work bot, message-driven |
+| Small teams (3-5 people) | Medium | Feishu/WeCom Work bot, message-driven |
 
 ### What does it solve
 
@@ -168,7 +168,8 @@ ReActExecutor.run(state)                       [Layer 4]
   │      before_tools():                                           │
   │        DetectionMiddleware                                     │
   │        HandlingMiddleware                                      │
-  │        SandboxMiddleware → bash command security audit         │
+  │        MemoryMiddleware → save_memory intercept, host write    │
+  │        SandboxMiddleware → bash security audit (skips if skip) │
   │      tool.ainvoke(args, exec_id)                               │
   │        → SandboxExecTool.ainvoke()                             │
   │          → get_sandbox(exec_id) from module context            │
@@ -188,6 +189,8 @@ RunResult(message, tool_calls, artifacts, duration_ms)
 - `after_tools_all` releases sandbox only on `END`; `PROCESS` keeps container alive for next turn
 - `SandboxExecTool` wraps 9 tools (bash/git/read_file etc.) for Docker routing; virtual paths `/mnt/user-data/...` translate to host physical paths
 - `wrap_tool_for_sandbox` in the factory wraps tools at assembly time; routing is automatic at runtime
+- `save_memory`/`save_user_memory` bypass sandbox via `skip_tool` signal; written directly on host via MemoryMiddleware
+- `save_memory` supports `mode="append"` (default) or `mode="replace"`; LLM decides based on context
 
 ### Project Structure
 
@@ -347,6 +350,8 @@ class TurnSignals:
     clarification_question : str | None   # <clarification>...</clarification>
     memory_context       : str | None   # MemoryMiddleware writes
     error                : dict | None  # {"type": "...", "detail": "..."}
+    skip_tool            : bool = False  # skip tool.ainvoke(), use skip_tool_result
+    skip_tool_result     : str | None    # result returned when skip_tool=True
 ```
 
 ### Layer 2: Sandbox
@@ -363,7 +368,7 @@ class TurnSignals:
 
 sandbox-aware tools: `read_file` `write_file` `ls` `glob` `grep` `bash` `git` `exec_python`
 
-Host tools (no sandbox routing): `fetch_url` `web_search` `read_image`
+Host tools (no sandbox routing): `web_search` `read_image` `save_memory` `save_user_memory` `write_todo` `list_todos` `spawn_subagent`
 
 ### Layer 3: Tools
 
@@ -374,7 +379,7 @@ Host tools (no sandbox routing): `fetch_url` `web_search` `read_image`
 ```
 before_llm:       ThreadData → File → Memory → Todo
 after_llm:        Clarification → Title
-before_tools:     Detection → Handling → Sandbox
+before_tools:     Detection → Handling → MemoryMiddleware → Sandbox
 after_tools_all:  Sandbox
 ```
 
@@ -391,6 +396,7 @@ after_tools_all:  Sandbox
 | **Safety** | DetectionMiddleware | before_llm | Sandbox released check |
 | | HandlingMiddleware | before_tools/after_llm | Error handling framework (placeholder) |
 | | SandboxMiddleware | multi-hook | Container acquire/release + bash audit |
+| **Intercept** | MemoryMiddleware | before_llm + before_tools | before_llm: load memory context; before_tools: intercept save_memory, write on host |
 | **App-layer** | CompressionMiddleware | called by NanoEngine | Token threshold compression |
 
 **wrap_tool_for_sandbox** — routes sandbox-aware tools to Layer 2 containers. Config-driven (`SANDBOX_TOOL_CONFIGS`), single `SandboxExecTool` class.
@@ -522,7 +528,7 @@ memory/plan/subagent are injected by App, not imported by Harness.
 
 | Tool | Description |
 |------|-------------|
-| `save_memory` | Save to USER.md or MEMORY.md (target parameter) |
+| `save_memory` | Save to USER.md or MEMORY.md (target); `mode="append"` or `mode="replace"` |
 
 **Plan**
 

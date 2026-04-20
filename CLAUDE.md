@@ -45,7 +45,8 @@ while True:
         before_tools():
             DetectionMiddleware
             HandlingMiddleware
-            SandboxMiddleware              → bash security audit
+            MemoryMiddleware              → intercept save_memory, write host + skip_tool
+            SandboxMiddleware             → bash security audit (skips if skip_tool=True)
         tool.ainvoke(args, exec_id)
             → SandboxExecTool              → DockerSandboxProvider.run(container, cmd)
     after_tools_all():
@@ -64,10 +65,15 @@ while True:
 - `_release_if_needed()` is idempotent: skips if `status == "released"`
 
 ### Tool Sandboxing
-- 8 tools are sandbox-aware: `bash`, `git`, `read_file`, `write_file`, `ls`, `glob`, `grep`, `exec_python`
+- 9 tools are sandbox-aware: `bash`, `git`, `read_file`, `write_file`, `ls`, `glob`, `grep`, `exec_python`, `web_search`
 - `SandboxExecTool` wraps them at factory assembly time via `_wrap_tools()`
 - Virtual path `/mnt/user-data/...` maps to host `{base_path}/{exec_id}/user-data/...`
 - Paths validated by `sandbox/path.py:validate_path()` before translation
+
+### Host-Only Tools (skip sandbox)
+- `save_memory`, `save_user_memory`: MemoryMiddleware intercepts in before_tools, writes directly to host MemoryStore, sets `signals.skip_tool=True`
+- `write_todo`, `list_todos`: Not in SANDBOX_TOOL_CONFIGS, run directly on host
+- `spawn_subagent`, `invoke_skill`, `read_image`: Not sandboxed, run on host
 
 ### Todo Persistence
 - TodoStore uses slug `"default"` (not thread_id) — single-user, cross-session
@@ -105,7 +111,7 @@ while True:
 | `middlewares/base.py` | — | `Middleware` ABC + `MiddlewareChain` |
 | `middlewares/thread_data.py` | before_llm | Create `{thread_id}/user-data/` dirs |
 | `middlewares/file.py` | before_llm | Write uploads to user-data/ |
-| `middlewares/memory.py` | before_llm | Load memory → signals |
+| `middlewares/memory.py` | before_llm + before_tools | Load memory → signals; intercept save_memory → host write |
 | `middlewares/todo.py` | before_llm | Load todos → state |
 | `middlewares/sandbox.py` | before_llm/before_tools/after_llm/after_tools_all | Sandbox lifecycle + bash audit |
 | `middlewares/clarification.py` | after_llm | Set WAIT on clarification needed |
@@ -170,6 +176,8 @@ Subagent: `spawn_subagent`, `get_subagent_results`
 
 7. **Clarification = WAIT**: `ClarificationMiddleware` sets `WAIT` and returns `signals.clarification_question`. Caller (App layer) handles prompting user.
 
+8. **skip_tool mechanism**: `MemoryMiddleware.before_tools()` intercepts `save_memory`, writes to host MemoryStore, sets `signals.skip_tool=True`. `react.py` tool loop reads skip flag and uses `signals.skip_tool_result` instead of calling `tool.ainvoke()`.
+
 ---
 
 ## Common Patterns
@@ -188,6 +196,14 @@ Subagent: `spawn_subagent`, `get_subagent_results`
 ```
 LLM → ClarificationMiddleware sets WAIT → executor.run() returns state
 App layer reads signals.clarification_question → prompts user → calls run() again
+```
+
+### save_memory append/replace mode
+```
+LLM has full memory_context → decides to append or replace
+→ save_memory(content, mode="append"|"replace")
+→ MemoryMiddleware.before_tools() intercepts, writes to host MemoryStore
+→ signals.skip_tool = True → tool.ainvoke() skipped
 ```
 
 ### Sandbox fire-and-forget subagent
