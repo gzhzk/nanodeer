@@ -96,7 +96,7 @@ subagents:
 
 thread:
   storage_path: ~/.nanodeer/threads
-  checkpointer_type: memory
+  checkpointer_type: file
 
 # ============================================================================
 # Security Configuration

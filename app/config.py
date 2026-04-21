@@ -21,7 +21,7 @@ class AppConfig(BaseSettings):
     LLM provider, model, sandbox, and memory config live in harness/config.py.
     """
 
-    host: str = "0.0.0.0"
+    host: str = "127.0.0.1"
     port: int = 20264
     # Upload storage: ~/.nanodeer/app/uploads/{upload_id}/{filename}
     upload_dir: Path = Field(default=Path.home() / ".nanodeer" / "app" / "uploads")

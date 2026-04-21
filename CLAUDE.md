@@ -90,6 +90,13 @@ while True:
 - `MemoryStore` is file-based: `USER.md`, `MEMORY.md`, `episodic/` (per thread)
 - Loaded into `signals.memory_context` by `MemoryMiddleware` before each LLM call
 
+### Checkpoint (injected dependency, not a separate layer)
+- `FileCheckpointer` saves `ThreadState` to `{storage_path}/{thread_id}/checkpoint.json`
+- Same class as `memory_store` / `subagent_runner` — injected into ReActExecutor
+- Loaded at `run()` start if `thread_id` has checkpoint and messages are empty
+- Saved after each `after_tools_all()`, before next turn or END
+- Config: `thread.checkpointer_type` = "file" (default) or "memory" (future)
+
 ---
 
 ## Module Map
@@ -155,6 +162,7 @@ Subagent: `spawn_subagent`, `get_subagent_results`
 | `plan/loader.py` | `TodoStore` — file-based todo JSON storage |
 | `plan/types.py` | `TodoItem`, `TodoStatus` |
 | `memory/__init__.py` | `MemoryStore` — file-based (USER.md/MEMORY.md/episodic/) |
+| `agent/checkpoint/` | `Checkpointer` ABC + `FileCheckpointer` — ThreadState persistence (same injection pattern as memory_store) |
 | `skills/loader.py` | `SkillLoader` — skill discovery and loading |
 | `agent/prompt.py` | `build_lead_agent_prompt`, `PromptConfig` — system prompt assembly |
 
@@ -218,6 +226,7 @@ get_subagent_results(sub_id) → polls executor._results
 
 `config.yaml` — `HarnessConfig` loaded via `get_config()`. Controls:
 - `thread.storage_path`: base for `{thread_id}/user-data/`
+- `thread.checkpointer_type`: "file" (default) or "memory"
 - `sandbox.image`, `container_prefix`, `network_mode`
 - `agents.defaults`: provider, model, max_tokens, temperature
 
