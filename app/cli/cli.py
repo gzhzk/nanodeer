@@ -30,8 +30,11 @@ def cli():
 @cli.command()
 @click.argument("prompt")
 @click.option("--model", "model_name", help="Model name override")
-def cli_cmd(prompt: str, model_name: Optional[str]):
+@click.option("--json-events", is_flag=True, help="Output NDJSON events to stdout (for TS CLI consumption)")
+def cli_cmd(prompt: str, model_name: Optional[str], json_events: bool):
     """Run a single prompt and print the response."""
+    import json
+
     engine = NanoEngine(get_config(), model_name=model_name)
 
     async def _run():
@@ -39,7 +42,12 @@ def cli_cmd(prompt: str, model_name: Optional[str]):
         return result
 
     result = asyncio.run(_run())
-    click.echo(_strip_tags(result.message))
+
+    if json_events:
+        for ev in result.events:
+            click.echo(json.dumps(ev))
+    else:
+        click.echo(_strip_tags(result.message))
 
 
 @cli.command()

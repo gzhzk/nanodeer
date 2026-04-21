@@ -9,14 +9,14 @@ dependencies = [
 ]
 
 [project.scripts]
-nanodeer = "nanodeer_cli.cli:main"
+nanodeer = "cli.cli:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["nanodeer_cli"]
+packages = ["cli"]
 
 [tool.hatch.build.targets.sdist]
-include = ["nanodeer_cli/"]
+include = ["cli/"]
