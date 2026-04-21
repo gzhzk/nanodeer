@@ -8,6 +8,7 @@
 
 ## 目录
 
+- [项目结构](#项目结构)
 - [设计灵感来源](#设计灵感来源)
 - [状态](#状态)
 - [目标用户与任务](#目标用户与任务)
@@ -16,20 +17,15 @@
   - [安全模型](#安全模型)
 - [安装与快速开始](#安装与快速开始)
 - [背景](#背景)
-- [架构](#架构)
+- [主架构](#主架构)
   - [5 层 Harness 设计](#5-层-harness-设计)
-  - [项目结构](#项目结构)
+  - [层级设计](#层级设计)
+  - [执行流程](#执行流程)
+  - [存储路径](#存储路径)
   - [信号与状态设计](#信号与状态设计)
-- [层级设计](#层级设计)
-  - [Layer 1: 数据层](#layer-1-数据层)
-  - [Layer 2: 沙箱隔离层](#layer-2-沙箱隔离层)
-  - [Layer 3: 工具层](#layer-3-工具层)
-  - [Layer 4: 编排层](#layer-4-编排层)
-  - [Layer 5: 应用层](#layer-5-应用层)
-- [Agent / Harness / App 解耦](#agent--harness--app-解耦)
-  - [依赖方向](#依赖方向)
-  - [三层角色](#三层角色)
-  - [注入点](#注入点)
+  - [Agent / Harness / App 解耦](#agent--harness--app-解耦)
+- [App 设计](#app-设计)（规划中）
+  - [三种模式](#三种模式)
 - [工具](#工具)
 - [核心模式](#核心模式)
 - [设计原则](#设计原则)
@@ -110,82 +106,8 @@ nanodeer cli "分析这份数据"
 
 ---
 
-## 架构
 
-### 5 层 Harness 设计
-
-```
-  Layer 5: 应用层
-    NanoEngine / create_nanodeer_agent
-
-  Layer 4: 编排层
-    NanoDeerFactory + ReActExecutor
-      MiddlewareChain（拦截机制）
-
-  Layer 3: 工具层
-    Tools + wrap_tool_for_sandbox
-
-  Layer 2: 沙箱隔离层
-    DockerSandboxProvider / LocalSandboxProvider
-
-  Layer 1: 数据层
-    ThreadState + TurnSignals
-```
-
-### 执行流程
-
-```
-NanoEngine.run(prompt)                         [第5层 — 应用入口]
-  ↓
-ThreadState(thread_id, HumanMessage(prompt))
-  ↓
-ReActExecutor.run(state)                       [第4层]
-  ┌───────────────────────────────────────────────────────────────┐
-  │  while True:                                                  │
-  │    before_llm():   ← 5 钩子，按序执行                          │
-  │      1. ThreadDataMiddleware → 创建 {thread_id}/user-data/    │
-  │      2. FileMiddleware     → 写上传文件到 user-data/           │
-  │      3. MemoryMiddleware   → 加载 USER/MEMORY → signals       │
-  │      4. TodoMiddleware    → 加载 default.json → state.todos   │
-  │      5. SandboxMiddleware → 从模块级上下文获取 sandbox         │
-  │                             无则 acquire(Docker容器)          │
-  │    LLM.ainvoke(prompt + messages)                            │
-  │    after_llm():                                              │
-  │      ClarificationMiddleware → WAIT? 直接返回给调用方          │
-  │      TitleMiddleware                                          │
-  │      [END? → release sandbox → break]                         │
-  │    [无 tool_calls? → after_tools_all → END → break]           │
-  │    for tc in resp.tool_calls:  ← 工具循环                      │
-  │      before_tools():                                          │
-  │        DetectionMiddleware                                    │
-  │        HandlingMiddleware                                     │
-  │        MemoryMiddleware → save_memory 拦截，写宿主机 + skip_tool │
-  │        SandboxMiddleware → bash 命令安全审计（skip 时跳过）     │
-  │      tool.ainvoke(args, exec_id)                              │
-  │        → SandboxExecTool.ainvoke()                            │
-  │          → get_sandbox(exec_id) 从模块上下文查询                │
-  │          → DockerSandboxProvider.run(container, cmd)          │
-  │            → 虚拟路径翻译                                      │
-  │            → b64 编码 → 容器内执行 → 返回 stdout                │
-  │    after_tools_all():                                         │
-  │      [END? → release sandbox + 幂等保护]                       │
-  │    [PROCESS? → 下一轮]  [END? → break]                         │
-  └───────────────────────────────────────────────────────────────┘
-  ↓
-RunResult(message, tool_calls, artifacts, duration_ms)
-```
-
-**关键设计点**：
-- `before_llm` 中 SandboxMiddleware 通过模块级 `_sandbox_context` 判断是否已 acquire，跨 turn 幂等
-- `after_tools_all` 仅在 `END` 时释放；`PROCESS` 时保持容器存活供下一轮复用
-- `SandboxExecTool` 封装 9 个工具（bash/git/read_file 等）路由至 Docker 容器；虚拟路径 `/mnt/user-data/...` 自动翻译为宿主机物理路径
-- `wrap_tool_for_sandbox` 在工厂组装时封装工具；运行时自动路由
-- `save_memory`/`save_user_memory` 通过 `skip_tool` 信号绕过沙箱，直接在宿主机写入 MemoryStore
-- `save_memory` 支持 `mode="append"`（追加）或 `mode="replace"`（覆盖），由 LLM 自主决定
-- `save_memory`/`save_user_memory` 通过 `skip_tool` 信号绕过沙箱，直接在宿主机写入 MemoryStore
-- `save_memory` 支持 `mode="append"`（追加）或 `mode="replace"`（覆盖），由 LLM 自主决定
-
-### 项目结构
+## 项目结构
 
 ```
 nanodeer/
@@ -253,6 +175,218 @@ nanodeer/
 └── pyproject.toml
 ```
 
+---
+
+
+## 主架构
+
+### 5 层 Harness 设计
+
+```
+  Layer 5: 应用层
+    NanoEngine / create_nanodeer_agent
+
+  Layer 4: 编排层
+    NanoDeerFactory + ReActExecutor
+      MiddlewareChain（拦截机制）
+
+  Layer 3: 工具层
+    Tools + wrap_tool_for_sandbox
+
+  Layer 2: 沙箱隔离层
+    DockerSandboxProvider / LocalSandboxProvider
+
+  Layer 1: 数据层
+    ThreadState + TurnSignals
+```
+
+### 层级设计
+
+#### Layer 1: 数据层
+
+两个数据载体：
+
+**ThreadState** — 跨 turn 持久化，pydantic BaseModel：
+```python
+class ThreadState(BaseModel):
+    thread_id     : str | None        # 线程标识
+    messages      : list[BaseMessage]  # 对话历史
+    next_action   : NextAction         # PROCESS | WAIT | END
+    todos         : Annotated[list[dict], merge_todos]   # 任务列表
+    artifacts     : Annotated[list[str], merge_artifacts] # 产物路径
+    title         : str | None        # 对话标题
+    sandbox       : SandboxState | None  # 容器状态
+```
+
+**TurnSignals** — 单 turn 临时数据载体：
+```python
+class TurnSignals:
+    clarification_question : str | None   # <clarification>...</clarification>
+    memory_context       : str | None   # MemoryMiddleware 写入
+    error                : dict | None  # {"type": "...", "detail": "..."}
+    skip_tool            : bool = False  # 跳过 tool.ainvoke()，用 skip_tool_result
+    skip_tool_result     : str | None    # skip_tool=True 时作为工具结果返回
+```
+
+#### Layer 2: 沙箱隔离层
+
+**Sandbox** — 敏感操作执行空间。
+
+| 方面 | 详情 |
+|------|------|
+| **每线程容器** | 每个线程拥有独立的 Docker 容器 |
+| **宿主机挂载** | `base_path/{thread_id}/user-data` → `/mnt/user-data/` |
+| **工作目录** | `{base_path}/{thread_id}/user-data`（Docker 和 Local 统一） |
+| **默认 Provider** | `DockerSandboxProvider` — 卷挂载，`network=none`，`read_only` rootfs |
+| **回退 Provider** | `LocalSandboxProvider` — 子进程，无隔离 |
+
+sandbox-aware 工具：`read_file` `write_file` `ls` `glob` `grep` `bash` `git` `exec_python`
+
+Host 直连工具（无沙箱路由）：`web_search` `read_image` `save_memory` `save_user_memory` `write_todo` `list_todos` `spawn_subagent`
+
+#### Layer 3: 工具层
+
+**Tools** — 纯执行单元，LangChain `@tool` 装饰，无沙箱感知。Skills（`invoke_skill`）是工具的数据扩展。sandbox-aware 工具通过 `wrap_tool_for_sandbox` 路由到 Layer 2；host 工具直连。
+
+**MiddlewareChain** — 4 个钩子，9 个链中拦截器 + 1 个 App 层：
+
+```
+before_llm:       ThreadData → File → Memory → Todo → Sandbox
+after_llm:        Clarification → Title
+before_tools:     Detection → Handling → MemoryMiddleware → Sandbox
+after_tools_all:  Sandbox
+```
+
+**9 个链中中间件 + 1 个 App 层中间件：**
+
+| 分组 | 中间件 | 钩子 | 职责 |
+|------|--------|------|------|
+| **Context** | ThreadDataMiddleware | before_llm | 创建线程目录 |
+| | FileMiddleware | before_llm | 写上传文件到磁盘 |
+| | MemoryMiddleware | before_llm | 加载记忆上下文 + file list |
+| | TodoMiddleware | before_llm | 解析 write_todo 结果 |
+| **Signal** | ClarificationMiddleware | after_llm | 检测 `<clarification>` 标签 |
+| | TitleMiddleware | after_llm | 首轮生成标题 |
+| **Safety** | DetectionMiddleware | before_llm | 沙箱已释放检查 |
+| | HandlingMiddleware | before_tools/after_llm | 错误处理框架（placeholder） |
+| | SandboxMiddleware | multi-hook | 容器获取/释放 + bash 审计 |
+| **Intercept** | MemoryMiddleware | before_llm + before_tools | before_llm: 加载记忆上下文；before_tools: 拦截 save_memory，写宿主机 |
+| **App 层** | CompressionMiddleware | NanoEngine 调用 | Token 阈值压缩 |
+
+**wrap_tool_for_sandbox** — 把 sandbox-aware 工具路由到 Layer 2 容器内执行。配置驱动（`SANDBOX_TOOL_CONFIGS`），单一 `SandboxExecTool` 类。
+
+#### Layer 4: 编排层
+
+**ReActExecutor** — 原生 ReAct 循环，无 LangGraph 依赖：
+
+```
+while True:
+    before_llm()  → END? break → WAIT? return
+    LLM.invoke()
+    after_llm()   → WAIT? return → END? break
+    for tool_call:
+        before_tools() → END? break
+        tool.invoke()
+    after_tools_all()
+    → PROCESS? continue
+```
+
+**NanoDeerFactory** — 将 `MiddlewareChain` + modules + LLM + tools 接入 `ReActExecutor`，通过 `RuntimeFeatures` 控制功能开关。
+
+**CompressionMiddleware** — 不在链中，由 App 层在 `executor.run()` 结束后调用：
+```python
+final_state = await executor.run(state)
+compressed = compression_mw.compress(final_state.messages)
+if compressed:
+    final_state.messages = compressed
+```
+
+**PromptConfig** — 按需自动渲染 sections，节省 token：
+
+| Section | 渲染条件 |
+|---------|---------|
+| `<memory>` | `signals.memory_context` 非空 |
+| `<todos>` | `state.todos` 非空 |
+| `<skills>` | `config.skills=True` 且 `"invoke_skill"` 在 tools 里 |
+| `<subagent>` | `config.subagent=True` 且 `"spawn_subagent"` 在 tools 里 |
+| `<tools>` | 始终渲染 |
+
+#### Layer 5: 应用层
+
+**NanoEngine** — 应用层入口：
+
+```python
+from nanodeer.engine import NanoEngine
+
+engine = NanoEngine(config)
+result = await engine.run("分析这个文件", thread_id="xxx")
+```
+
+**create_nanodeer_agent** — 底层入口，返回 `(executor, compression_mw)`：
+
+```python
+from nanodeer.agent.factory import create_nanodeer_agent
+
+executor, compression_mw = create_nanodeer_agent(
+    model=llm,
+    tools=my_tools,
+    features=RuntimeFeatures(),
+    memory_store=...,       # Agent 实现（MemoryStore）
+    subagent_runner=...,   # Agent 实现（SubagentRunner）
+)
+```
+
+### 执行流程
+
+```
+NanoEngine.run(prompt)                         [第5层 — 应用入口]
+  ↓
+ThreadState(thread_id, HumanMessage(prompt))
+  ↓
+ReActExecutor.run(state)                       [第4层]
+  ┌───────────────────────────────────────────────────────────────┐
+  │  while True:                                                  │
+  │    before_llm():   ← 5 钩子，按序执行                          │
+  │      1. ThreadDataMiddleware → 创建 {thread_id}/user-data/    │
+  │      2. FileMiddleware     → 写上传文件到 user-data/           │
+  │      3. MemoryMiddleware   → 加载 USER/MEMORY → signals       │
+  │      4. TodoMiddleware    → 加载 default.json → state.todos   │
+  │      5. SandboxMiddleware → 从模块级上下文获取 sandbox         │
+  │                             无则 acquire(Docker容器)          │
+  │    LLM.ainvoke(prompt + messages)                            │
+  │    after_llm():                                              │
+  │      ClarificationMiddleware → WAIT? 直接返回给调用方          │
+  │      TitleMiddleware                                          │
+  │      [END? → release sandbox → break]                         │
+  │    [无 tool_calls? → after_tools_all → END → break]           │
+  │    for tc in resp.tool_calls:  ← 工具循环                      │
+  │      before_tools():                                          │
+  │        DetectionMiddleware                                    │
+  │        HandlingMiddleware                                     │
+  │        MemoryMiddleware → save_memory 拦截，写宿主机 + skip_tool │
+  │        SandboxMiddleware → bash 命令安全审计（skip 时跳过）     │
+  │      tool.ainvoke(args, exec_id)                              │
+  │        → SandboxExecTool.ainvoke()                            │
+  │          → get_sandbox(exec_id) 从模块上下文查询                │
+  │          → DockerSandboxProvider.run(container, cmd)          │
+  │            → 虚拟路径翻译                                      │
+  │            → b64 编码 → 容器内执行 → 返回 stdout                │
+  │    after_tools_all():                                         │
+  │      [END? → release sandbox + 幂等保护]                       │
+  │    [PROCESS? → 下一轮]  [END? → break]                         │
+  └───────────────────────────────────────────────────────────────┘
+  ↓
+RunResult(message, tool_calls, artifacts, duration_ms)
+```
+
+**关键设计点**：
+- `before_llm` 中 SandboxMiddleware 通过模块级 `_sandbox_context` 判断是否已 acquire，跨 turn 幂等
+- `after_tools_all` 仅在 `END` 时释放；`PROCESS` 时保持容器存活供下一轮复用
+- `SandboxExecTool` 封装 9 个工具（bash/git/read_file 等）路由至 Docker 容器；虚拟路径 `/mnt/user-data/...` 自动翻译为宿主机物理路径
+- `wrap_tool_for_sandbox` 在工厂组装时封装工具；运行时自动路由
+- `save_memory`/`save_user_memory` 通过 `skip_tool` 信号绕过沙箱，直接在宿主机写入 MemoryStore
+- `save_memory` 支持 `mode="append"`（追加）或 `mode="replace"`（覆盖），由 LLM 自主决定
+
 ### 存储路径
 
 所有运行时数据统一存放在 `~/.nanodeer/` 下。Harness 层和 App 层各自维护独立的子目录。
@@ -269,6 +403,7 @@ nanodeer/
 │
 ├── threads/                 # Harness 沙箱工作目录
 │   └── {thread_id}/         # 每线程沙箱
+│       ├── checkpoint.json    # ThreadState 快照（可恢复）
 │       └── user-data/       # 挂载到容器内 /mnt/user-data/
 │           ├── workspace/   # 用户工作区
 │           ├── uploads/     # 上传文件
@@ -285,6 +420,7 @@ nanodeer/
 | `~/.nanodeer/memory/` | Agent | L3 记忆（USER/MEMORY/episodic） | 是 |
 | `~/.nanodeer/todos/` | Agent | 任务追踪 | 是 |
 | `~/.nanodeer/threads/{id}/` | Harness | 沙箱工作目录 | 否（容器清理） |
+| `~/.nanodeer/threads/{id}/checkpoint.json` | Harness | ThreadState 快照 | 是（session resume） |
 | `~/.nanodeer/app/uploads/` | App | 文件上传 | 可配置 |
 | `~/.nanodeer/app/schedules/` | App | 定时任务 | 是 |
 | `~/.nanodeer/app/history/` | App | 运行历史 | 是 |
@@ -323,149 +459,10 @@ NanoDeer 使用**信号**（临时数据）和**状态**（持久数据）进行
 | `working_dir` | 执行工作目录 |
 | `status` | "ready" / "released" |
 
----
 
-## 层级设计
+### Agent / Harness / App 解耦
 
-### Layer 1: 数据层
-
-两个数据载体：
-
-**ThreadState** — 跨 turn 持久化，pydantic BaseModel：
-```python
-class ThreadState(BaseModel):
-    thread_id     : str | None        # 线程标识
-    messages      : list[BaseMessage]  # 对话历史
-    next_action   : NextAction         # PROCESS | WAIT | END
-    todos         : Annotated[list[dict], merge_todos]   # 任务列表
-    artifacts     : Annotated[list[str], merge_artifacts] # 产物路径
-    title         : str | None        # 对话标题
-    sandbox       : SandboxState | None  # 容器状态
-```
-
-**TurnSignals** — 单 turn 临时数据载体：
-```python
-class TurnSignals:
-    clarification_question : str | None   # <clarification>...</clarification>
-    memory_context       : str | None   # MemoryMiddleware 写入
-    error                : dict | None  # {"type": "...", "detail": "..."}
-    skip_tool            : bool = False  # 跳过 tool.ainvoke()，用 skip_tool_result
-    skip_tool_result     : str | None    # skip_tool=True 时作为工具结果返回
-```
-
-### Layer 2: 沙箱隔离层
-
-**Sandbox** — 敏感操作执行空间。
-
-| 方面 | 详情 |
-|------|------|
-| **每线程容器** | 每个线程拥有独立的 Docker 容器 |
-| **宿主机挂载** | `base_path/{thread_id}/user-data` → `/mnt/user-data/` |
-| **工作目录** | `{base_path}/{thread_id}/user-data`（Docker 和 Local 统一） |
-| **默认 Provider** | `DockerSandboxProvider` — 卷挂载，`network=none`，`read_only` rootfs |
-| **回退 Provider** | `LocalSandboxProvider` — 子进程，无隔离 |
-
-sandbox-aware 工具：`read_file` `write_file` `ls` `glob` `grep` `bash` `git` `exec_python`
-
-Host 直连工具（无沙箱路由）：`web_search` `read_image` `save_memory` `save_user_memory` `write_todo` `list_todos` `spawn_subagent`
-
-### Layer 3: 工具层
-
-**Tools** — 纯执行单元，LangChain `@tool` 装饰，无沙箱感知。Skills（`invoke_skill`）是工具的数据扩展。sandbox-aware 工具通过 `wrap_tool_for_sandbox` 路由到 Layer 2；host 工具直连。
-
-**MiddlewareChain** — 4 个钩子，9 个链中拦截器 + 1 个 App 层：
-
-```
-before_llm:       ThreadData → File → Memory → Todo → Sandbox
-after_llm:        Clarification → Title
-before_tools:     Detection → Handling → MemoryMiddleware → Sandbox
-after_tools_all:  Sandbox
-```
-
-**9 个链中中间件 + 1 个 App 层中间件：**
-
-| 分组 | 中间件 | 钩子 | 职责 |
-|------|--------|------|------|
-| **Context** | ThreadDataMiddleware | before_llm | 创建线程目录 |
-| | FileMiddleware | before_llm | 写上传文件到磁盘 |
-| | MemoryMiddleware | before_llm | 加载记忆上下文 + file list |
-| | TodoMiddleware | before_llm | 解析 write_todo 结果 |
-| **Signal** | ClarificationMiddleware | after_llm | 检测 `<clarification>` 标签 |
-| | TitleMiddleware | after_llm | 首轮生成标题 |
-| **Safety** | DetectionMiddleware | before_llm | 沙箱已释放检查 |
-| | HandlingMiddleware | before_tools/after_llm | 错误处理框架（placeholder） |
-| | SandboxMiddleware | multi-hook | 容器获取/释放 + bash 审计 |
-| **Intercept** | MemoryMiddleware | before_llm + before_tools | before_llm: 加载记忆上下文；before_tools: 拦截 save_memory，写宿主机 |
-| **App 层** | CompressionMiddleware | NanoEngine 调用 | Token 阈值压缩 |
-
-**wrap_tool_for_sandbox** — 把 sandbox-aware 工具路由到 Layer 2 容器内执行。配置驱动（`SANDBOX_TOOL_CONFIGS`），单一 `SandboxExecTool` 类。
-
-### Layer 4: 编排层
-
-**ReActExecutor** — 原生 ReAct 循环，无 LangGraph 依赖：
-
-```
-while True:
-    before_llm()  → END? break → WAIT? return
-    LLM.invoke()
-    after_llm()   → WAIT? return → END? break
-    for tool_call:
-        before_tools() → END? break
-        tool.invoke()
-    after_tools_all()
-    → PROCESS? continue
-```
-
-**NanoDeerFactory** — 将 `MiddlewareChain` + modules + LLM + tools 接入 `ReActExecutor`，通过 `RuntimeFeatures` 控制功能开关。
-
-**CompressionMiddleware** — 不在链中，由 App 层在 `executor.run()` 结束后调用：
-```python
-final_state = await executor.run(state)
-compressed = compression_mw.compress(final_state.messages)
-if compressed:
-    final_state.messages = compressed
-```
-
-**PromptConfig** — 按需自动渲染 sections，节省 token：
-
-| Section | 渲染条件 |
-|---------|---------|
-| `<memory>` | `signals.memory_context` 非空 |
-| `<todos>` | `state.todos` 非空 |
-| `<skills>` | `config.skills=True` 且 `"invoke_skill"` 在 tools 里 |
-| `<subagent>` | `config.subagent=True` 且 `"spawn_subagent"` 在 tools 里 |
-| `<tools>` | 始终渲染 |
-
-### Layer 5: 应用层
-
-**NanoEngine** — 应用层入口：
-
-```python
-from nanodeer.engine import NanoEngine
-
-engine = NanoEngine(config)
-result = await engine.run("分析这个文件", thread_id="xxx")
-```
-
-**create_nanodeer_agent** — 底层入口，返回 `(executor, compression_mw)`：
-
-```python
-from nanodeer.agent.factory import create_nanodeer_agent
-
-executor, compression_mw = create_nanodeer_agent(
-    model=llm,
-    tools=my_tools,
-    features=RuntimeFeatures(),
-    memory_store=...,       # Agent 实现（MemoryStore）
-    subagent_runner=...,   # Agent 实现（SubagentRunner）
-)
-```
-
----
-
-## Agent / Harness / App 解耦
-
-### 依赖方向
+#### 依赖方向
 
 ```
 App 层  ──imports──→  Harness 层（框架）
@@ -481,7 +478,7 @@ Harness 内部无 Agent 业务逻辑，memory/plan/subagent 由 App 注入。
 
 **单向依赖原则**：Agent 实现可以依赖 Harness 接口，但 Harness 绝对不知道 Agent 的业务逻辑。
 
-### 三层角色
+#### 三层角色
 
 | 层级 | 谁 | 做什么 |
 |---|---|---|
@@ -489,7 +486,7 @@ Harness 内部无 Agent 业务逻辑，memory/plan/subagent 由 App 注入。
 | **Harness** | nanodeer 框架 | 定义接口；执行 ReAct 循环；不知道 memory/subagent 的业务逻辑 |
 | **Agent** | 你写的业务逻辑 | 实现 `MemoryStore`、`SubagentRunner`；在构建时注入到 Harness |
 
-### 注入点
+#### 注入点
 
 | Harness 注入点 | Agent 实现什么 | App 传入 |
 |---|---|---|
@@ -497,6 +494,18 @@ Harness 内部无 Agent 业务逻辑，memory/plan/subagent 由 App 注入。
 | `subagent_runner` | `collect_spawn()`、`get_results()` | `MySubagentRunner()` |
 | `extra_middlewares` | 按 hook 名的自定义中间件列表 | `{"before_llm": [...], "after_tools_all": [...]}` |
 | `tools` | `list[BaseTool]` | `my_custom_tools` |
+
+---
+
+## App 设计（规划中）
+
+### 三种模式
+
+| 模式 | 说明 |
+|------|------|
+| **CLI** | `nanodeer cli "prompt"` — 单次执行，彩色输出 |
+| **Chat** | `nanodeer chat` — 交互式多轮对话 |
+| **API** | `nanodeer run` — HTTP 服务（重建中） |
 
 ---
 
@@ -579,6 +588,7 @@ Harness 内部无 Agent 业务逻辑，memory/plan/subagent 由 App 注入。
 8. **原生 ReAct 循环**：无 LangGraph 依赖，轻量可审计
 
 ---
+
 
 ## 致谢
 

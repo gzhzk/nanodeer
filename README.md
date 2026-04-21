@@ -8,6 +8,7 @@ Built-in capabilities: file/git/bash tools with sandbox routing, async parallel 
 
 ## Table of Contents
 
+- [Project Structure](#project-structure)
 - [Design Inspirations](#design-inspirations)
 - [Status](#status)
 - [Target Users & Tasks](#target-users--tasks)
@@ -16,20 +17,15 @@ Built-in capabilities: file/git/bash tools with sandbox routing, async parallel 
   - [Safety](#safety)
 - [Installation & Quick Start](#installation--quick-start)
 - [Background](#background)
-- [Architecture](#architecture)
-  - [5-Layer Harness Design](#5-layer-harness-design)
-  - [Project Structure](#project-structure)
+- [Main Architecture](#main-architecture)
+  - [5-Layer Architecture](#5-layer-harness-design)
+  - [Layers Design](#layers-design)
+  - [Execution Flow](#execution-flow)
+  - [Storage Paths](#storage-paths)
   - [Signal & State Design](#signal--state-design)
-- [Layers Design](#layers-design)
-  - [Layer 1: Data](#layer-1-data)
-  - [Layer 2: Sandbox](#layer-2-sandbox)
-  - [Layer 3: Tools](#layer-3-tools)
-  - [Layer 4: Orchestration](#layer-4-orchestration)
-  - [Layer 5: Application](#layer-5-application)
-- [Agent / Harness / App Decoupling](#agent--harness--app-decoupling)
-  - [Dependency Direction](#dependency-direction)
-  - [Three Parts](#three-parts)
-  - [Injection Points](#injection-points)
+  - [Agent / Harness / App Decoupling](#agent-harness-app-decoupling)
+- [App Design](#app-design)（Planned）
+  - [Three Modes](#three-modes)
 - [Tools](#tools)
 - [Core Patterns](#core-patterns)
 - [Design Principles](#design-principles)
@@ -112,9 +108,71 @@ The story might have ended there. But on the last evening of March, I attended B
 
 ---
 
-## Architecture
+## Project Structure
 
-### 5-Layer Architecture
+```
+nanodeer/
+├── app/                      # Application layer (API/channels — rebuilding)
+│   └── config.py             # App-level paths (uploads, schedules, history)
+│
+├── packages/harness/         # Agent harness (framework package)
+│   └── nanodeer/
+│       ├── agent/
+│       │   ├── state.py      # ThreadState + TurnSignals
+│       │   ├── factory.py    # NanoDeerFactory — assembles harness
+│       │   ├── react.py      # ReActExecutor — native loop (no LangGraph)
+│       │   ├── prompt.py     # System prompt + PromptConfig
+│       │   ├── messages.py   # Message types
+│       │   ├── memory/       # L3 memory storage
+│       │   │   └── storage.py # MemoryStore (USER.md / MEMORY.md / episodic)
+│       │   ├── plan/         # Task planning
+│       │   │   └── loader.py # TodoStore (file-based todos)
+│       │   └── middlewares/  # 9 in chain + 1 App-layer
+│       │       ├── base.py               # Middleware + MiddlewareChain
+│       │       ├── thread_data.py        # Per-thread directory init
+│       │       ├── file.py              # User-uploaded file handling
+│       │       ├── memory.py            # Memory context injection
+│       │       ├── todo.py              # Todo tool result parsing
+│       │       ├── clarification.py     # <clarification> tag detection
+│       │       ├── title.py             # Thread title generation
+│       │       ├── detection.py         # Health check (sandbox released)
+│       │       ├── handling.py         # Error handling framework (placeholder)
+│       │       └── sandbox.py          # Container lifecycle + bash audit
+│       │   └── compression.py   # App-layer call, not in chain
+│       ├── sandbox/            # Docker sandbox isolation
+│       ├── subagent/           # Subagent execution
+│       │   └── runner.py      # SubagentExecutor + run_many + format_result
+│       ├── skills/             # Skill loader
+│       │   └── loader.py      # SkillLoader + parse_frontmatter
+│       ├── tools/              # Built-in tools (pure execution)
+│       │   ├── read_file.py   # read_file
+│       │   ├── write_file.py  # write_file
+│       │   ├── ls.py          # ls
+│       │   ├── glob.py        # glob
+│       │   ├── grep.py        # grep
+│       │   ├── bash.py        # bash
+│       │   ├── git.py         # git
+│       │   ├── web_search.py  # web_search
+│       │   ├── read_image.py  # read_image
+│       │   ├── exec_python.py # exec_python
+│       │   ├── invoke_skill.py # invoke_skill
+│       │   ├── save_memory.py # save_memory
+│       │   ├── write_todo.py  # write_todo
+│       │   ├── list_todos.py  # list_todos
+│       │   └── spawn_subagent.py # spawn_subagent
+│       ├── config.py          # HarnessConfig (LLM providers, sandbox, thread)
+│       └── engine.py          # NanoEngine (App layer entry)
+│
+├── sandbox/                  # Sandbox image (Dockerfile)
+├── tests/                    # Test suite
+├── docs/                     # Architecture docs
+├── examples/                 # Usage examples
+└── pyproject.toml
+```
+
+## Main Architecture
+
+### 5-layer-harness-design
 
 ```
 Layer 5: Application         ← App code calls this directly
@@ -192,68 +250,6 @@ RunResult(message, tool_calls, artifacts, duration_ms)
 - `save_memory`/`save_user_memory` bypass sandbox via `skip_tool` signal; written directly on host via MemoryMiddleware
 - `save_memory` supports `mode="append"` (default) or `mode="replace"`; LLM decides based on context
 
-### Project Structure
-
-```
-nanodeer/
-├── app/                      # Application layer (API/channels — rebuilding)
-│   └── config.py             # App-level paths (uploads, schedules, history)
-│
-├── packages/harness/         # Agent harness (framework package)
-│   └── nanodeer/
-│       ├── agent/
-│       │   ├── state.py      # ThreadState + TurnSignals
-│       │   ├── factory.py    # NanoDeerFactory — assembles harness
-│       │   ├── react.py      # ReActExecutor — native loop (no LangGraph)
-│       │   ├── prompt.py     # System prompt + PromptConfig
-│       │   ├── messages.py   # Message types
-│       │   ├── memory/       # L3 memory storage
-│       │   │   └── storage.py # MemoryStore (USER.md / MEMORY.md / episodic)
-│       │   ├── plan/         # Task planning
-│       │   │   └── loader.py # TodoStore (file-based todos)
-│       │   └── middlewares/  # 9 in chain + 1 App-layer
-│       │       ├── base.py               # Middleware + MiddlewareChain
-│       │       ├── thread_data.py        # Per-thread directory init
-│       │       ├── file.py              # User-uploaded file handling
-│       │       ├── memory.py            # Memory context injection
-│       │       ├── todo.py              # Todo tool result parsing
-│       │       ├── clarification.py     # <clarification> tag detection
-│       │       ├── title.py             # Thread title generation
-│       │       ├── detection.py         # Health check (sandbox released)
-│       │       ├── handling.py         # Error handling framework (placeholder)
-│       │       └── sandbox.py          # Container lifecycle + bash audit
-│       │   └── compression.py   # App-layer call, not in chain
-│       ├── sandbox/            # Docker sandbox isolation
-│       ├── subagent/           # Subagent execution
-│       │   └── runner.py      # SubagentExecutor + run_many + format_result
-│       ├── skills/             # Skill loader
-│       │   └── loader.py      # SkillLoader + parse_frontmatter
-│       ├── tools/              # Built-in tools (pure execution)
-│       │   ├── read_file.py   # read_file
-│       │   ├── write_file.py  # write_file
-│       │   ├── ls.py          # ls
-│       │   ├── glob.py        # glob
-│       │   ├── grep.py        # grep
-│       │   ├── bash.py        # bash
-│       │   ├── git.py         # git
-│       │   ├── web_search.py  # web_search
-│       │   ├── read_image.py  # read_image
-│       │   ├── exec_python.py # exec_python
-│       │   ├── invoke_skill.py # invoke_skill
-│       │   ├── save_memory.py # save_memory
-│       │   ├── write_todo.py  # write_todo
-│       │   ├── list_todos.py  # list_todos
-│       │   └── spawn_subagent.py # spawn_subagent
-│       ├── config.py          # HarnessConfig (LLM providers, sandbox, thread)
-│       └── engine.py          # NanoEngine (App layer entry)
-│
-├── sandbox/                  # Sandbox image (Dockerfile)
-├── tests/                    # Test suite
-├── docs/                     # Architecture docs
-├── examples/                 # Usage examples
-└── pyproject.toml
-```
-
 ### Storage Paths
 
 All runtime data is stored under `~/.nanodeer/`. Harness and App layers maintain separate subtrees.
@@ -270,6 +266,7 @@ All runtime data is stored under `~/.nanodeer/`. Harness and App layers maintain
 │
 ├── threads/                 # Harness sandbox working dirs
 │   └── {thread_id}/         # Per-thread sandbox
+│       ├── checkpoint.json   # ThreadState snapshot (resumable)
 │       └── user-data/       # Volume-mounted to container /mnt/user-data/
 │           ├── workspace/   # User workspace
 │           ├── uploads/     # Uploaded files
@@ -286,6 +283,7 @@ All runtime data is stored under `~/.nanodeer/`. Harness and App layers maintain
 | `~/.nanodeer/memory/` | Agent | L3 memory (USER/MEMORY/episodic) | Yes |
 | `~/.nanodeer/todos/` | Agent | Task tracking | Yes |
 | `~/.nanodeer/threads/{id}/` | Harness | Sandbox working directory | No (container cleanup) |
+| `~/.nanodeer/threads/{id}/checkpoint.json` | Harness | ThreadState snapshot | Yes (session resume) |
 | `~/.nanodeer/app/uploads/` | App | File uploads | Configurable |
 | `~/.nanodeer/app/schedules/` | App | Scheduled jobs | Yes |
 | `~/.nanodeer/app/history/` | App | Run history | Yes |
@@ -326,9 +324,9 @@ NanoDeer uses **signals** (ephemeral data) and **state** (persistent data) for m
 
 ---
 
-## Layers Design
+### Layers Design
 
-### Layer 1: Data
+#### Layer 1: Data
 
 Two data carriers:
 
@@ -354,7 +352,7 @@ class TurnSignals:
     skip_tool_result     : str | None    # result returned when skip_tool=True
 ```
 
-### Layer 2: Sandbox
+#### Layer 2: Sandbox
 
 **Sandbox** — execution space for sensitive operations.
 
@@ -370,7 +368,7 @@ sandbox-aware tools: `read_file` `write_file` `ls` `glob` `grep` `bash` `git` `e
 
 Host tools (no sandbox routing): `web_search` `read_image` `save_memory` `save_user_memory` `write_todo` `list_todos` `spawn_subagent`
 
-### Layer 3: Tools
+#### Layer 3: Tools
 
 **Tools** — pure execution units, LangChain `@tool` decorated, no sandbox awareness. Skills (`invoke_skill`) are data extensions for tools. sandbox-aware tools route through `wrap_tool_for_sandbox` to Layer 2; host tools run directly.
 
@@ -401,7 +399,7 @@ after_tools_all:  Sandbox
 
 **wrap_tool_for_sandbox** — routes sandbox-aware tools to Layer 2 containers. Config-driven (`SANDBOX_TOOL_CONFIGS`), single `SandboxExecTool` class.
 
-### Layer 4: Orchestration
+#### Layer 4: Orchestration
 
 **ReActExecutor** — native ReAct loop, no LangGraph dependency:
 
@@ -437,7 +435,7 @@ if compressed:
 | `<subagent>` | `config.subagent=True` AND `"spawn_subagent"` in tools |
 | `<tools>` | always |
 
-### Layer 5: Application
+#### Layer 5: Application
 
 **NanoEngine** — App layer entry point:
 
@@ -464,9 +462,9 @@ executor, compression_mw = create_nanodeer_agent(
 
 ---
 
-## Agent / Harness / App Decoupling
+### Agent / Harness / App Decoupling
 
-### Dependency Direction
+#### Dependency Direction
 
 ```
 App Layer  ──imports──→  Harness Layer (framework)
@@ -483,7 +481,7 @@ memory/plan/subagent are injected by App, not imported by Harness.
 
 **One-way dependency**: Agent implementations can depend on Harness interfaces, but Harness has no knowledge of Agent's business logic.
 
-### Three Parts
+#### Three Parts
 
 | Part | Who | Does |
 |---|---|---|
@@ -491,7 +489,7 @@ memory/plan/subagent are injected by App, not imported by Harness.
 | **Harness** | nanodeer framework | Defines interfaces; executes ReAct loop; knows nothing about memory/subagent business |
 | **Agent** | Your implementation | Implements `MemoryStore`, `SubagentRunner`; injected into Harness at build time |
 
-### Injection Points
+#### Injection Points
 
 | Harness Injection Point | Agent Implements | App Passes |
 |---|---|---|
@@ -579,6 +577,18 @@ memory/plan/subagent are injected by App, not imported by Harness.
 6. **Prompt auto-detection**: sections render only when data present, minimizing token waste
 7. **Sandbox + Host dual paths**: Sensitive ops go through containers, host tools run directly on the host
 8. **Native ReAct loop**: no LangGraph dependency, lightweight and auditable
+
+---
+
+## App Design（Planned）
+
+### Three Modes
+
+| Mode | Description |
+|------|-------------|
+| **CLI** | `nanodeer cli "prompt"` — single-shot, colored output |
+| **Chat** | `nanodeer chat` — interactive multi-turn conversation |
+| **API** | `nanodeer run` — HTTP server (rebuilding) |
 
 ---
 
