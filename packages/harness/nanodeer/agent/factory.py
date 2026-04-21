@@ -74,6 +74,7 @@ class NanoDeerFactory:
         memory_store=None,
         subagent_runner=None,
         extra_middlewares: dict[str, list] | None = None,
+        checkpointer=None,
     ):
         from .middlewares import MiddlewareChain
         from .middlewares.thread_data import ThreadDataMiddleware
@@ -107,6 +108,7 @@ class NanoDeerFactory:
                 (FileMiddleware, "uploads", {}),
                 (MemoryMiddleware, None, {"memory_store": memory_store}),
                 (TodoMiddleware, None, {}),
+                (SandboxMiddleware, "sandbox", sp_kw),
                 extras=extra.get("before_llm"),
             ),
             after_llm=self._chain(
@@ -150,6 +152,7 @@ class NanoDeerFactory:
                 skills=self.features.prompt_skills,
                 subagent=self.features.prompt_subagent,
             ),
+            checkpointer=checkpointer,
         )
         # Replace with wrapped tools for actual execution (sandbox routing)
         executor._tools = wrapped_tools
@@ -169,6 +172,7 @@ def create_nanodeer_agent(
     memory_store: Any = None,
     subagent_runner: Any = None,
     extra_middlewares: dict[str, list] | None = None,
+    checkpointer=None,
 ):
     """Create ReActExecutor (was: CompiledStateGraph)."""
     from ..tools import default_tools
@@ -181,4 +185,5 @@ def create_nanodeer_agent(
         memory_store=memory_store,
         subagent_runner=subagent_runner,
         extra_middlewares=extra_middlewares,
+        checkpointer=checkpointer,
     )  # returns (executor, compression_mw)

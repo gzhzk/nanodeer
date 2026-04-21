@@ -4,7 +4,7 @@ import re
 
 from nanodeer.agent.state import NextAction, SandboxState, ThreadState, TurnSignals
 from nanodeer.config import get_config
-from nanodeer.sandbox import Sandbox, set_sandbox, clear_sandbox, SandboxProvider
+from nanodeer.sandbox import Sandbox, get_sandbox, set_sandbox, clear_sandbox, SandboxProvider
 from nanodeer.sandbox.docker import DockerSandboxProvider
 
 from .base import Middleware
@@ -71,6 +71,10 @@ class SandboxMiddleware(Middleware):
         state.sandbox.working_dir = sandbox.working_dir
         state.sandbox.status = "ready"
         set_sandbox(state.thread_id, sandbox)
+        signals.events.append({
+            "type": "sandbox_acquired",
+            "exec_id": sandbox.exec_id,
+        })
 
     async def after_llm(self, state: ThreadState, signals: TurnSignals) -> None:
         """Release container on END after LLM — covers LLM-ended sessions (no tools loop)."""
@@ -88,6 +92,12 @@ class SandboxMiddleware(Middleware):
             return
         if tool_name != "bash":
             return
+
+        signals.events.append({
+            "type": "tool_call",
+            "name": "bash",
+            "command": tool_args.get("command", "")[:100],
+        })
         cmd = tool_args.get("command", "")
         if not cmd:
             return

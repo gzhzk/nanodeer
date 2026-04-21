@@ -50,12 +50,14 @@ class ReActExecutor:
         tools: list[BaseTool],
         chain: MiddlewareChain,
         prompt_config: PromptConfig | None = None,
+        checkpointer=None,
     ):
         self.llm = llm.bind_tools(tools)
         self._tools = tools
         self._chain = chain
         self._tool_map = {t.name: t for t in tools}
         self._prompt_config = prompt_config or PromptConfig()
+        self._checkpointer = checkpointer
 
     async def run(
         self,
@@ -63,6 +65,12 @@ class ReActExecutor:
         uploaded_files: list[dict] | None = None,
     ) -> ThreadState:
         """Run ReAct loop until terminal state. Returns final state."""
+        # Resume from checkpoint if thread has no messages yet
+        if self._checkpointer and not state.messages and state.thread_id:
+            saved = await self._checkpointer.load(state.thread_id)
+            if saved:
+                state = saved
+
         while True:
             # Reset routing signal each turn
             state.next_action = NextAction.PROCESS
@@ -112,6 +120,8 @@ class ReActExecutor:
             if not hasattr(resp, "tool_calls") or not resp.tool_calls:
                 # LLM ended session without tool calls: release sandbox before returning
                 await self._chain.after_tools_all(state, signals)
+                if signals.events:
+                    state.events.extend(signals.events)
                 break
 
             exec_id = state.thread_id or "default"
@@ -129,6 +139,12 @@ class ReActExecutor:
                 else:
                     content = await tool.ainvoke(tc["args"], exec_id=exec_id) if tool else f"Tool {tc['name']} not found"
 
+                signals.events.append({
+                    "type": "tool_result",
+                    "name": tc["name"],
+                    "result": str(content)[:500],
+                })
+
                 state.messages.append(
                     ToolMessage(
                         tool_call_id=tc["id"],
@@ -140,7 +156,19 @@ class ReActExecutor:
             # after_tools_all chain
             await self._chain.after_tools_all(state, signals)
 
+            # Merge turn events into state events
+            if signals.events:
+                state.events.extend(signals.events)
+
+            # Save checkpoint after each turn (before END or next iteration)
+            if self._checkpointer and state.thread_id:
+                await self._checkpointer.save(state.thread_id, state)
+
             if state.next_action == NextAction.END:
                 break
 
+        state.events.append({
+            "type": "end",
+            "next_action": state.next_action.value,
+        })
         return state

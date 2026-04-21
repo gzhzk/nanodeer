@@ -39,6 +39,15 @@ class MemoryMiddleware(Middleware):
 
         if memory_context:
             signals.memory_context = memory_context
+            signals.events.append({
+                "type": "memory_context",
+                "has_memory": True,
+            })
+        else:
+            signals.events.append({
+                "type": "memory_context",
+                "has_memory": False,
+            })
 
     async def before_tools(
         self, state: ThreadState, signals: TurnSignals, tool_name: str, tool_args: dict

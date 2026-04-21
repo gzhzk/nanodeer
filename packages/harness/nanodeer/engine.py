@@ -34,6 +34,7 @@ class RunResult:
     artifacts: list[str] = field(default_factory=list)
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     duration_ms: int = 0
+    events: list = field(default_factory=list)  # JSON events from --json-events mode
 
 
 def _create_llm(config: HarnessConfig, model_name: str | None = None):
@@ -74,6 +75,7 @@ class NanoEngine:
         model_name: str | None = None,
         features: RuntimeFeatures | None = None,
         tools: list | None = None,
+        checkpointer=None,
     ):
         """Initialize engine.
 
@@ -82,11 +84,13 @@ class NanoEngine:
             model_name: Optional model override.
             features: Optional RuntimeFeatures for feature gating.
             tools: Optional custom tool list. None = use default tools.
+            checkpointer: Optional Checkpointer instance. Defaults to FileCheckpointer.
         """
         self.config = config
         self._model_name = model_name
         self._features = features
         self._tools = tools
+        self._checkpointer = checkpointer
         self._executor = None
         self._compression_mw = None
 
@@ -94,10 +98,17 @@ class NanoEngine:
         """Lazy-load ReAct executor and compression middleware."""
         if self._executor is None:
             llm = _create_llm(self.config, self._model_name)
+            if self._checkpointer is None:
+                cp_type = self.config.thread.checkpointer_type
+                if cp_type == "file":
+                    from nanodeer.agent.checkpoint import FileCheckpointer
+                    self._checkpointer = FileCheckpointer(self.config.thread.storage_path)
+                # else: None (no checkpoint)
             self._executor, self._compression_mw = create_nanodeer_agent(
                 model=llm,
                 tools=self._tools,
                 features=self._features,
+                checkpointer=self._checkpointer,
             )
         return self._executor
 
@@ -140,6 +151,12 @@ class NanoEngine:
 
     def _extract_result(self, state: ThreadState, thread_id: str, duration_ms: int) -> RunResult:
         """Extract RunResult from ThreadState."""
+        # Patch duration into the final end event
+        for ev in reversed(state.events):
+            if ev.get("type") == "end":
+                ev["duration_ms"] = duration_ms
+                break
+
         # Last message with content is the final response
         final_message = ""
         for msg in reversed(state.messages):
@@ -167,4 +184,5 @@ class NanoEngine:
             artifacts=state.artifacts,
             tool_calls=tool_calls,
             duration_ms=duration_ms,
+            events=state.events,
         )

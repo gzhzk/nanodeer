@@ -20,3 +20,7 @@ class TodoMiddleware(Middleware):
     async def before_llm(self, state: ThreadState, signals: TurnSignals) -> None:
         store = TodoStore()
         state.todos = store.load("default")
+        signals.events.append({
+            "type": "todos",
+            "count": len(state.todos),
+        })

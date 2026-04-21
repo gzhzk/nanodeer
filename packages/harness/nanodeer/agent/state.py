@@ -1,6 +1,6 @@
 """Agent state — single source of truth."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Annotated
 
@@ -27,6 +27,7 @@ class TurnSignals:
     error: dict | None = None       # {"type": "...", "detail": "..."} set by Detection, handled by Handling
     skip_tool: bool = False          # If True, tools loop skips sandbox exec and uses skip_tool_result
     skip_tool_result: str | None = None  # Pre-computed result when skip_tool is True
+    events: list = field(default_factory=list)  # JSON-serializable events for --json-events output
 
 
 def _merge_by_id(existing, new, id_key="id"):
@@ -68,3 +69,4 @@ class ThreadState(BaseModel):
     artifacts: Annotated[list[str], merge_artifacts] = Field(default_factory=list)
     title: str | None = None
     sandbox: SandboxState | None = None
+    events: list = Field(default_factory=list)  # accumulated JSON events across turns
