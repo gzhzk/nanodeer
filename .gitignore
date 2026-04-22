@@ -30,6 +30,12 @@ ENV/
 env/
 .venv/
 
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+.tsbuildinfo
+
 # IDE
 .idea/
 .vscode/
@@ -54,3 +60,9 @@ Thumbs.db
 
 # Threads (runtime state)
 threads/
+
+# Temporary
+*.tmp
+*.temp
+.tmp/
+tmp/
