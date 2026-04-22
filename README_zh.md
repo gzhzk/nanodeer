@@ -18,7 +18,7 @@
 - [安装与快速开始](#安装与快速开始)
 - [背景](#背景)
 - [主架构](#主架构)
-  - [5 层 Harness 设计](#5-层-harness-设计)
+  - [6 层 Harness 设计](#6-层-harness-设计)
   - [层级设计](#层级设计)
   - [执行流程](#执行流程)
   - [存储路径](#存储路径)
@@ -81,20 +81,55 @@
 
 ## 安装与快速开始
 
+### 环境要求
+- Python 3.10+
+- Node.js 18+
+
+### 安装
+
 ```bash
-# 安装
-pip install nanodeer
+# 克隆项目
+git clone https://github.com/gzhzk/nanodeer
+cd nanodeer
 
-# 配置
-cp config.yaml.example config.yaml
-# 编辑 config.yaml，填入飞书/企微 token、workspace 路径等
+# 配置 API Key
+cp .env.example .env
+# 编辑 .env，填入你的 API Key（如 MINIMAX_API_KEY）
 
-# 启动守护进程
-nanodeer run
+# 安装 Python Kernel
+pip install -e packages/nanodeer-kernel
 
-# 或 CLI 模式
-nanodeer cli "分析这份数据"
+# 安装 TypeScript Shell
+cd packages/nanodeer-sdk && npm install
 ```
+
+### 运行
+
+```bash
+# 单次命令模式
+npx tsx packages/nanodeer-sdk/src/cli.ts "say hello"
+
+# 或全局安装 CLI
+npm install -g packages/nanodeer-sdk
+nanodeer "say hello"
+```
+
+### Docker（推荐团队使用）
+
+```bash
+# 构建镜像
+docker build -t nanodeer .
+
+# 运行
+docker run -v $(pwd):/workspace nanodeer "整理 PDF"
+```
+
+### 配置
+
+编辑 `config.yaml` 配置：
+- LLM Provider（MiniMax、Anthropic、OpenAI 等）
+- 沙箱设置（Docker 镜像、容器前缀）
+- 线程存储路径
 
 ## 背景
 
@@ -111,68 +146,57 @@ nanodeer cli "分析这份数据"
 
 ```
 nanodeer/
-├── app/                      # 应用层（API/渠道 — 重建中）
-│   └── config.py             # App 级路径配置（uploads, schedules, history）
+├── packages/
+│   ├── nanodeer-kernel/          # Python Kernel（Layer 1-4）— pip install nanodeer
+│   │   └── src/nanodeer/
+│   │       ├── agent/           # ReActExecutor、MiddlewareChain、State
+│   │       │   ├── react.py    # ReActExecutor.run() + run_streaming()
+│   │       │   ├── factory.py   # NanoDeerFactory
+│   │       │   ├── state.py    # ThreadState、TurnSignals
+│   │       │   ├── messages.py  # 消息类型
+│   │       │   ├── prompt.py   # System prompt
+│   │       │   └── middlewares/ # MiddlewareChain（9个中间件）
+│   │       │       ├── base.py           # Middleware + MiddlewareChain
+│   │       │       ├── thread_data.py   # 每线程目录初始化
+│   │       │       ├── file.py         # 用户上传文件处理
+│   │       │       ├── memory.py       # 记忆上下文注入
+│   │       │       ├── todo.py         # Todo 结果解析
+│   │       │       ├── clarification.py # <clarification> 标签检测
+│   │       │       ├── title.py       # 会话标题生成
+│   │       │       ├── detection.py    # 健康检查
+│   │       │       ├── handling.py    # 错误处理
+│   │       │       └── sandbox.py     # 容器生命周期 + bash 审计
+│   │       ├── sandbox/           # Docker 沙箱隔离
+│   │       │   ├── __init__.py    # SandboxProvider 抽象基类
+│   │       │   ├── docker.py      # DockerSandboxProvider（卷挂载）
+│   │       │   ├── local.py       # LocalSandboxProvider 回退方案
+│   │       │   ├── path.py        # 虚拟 ↔ 物理路径映射
+│   │       │   └── tools.py       # SandboxExecTool（配置驱动）
+│   │       ├── tools/             # 16 个内置工具
+│   │       ├── subagent/          # 并行子 Agent 执行
+│   │       ├── skills/            # 技能加载器
+│   │       ├── memory/            # L3 记忆存储（MemoryStore）
+│   │       ├── plan/              # 任务规划（TodoStore）
+│   │       ├── agent/             # Agent 层
+│   │       │   ├── checkpoint/   # Checkpointer + FileCheckpointer
+│   │       │   └── memory/        # MemoryStore 实现
+│   │       ├── brain.py           # NDJSON stdio 接口（Layer 5）
+│   │       ├── engine.py         # NanoEngine（Layer 5 入口）
+│   │       └── config.py         # HarnessConfig
+│   │
+│   └── nanodeer-sdk/             # TypeScript Shell（Layer 5-6）
+│       └── src/
+│           ├── cli.ts            # CLI 入口点
+│           ├── brain-client.ts  # Python 子进程管理
+│           └── events.ts        # StreamEvent 类型定义
 │
-├── packages/harness/         # Agent Harness（框架包）
-│   └── nanodeer/
-│       ├── agent/
-│       │   ├── state.py      # ThreadState + TurnSignals
-│       │   ├── factory.py    # NanoDeerFactory — 组装 harness
-│       │   ├── react.py      # ReActExecutor — 原生循环（无 LangGraph）
-│       │   ├── prompt.py     # System prompt + PromptConfig
-│       │   ├── messages.py   # 消息类型
-│       │   └── middlewares/  # 链中 9 个 + App 层 1 个
-│       │       ├── base.py               # Middleware + MiddlewareChain
-│       │       ├── thread_data.py       # 每线程目录初始化
-│       │       ├── file.py              # 用户上传文件处理
-│       │       ├── memory.py           # 记忆上下文注入
-│       │       ├── todo.py            # Todo 工具结果解析
-│       │       ├── clarification.py   # <clarification> 标签检测
-│       │       ├── title.py           # 会话标题生成
-│       │       ├── detection.py        # 健康检查（沙箱已释放）
-│       │       ├── handling.py         # 错误处理框架（placeholder）
-│       │       └── sandbox.py        # 容器生命周期 + bash 审计
-│       │   └── compression.py  # App 层调用，不在链中
-│       ├── memory/              # L3 记忆存储
-│       │   └── storage.py       # MemoryStore（USER.md / MEMORY.md / episodic）
-│       ├── plan/                # 任务规划
-│       │   └── loader.py        # TodoStore（文件存储的待办事项）
-│       ├── sandbox/            # Docker 沙箱隔离
-│       │   ├── __init__.py    # SandboxProvider 抽象基类
-│       │   ├── docker.py      # DockerSandboxProvider（卷挂载）
-│       │   ├── local.py        # LocalSandboxProvider 回退方案
-│       │   ├── path.py         # 虚拟 ↔ 物理路径映射
-│       │   └── tools.py        # SandboxExecTool（配置驱动）
-│       ├── subagent/           # 子 Agent 执行
-│       │   ├── runner.py      # SubagentRunner + run_subagent
-│       │   └── types.py       # SubagentType 枚举
-│       ├── skills/             # 技能加载器
-│       │   └── loader.py      # SkillLoader + parse_frontmatter
-│       ├── tools/              # 内置工具（纯执行）
-│       │   ├── read_file.py   # read_file
-│       │   ├── write_file.py  # write_file
-│       │   ├── ls.py          # ls
-│       │   ├── glob.py        # glob
-│       │   ├── grep.py        # grep
-│       │   ├── bash.py        # bash
-│       │   ├── git.py         # git
-│       │   ├── web_search.py  # web_search
-│       │   ├── read_image.py  # read_image
-│       │   ├── exec_python.py # exec_python
-│       │   ├── invoke_skill.py # invoke_skill
-│       │   ├── save_memory.py # save_memory
-│       │   ├── write_todo.py  # write_todo
-│       │   ├── list_todos.py  # list_todos
-│       │   └── spawn_subagent.py # spawn_subagent
-│       ├── config.py          # HarnessConfig（LLM providers, sandbox, thread）
-│       └── engine.py          # NanoEngine（应用层入口）
-│
-├── sandbox/                  # Sandbox 镜像（Dockerfile）
-├── tests/                    # 测试套件
-├── docs/                     # 架构文档
-├── examples/                 # 使用示例
-└── pyproject.toml
+├── sandbox/                     # Sandbox Docker 镜像
+├── tests/                       # 测试套件
+├── docs/                        # 架构文档
+├── examples/                    # 使用示例
+├── config.yaml                  # 配置文件
+├── pyproject.toml               # Python 包配置
+└── .gitignore                   # Git 忽略规则
 ```
 
 ---
@@ -180,25 +204,64 @@ nanodeer/
 
 ## 主架构
 
-### 5 层 Harness 设计
+### 6 层架构设计
 
 ```
-  Layer 5: 应用层
-    NanoEngine / create_nanodeer_agent
-
-  Layer 4: 编排层
-    NanoDeerFactory + ReActExecutor
-      MiddlewareChain（拦截机制）
-
-  Layer 3: 工具层
-    Tools + wrap_tool_for_sandbox
-
-  Layer 2: 沙箱隔离层
-    DockerSandboxProvider / LocalSandboxProvider
-
-  Layer 1: 数据层
-    ThreadState + TurnSignals
+    ┌─────────────────────────────────────────────────────────┐
+    │ Layer 6: TypeScript SDK / CLI                           │
+    │ nanodeer-sdk/src/                                       │
+    │   cli.ts          — 终端 UI (readline + chalk)           │
+    │   brain-client.ts — 进程管理 + NDJSON stdio 通信         │
+    │   events.ts       — TypeScript 类型定义                  │
+    └────────────────────────┬────────────────────────────────┘
+                             │  spawn python -m nanodeer.brain
+                             ▼
+    ┌─────────────────────────────────────────────────────────┐
+    │ Layer 5: Python Brain — 协议适配层                       │
+    │ nanodeer-kernel/src/nanodeer/brain.py                   │
+    │   职责：NDJSON stdin/stdout 协议                         │
+    │   接收 execute/cancel/ping，yield stream events          │
+    └────────────────────────┬────────────────────────────────┘
+                             │  calls engine.run_streaming()
+                             ▼
+    ┌─────────────────────────────────────────────────────────┐
+    │ Layer 4: NanoEngine — 应用入口                           │
+    │ nanodeer-kernel/src/nanodeer/engine.py                  │
+    │   职责：创建 ThreadState，调用 executor，提取 RunResult   │
+    │   App 层压缩（CompressionMiddleware 在此处挂载）          │
+    └────────────────────────┬────────────────────────────────┘
+                             │  calls executor.run()
+                             ▼
+    ┌─────────────────────────────────────────────────────────┐
+    │ Layer 3: ReActExecutor + MiddlewareChain                │
+    │   react.py       — 原生 async ReAct 循环，4 个 hook      │
+    │   factory.py     — NanoDeerFactory 组装 chain           │
+    │   state.py       — ThreadState, TurnSignals             │
+    │   prompt.py      — prompt 构建                          │
+    └────────────────────────┬────────────────────────────────┘
+                             │  tools.invoke()
+                             ▼
+    ┌─────────────────────────────────────────────────────────┐
+    │ Layer 2: Tools + Sandbox                                │
+    │   tools/         — 16 个内置工具                         │
+    │   sandbox/       — DockerSandboxProvider / LocalSandbox │
+    │   sandbox/tools.py — SandboxExecTool 包装器             │
+    │   subagent/      — SubagentExecutor 并行执行            │
+    └────────────────────────┬────────────────────────────────┘
+                             │  exec in container / local
+                             ▼
+    ┌─────────────────────────────────────────────────────────┐
+    │ Layer 1: Data 层                                        │
+    │   messages.py   — HumanMessage / AIMessage / ToolMessage│
+    │   memory/storage.py — 文件型 MemoryStore                 │
+    │   checkpoint/   — FileCheckpointer 断点恢复              │
+    └─────────────────────────────────────────────────────────┘
 ```
+
+**说明**：
+- Layer 5（`brain.py`）是 stdio 协议适配器 — 允许外部程序（TypeScript）调用 Python Kernel
+- Layer 6（`nanodeer-sdk`）是 TypeScript Shell — 提供 CLI、IM Bot 界面、Web UI
+- Python Kernel（Layer 1-4）不感知 TypeScript — 通过 NDJSON over stdio 通信
 
 ### 层级设计
 
@@ -339,44 +402,47 @@ executor, compression_mw = create_nanodeer_agent(
 ### 执行流程
 
 ```
-NanoEngine.run(prompt)                         [第5层 — 应用入口]
+用户输入 (TypeScript CLI)
   ↓
-ThreadState(thread_id, HumanMessage(prompt))
+brain-client.ts 拉起 Python 进程，通过 NDJSON stdin/stdout 通信
   ↓
-ReActExecutor.run(state)                       [第4层]
-  ┌───────────────────────────────────────────────────────────────┐
-  │  while True:                                                  │
-  │    before_llm():   ← 5 钩子，按序执行                          │
-  │      1. ThreadDataMiddleware → 创建 {thread_id}/user-data/    │
-  │      2. FileMiddleware     → 写上传文件到 user-data/           │
-  │      3. MemoryMiddleware   → 加载 USER/MEMORY → signals       │
-  │      4. TodoMiddleware    → 加载 default.json → state.todos   │
-  │      5. SandboxMiddleware → 从模块级上下文获取 sandbox         │
-  │                             无则 acquire(Docker容器)          │
-  │    LLM.ainvoke(prompt + messages)                            │
-  │    after_llm():                                              │
-  │      ClarificationMiddleware → WAIT? 直接返回给调用方          │
-  │      TitleMiddleware                                          │
-  │      [END? → release sandbox → break]                         │
-  │    [无 tool_calls? → after_tools_all → END → break]           │
-  │    for tc in resp.tool_calls:  ← 工具循环                      │
-  │      before_tools():                                          │
-  │        DetectionMiddleware                                    │
-  │        HandlingMiddleware                                     │
-  │        MemoryMiddleware → save_memory 拦截，写宿主机 + skip_tool │
-  │        SandboxMiddleware → bash 命令安全审计（skip 时跳过）     │
-  │      tool.ainvoke(args, exec_id)                              │
-  │        → SandboxExecTool.ainvoke()                            │
-  │          → get_sandbox(exec_id) 从模块上下文查询                │
-  │          → DockerSandboxProvider.run(container, cmd)          │
-  │            → 虚拟路径翻译                                      │
-  │            → b64 编码 → 容器内执行 → 返回 stdout                │
-  │    after_tools_all():                                         │
-  │      [END? → release sandbox + 幂等保护]                       │
-  │    [PROCESS? → 下一轮]  [END? → break]                         │
-  └───────────────────────────────────────────────────────────────┘
+brain.py 接收请求，转发给 NanoEngine
   ↓
-RunResult(message, tool_calls, artifacts, duration_ms)
+NanoEngine.run_streaming() → ReActExecutor.run()
+  ↓
+┌─ before_llm 链 ────────────────────────────────────────────────────────┐
+│  ThreadData   创建 {thread_id}/user-data/{workspace,uploads,outputs}  │
+│  File         把上传文件写到 uploads/ 目录                              │
+│  Memory       加载 USER/MEMORY/episodic 到上下文                        │
+│  Todo         加载 default.json todos                                  │
+│  Sandbox      获取或复用 Docker 容器                                   │
+└────────────────────────────────────────────────────────────────────────┘
+  ↓
+LLM.ainvoke(prompt + messages)  ← LangChain 发起调用
+  ↓
+┌─ after_llm 链 ──────────────────────────────────────────────────────┐
+│  Clarification   检测 <clarification> 标签 → WAIT                    │
+│  Title           生成会话标题 (第一轮后)                              │
+└───────────────────────────────────────────────────────────────────────┘
+  ↓
+[无 tool_calls？→ after_tools_all → END]
+  ↓
+for each tool_call:
+  ┌─ before_tools 链 ─────────────────────────────────────────────────┐
+  │  Detection   检查 sandbox 是否已释放                               │
+  │  Handling    根据 error 类型决定 END 或继续                        │
+  │  Memory      拦截 save_memory 直接写 host                          │
+  │  Sandbox     bash 命令安全审计                                     │
+  └────────────────────────────────────────────────────────────────────┘
+  ↓
+  tool.ainvoke(args, exec_id)
+    → SandboxExecTool 路由到 Docker 或 Local
+  ↓
+┌─ after_tools_all 链 ───────────────────────────────────────────────┐
+│  Sandbox   仅在 END 时释放容器 (保留 PROCESS)                        │
+└────────────────────────────────────────────────────────────────────┘
+  ↓
+checkpoint 保存 → 下一轮或结束
 ```
 
 **关键设计点**：

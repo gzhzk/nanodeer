@@ -81,6 +81,7 @@ sandbox:
   use: nanodeer.sandbox.docker:DockerSandboxProvider
   image: nanodeer/sandbox:latest
   container_prefix: nanodeer-sandbox
+  base_path: ~/.nanodeer/threads  # Defaults to thread.storage_path if not set
 
 # ============================================================================
 # Subagents Configuration
