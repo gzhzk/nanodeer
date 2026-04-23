@@ -249,7 +249,7 @@ The story might have ended there. But on the last evening of March, I attended B
     │ Layer 1: Data Layer                                     │
     │   messages.py   — HumanMessage / AIMessage / ToolMessage│
     │   memory/storage.py — File-based MemoryStore            │
-    │   checkpoint/   — FileCheckpointer for resume            │
+    │   checkpoint/   — FileCheckpointer for resume           │
     └─────────────────────────────────────────────────────────┘
 ```
 
@@ -407,37 +407,37 @@ brain.py receives request, forwards to NanoEngine
   ↓
 NanoEngine.run_streaming() → ReActExecutor.run()
   ↓
-┌─ before_llm chain ────────────────────────────────────────────────┐
-│  ThreadData   Creates {thread_id}/user-data/{workspace,uploads,outputs}  │
-│  File         Writes uploaded files to uploads/ directory           │
-│  Memory       Loads USER/MEMORY/episodic into context               │
-│  Todo         Loads default.json todos                             │
-│  Sandbox      Acquires or reuses Docker container                  │
-└────────────────────────────────────────────────────────────────────┘
+┌─ before_llm chain ──────────────────────────────────────────────────────┐
+│  ThreadData   Creates {thread_id}/user-data/{workspace,uploads,outputs} │
+│  File         Writes uploaded files to uploads/ directory               │
+│  Memory       Loads USER/MEMORY/episodic into context                   │
+│  Todo         Loads default.json todos                                  │
+│  Sandbox      Acquires or reuses Docker container                       │
+└─────────────────────────────────────────────────────────────────────────┘
   ↓
 LLM.ainvoke(prompt + messages)  ← LangChain call
   ↓
-┌─ after_llm chain ─────────────────────────────────────────────────┐
-│  Clarification   Detects <clarification> tag → WAIT              │
-│  Title           Generates session title (after first turn)       │
-└────────────────────────────────────────────────────────────────────┘
+┌─ after_llm chain ───────────────────────────────────────────────────────┐
+│  Clarification   Detects <clarification> tag → WAIT                     │
+│  Title           Generates session title (after first turn)             │
+└─────────────────────────────────────────────────────────────────────────┘
   ↓
 [no tool_calls? → after_tools_all → END]
   ↓
 for each tool_call:
-  ┌─ before_tools chain ────────────────────────────────────────────┐
-  │  Detection   Checks if sandbox has been released                │
-  │  Handling   Decides END or continue based on error type         │
-  │  Memory     Intercepts save_memory, writes directly to host     │
-  │  Sandbox    Bash command security audit                         │
-  └─────────────────────────────────────────────────────────────────┘
+  ┌─ before_tools chain ─────────────────────────────────────────────────┐
+  │  Detection   Checks if sandbox has been released                     │
+  │  Handling   Decides END or continue based on error type              │
+  │  Memory     Intercepts save_memory, writes directly to host          │
+  │  Sandbox    Bash command security audit                              │
+  └──────────────────────────────────────────────────────────────────────┘
   ↓
   tool.ainvoke(args, exec_id)
     → SandboxExecTool routes to Docker or Local
   ↓
-┌─ after_tools_all chain ──────────────────────────────────────────┐
-│  Sandbox   Releases container only on END (preserves PROCESS)     │
-└───────────────────────────────────────────────────────────────────┘
+┌─ after_tools_all chain ────────────────────────────────────────────────┐
+│  Sandbox   Releases container only on END (preserves PROCESS)          │
+└────────────────────────────────────────────────────────────────────────┘
   ↓
 checkpoint saved → next turn or END
 ```
