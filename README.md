@@ -1,10 +1,23 @@
+<div align="center">
+
 # NanoDeer
 
-English | [中文](./README_zh.md) 
+**A 6-Layer AI Agent Harness Built from Scratch**
 
-🚀 **NanoDeer** is a minimal AI agent harness with native async ReAct, middleware interception, and Docker-sandbox isolation.
+[![MIT License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
+[![Python 3.13](https://img.shields.io/badge/Python-3.13-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
+[![TypeScript 5.x](https://img.shields.io/badge/TypeScript-5.x-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://typescriptlang.org)
+[![Node 24](https://img.shields.io/badge/Node-24-339933?style=flat-square&logo=nodedotjs&logoColor=white)](https://nodejs.org)
+[![Docker](https://img.shields.io/badge/Docker-required-2496ED?style=flat-square&logo=docker&logoColor=white)](https://docker.com)
+[![Version 0.1.0](https://img.shields.io/badge/Version-0.1.0-orange?style=flat-square)](https://github.com/gzhzk/nanodeer)
 
-Built-in capabilities: file/git/bash tools with sandbox routing, async parallel subagents, memory & todo persistence, and a skill system for extensible behaviors.
+Layered Architecture · Middleware Pipeline · Sandbox Isolation · Tiered Memory System
+
+*Architecture is what you build. Engineering is how you build it.*
+
+English | [中文](./README_zh.md)
+
+</div>
 
 ## Table of Contents
 

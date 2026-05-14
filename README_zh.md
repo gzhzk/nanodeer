@@ -1,10 +1,23 @@
+<div align="center">
+
 # NanoDeer
+
+**从零实现的 6 层 AI Agent Harness**
+
+[![MIT License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
+[![Python 3.13](https://img.shields.io/badge/Python-3.13-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
+[![TypeScript 5.x](https://img.shields.io/badge/TypeScript-5.x-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://typescriptlang.org)
+[![Node 24](https://img.shields.io/badge/Node-24-339933?style=flat-square&logo=nodedotjs&logoColor=white)](https://nodejs.org)
+[![Docker](https://img.shields.io/badge/Docker-required-2496ED?style=flat-square&logo=docker&logoColor=white)](https://docker.com)
+[![Version 0.1.0](https://img.shields.io/badge/Version-0.1.0-orange?style=flat-square)](https://github.com/gzhzk/nanodeer)
+
+分层架构 · Middleware 管道 · 沙箱隔离 · 层次化记忆体
+
+*架构决定你能做什么，工程决定你能做多好。*
 
 [English](./README.md) | 中文
 
-🚀 **NanoDeer** 是一款基于 Python 构建的轻量级 AI Agent Harness 框架，内置原生 async ReAct、4 钩子 middleware 拦截链和可插拔的 Docker 沙箱隔离。
-
-内置能力：file/git/bash 工具自动路由至沙箱、异步并行子 Agent、Memory & Todo 持久化，以及可扩展的 Skill 系统。
+</div>
 
 ## 目录
 
@@ -132,7 +145,7 @@ docker run -v $(pwd):/workspace nanodeer "整理 PDF"
 
 ## 背景
 
-去年年末，我开始接触 Agent 相关实践 —— 彼时理解还很粗糙，就是觉得 Agent 就是在 LLM 的基础上加上了一些工具、存储记忆等功能实现让 AI 帮自己干活。今年3月初，导师随口提了一句 "Harness Engineering 最近挺火的，多了解了解一下"，我开始四处找资料学习，也顺手用起了 Claude Code。3月底，**DeerFlow** 进入了我的视线：字节开源的这个项目让我第一次看到企业级 Agent 框架应该长什么样子——状态机、中间件链、沙箱隔离、分层记忆，每块各司其职。我反复读了好几篇介绍文章，心想：原来 Agent 可以这样工程化。
+去年年末，我开始接触 Agent 相关实践 —— 彼时理解还很粗糙，就是觉得 Agent 就是在 LLM 的基础上加上了一些工具、存储记忆等让 AI 帮自己干活。今年3月初，导师随口提了一句 "harness engineering 最近挺火的，多了解了解一下"，我开始四处找资料学习，也顺手用起了 Claude Code。3月底，**DeerFlow** 进入了我的视线：字节开源的这个项目让我第一次看到企业级 Agent 框架应该长什么样子——状态机、中间件链、沙箱隔离、分层记忆，每块各司其职。我反复读了好几篇介绍文章，心想：原来 Agent 可以这样工程化。
 
 本来故事可能到这里就结束了。但3月最后一天晚上，我去参加了字节的暑期招聘宣讲。印象很深的是那句字节的企业口号 —— *"和优秀的人，做有挑战的事"*。宣讲会进行中，手机屏幕上无意间闪过一行消息 —— Claude Code "开源了"。那一刻突然有种说不清的冲动：DeerFlow 让我看到了框架该有的样子，Claude Code 让我看到了产品能做成什么样，再加上国内爆火的小龙虾 OpenClaw 的启发，所有东西突然串在了一起。当晚回到宿舍，我写下了第一版设想。
 
