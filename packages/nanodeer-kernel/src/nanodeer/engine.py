@@ -46,7 +46,10 @@ def _create_llm(config: HarnessConfig, model_name: str | None = None):
     name = model_name or prov_cfg.model
 
     if "/" in name and name.count("/") == 1:
-        provider, name = name.split("/", 1)
+        new_provider, model_only = name.split("/", 1)
+        if config.get_provider_config(new_provider):
+            provider = new_provider
+            name = model_only
 
     pcfg = config.get_provider_config(provider)
     if pcfg is None:

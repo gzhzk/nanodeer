@@ -102,12 +102,16 @@ class ReActExecutor:
             resp = await self.llm.ainvoke(lc_messages)
             # Convert LangChain response to our custom type for state compatibility
             raw_tcs = getattr(resp, "tool_calls", None) or []
+            if not raw_tcs and hasattr(resp, 'content') and isinstance(resp.content, list):
+                for block in resp.content:
+                    if isinstance(block, dict) and block.get("type") == "tool_use":
+                        raw_tcs.append(block)
             our_tcs = [
                 ToolCall(name=tc.get("name", ""), args=tc.get("args", {}), id=tc.get("id"))
                 for tc in raw_tcs
             ]
             state.messages.append(AIMessage(
-                content=resp.content if isinstance(resp.content, str) else str(resp.content or ""),
+                content=final_resp.content,
                 tool_calls=our_tcs or None,
             ))
 
@@ -120,7 +124,7 @@ class ReActExecutor:
                 break
 
             # tools loop — no tool calls means LLM returned a final answer
-            if not hasattr(resp, "tool_calls") or not resp.tool_calls:
+            if not raw_tcs:
                 # LLM ended session without tool calls: release sandbox before returning
                 async for _ in self._chain.after_tools_all_streaming(state, signals):
                     pass
@@ -129,11 +133,11 @@ class ReActExecutor:
                 break
 
             exec_id = state.thread_id or "default"
-            for tc in resp.tool_calls:
+            for tc in raw_tcs:
                 tool = self._tool_map.get(tc["name"])
 
                 # before_tools chain (streaming)
-                async for _ in self._chain.before_tools_streaming(state, signals, tc["name"], tc["args"]):
+                async for _ in self._chain.before_tools_streaming(state, signals, tc["name"], tc.get("args", {})):
                     pass
                 if state.next_action == NextAction.END:
                     break
@@ -143,7 +147,7 @@ class ReActExecutor:
                     signals.skip_tool = False
                     signals.skip_tool_result = None
                 else:
-                    content = await tool.ainvoke(tc["args"], exec_id=exec_id) if tool else f"Tool {tc['name']} not found"
+                    content = await tool.ainvoke(tc.get("args", {}), exec_id=exec_id) if tool else f"Tool {tc['name']} not found"
 
                 signals.events.append({
                     "type": "tool_result",
@@ -220,6 +224,8 @@ class ReActExecutor:
 
             # before_llm chain (streaming)
             async for ev in self._chain.before_llm_streaming(state, signals):
+                if ev is None:
+                    continue
                 # Normalize "type" to "event" for consistency
                 ev_fixed = {"event": ev.get("type", ev.get("event", "")), **ev}
                 yield {**ev_fixed, "threadId": thread_id}
@@ -244,38 +250,63 @@ class ReActExecutor:
                     lc_messages.append(LCHumanMessage(content=f"[tool: {msg.name}] {msg.content}"))
 
             # LLM streaming — yield tokens as they arrive
+            # NOTE: with streaming, tool_calls accumulate incrementally. We must
+            # collect from ALL chunks and merge based on tool index to avoid duplicates.
+            raw_tcs_by_index: dict[int, dict] = {}
             collected_content = ""
-            resp = None
-            async for chunk in self.llm.astream(lc_messages):
-                # Handle chunk.content which can be str or list
-                chunk_text = chunk.content if isinstance(chunk.content, str) else str(chunk.content or "")
-                if chunk_text:
-                    collected_content += chunk_text
-                    yield {"event": "llm_token", "text": chunk_text, "threadId": thread_id}
-                # Last chunk with tool_calls
-                if hasattr(chunk, "tool_calls") and chunk.tool_calls:
-                    resp = chunk
+            last_chunk = None
+
+            # TEMP: Use ainvoke for testing framework completeness
+            # TODO: Re-enable astream once MiniMax streaming format is properly handled
+            resp = await self.llm.ainvoke(lc_messages)
+            raw_tcs_raw = getattr(resp, "tool_calls", None) or []
+            if isinstance(resp.content, str):
+                collected_content = resp.content
+            elif isinstance(resp.content, list):
+                for block in resp.content:
+                    if isinstance(block, dict):
+                        if block.get("type") == "text":
+                            collected_content += block.get("text", "")
+                        elif block.get("type") == "tool_use":
+                            # tool_use block: extract name/id for this tool
+                            idx = block.get("index", 0)
+                            if idx not in raw_tcs_by_index:
+                                raw_tcs_by_index[idx] = {"name": "", "args": {}, "id": ""}
+                            raw_tcs_by_index[idx]["name"] = block.get("name", "")
+                            raw_tcs_by_index[idx]["id"] = block.get("id", "")
+            for tc in raw_tcs_raw:
+                idx = tc.get("index", 0)
+                if idx not in raw_tcs_by_index:
+                    raw_tcs_by_index[idx] = {"name": "", "args": {}, "id": ""}
+                if tc.get("name"):
+                    raw_tcs_by_index[idx]["name"] = tc["name"]
+                if tc.get("id"):
+                    raw_tcs_by_index[idx]["id"] = tc["id"]
+                if tc.get("args"):
+                    raw_tcs_by_index[idx]["args"].update(tc["args"])
 
             # Build final response
-            # When resp is not None, collected_content already includes the final chunk's
-            # text (all chunks accumulated in line 253). resp.content would duplicate it.
-            if resp is None:
-                resp = LAIMessage(content=collected_content)
-            else:
-                resp.content = collected_content
+            final_resp = LAIMessage(content=collected_content, tool_calls=[])
 
-            raw_tcs = getattr(resp, "tool_calls", None) or []
+            # Convert indexed tool_calls to list (only complete ones with name)
+            raw_tcs = [
+                tc for tc in raw_tcs_by_index.values()
+                if tc["name"]  # Only include if name is complete
+            ]
+
             our_tcs = [
                 ToolCall(name=tc.get("name", ""), args=tc.get("args", {}), id=tc.get("id"))
                 for tc in raw_tcs
             ]
             state.messages.append(AIMessage(
-                content=resp.content if isinstance(resp.content, str) else str(resp.content or ""),
+                content=final_resp.content,
                 tool_calls=our_tcs or None,
             ))
 
             # after_llm chain (streaming)
             async for ev in self._chain.after_llm_streaming(state, signals):
+                if ev is None:
+                    continue
                 yield {**ev, "threadId": thread_id, "event": ev.get("type", ev.get("event", ""))}
 
             if state.next_action == NextAction.WAIT:
@@ -290,6 +321,8 @@ class ReActExecutor:
             # No tool calls = final answer
             if not raw_tcs:
                 async for ev in self._chain.after_tools_all_streaming(state, signals):
+                    if ev is None:
+                        continue
                     yield {**ev, "threadId": thread_id, "event": ev.get("type", ev.get("event", ""))}
                 if signals.events:
                     state.events.extend(signals.events)
@@ -302,6 +335,8 @@ class ReActExecutor:
                 tool = self._tool_map.get(tc["name"])
 
                 async for ev in self._chain.before_tools_streaming(state, signals, tc["name"], tc["args"]):
+                    if ev is None:
+                        continue
                     yield {**ev, "threadId": thread_id, "event": ev.get("type", ev.get("event", ""))}
 
                 if state.next_action == NextAction.END:
@@ -339,6 +374,8 @@ class ReActExecutor:
 
             # after_tools_all chain (streaming)
             async for ev in self._chain.after_tools_all_streaming(state, signals):
+                if ev is None:
+                    continue
                 yield {**ev, "threadId": thread_id, "event": ev.get("type", ev.get("event", ""))}
 
             if signals.events:

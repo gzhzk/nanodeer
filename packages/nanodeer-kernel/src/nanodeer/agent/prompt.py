@@ -33,7 +33,7 @@ _TOOL_DESCRIPTIONS = {
     "read_image": "Describe an image. Args: image_path (str), description_request (str, optional)",
     "exec_python": "Execute Python code. Args: code (str), timeout (int, optional)",
     "invoke_skill": "Load a skill workflow. Args: skill_name (str)",
-    "save_memory": "Save to long-term memory. Args: content (str), target (str: 'user'|'memory'), mode (str: 'append'|'replace')",
+    "save_memory": 'Save to long-term memory. Args: target (str: "wiki/<category>/<name>"|"user"|"memory"), content (str), tags (list[str], optional), mode (str: "append"|"replace", optional). wiki/ entries are structured, tagged, searchable — preferred for all durable knowledge.',
     "write_todo": "Create or update a task. Args: content (str, optional), id (str, optional), status (str, optional), priority (int, optional)",
     "list_todos": "List all tasks. No args.",
     "spawn_subagent": "Spawn a subagent and get results. Args: name (str), task (str), subagent_type (str, optional), thread_id (str, optional)",
@@ -63,13 +63,27 @@ Example:
   spawn_subagent(name="researcher", task="Research topic X")
   get_subagent_results() → returns formatted results per subagent"""
 
-_MEMORY_MAINTENANCE = """When you discover genuinely lasting information, use save_memory to persist it:
-- User's working style and preferences
-- Important technical decisions and conventions
-- Long-term project context
-Use mode="append" to add new information to existing memory.
-Use mode="replace" to rewrite a section entirely (pass the complete updated content).
-Only save things that are truly durable — not ephemeral task details."""
+_MEMORY_MAINTENANCE = """You maintain a personal wiki that grows with each conversation. Use it actively.
+
+**Three memory tiers** (choose the right one):
+
+1. **wiki/<category>/<name>** — structured wiki entry (preferred for ALL durable knowledge)
+   - Examples: "wiki/project/language", "wiki/user/coding_style", "wiki/arch/deployment"
+   - Each entry is an independent page with tags for retrieval
+   - Use tags like ["python", "architecture"] to make entries findable
+   - Create new entries when you discover new topics; update existing ones when you learn more
+   - You are the curator — organize knowledge hierarchically as you see fit
+   - Example: save_memory(target="wiki/project/language", content="## Tech Stack\\nPython 3.13 + ...", tags=["python", "architecture"])
+
+2. **"user"** — user preferences and working style (always replace, single file)
+   - Only for facts about the user's personal preferences
+
+3. **"memory"** — legacy flat file (append/replace, single file)
+   - Fallback only. Prefer wiki entries for structured knowledge.
+
+**What to save**: technical decisions, conventions, project context, user preferences,
+important facts that should survive across conversations.
+**What not to save**: ephemeral task details, status updates, transient context."""
 
 _RESPONSE_STYLE = """- Clear and concise
 - Same language as user"""
@@ -127,6 +141,8 @@ def _output_section(response_style: str = _RESPONSE_STYLE, reminders: str = _CRI
 
 
 def _memory_section(memory_context: str) -> str:
+    # memory_context already contains tagged sections from load_for_prompt():
+    # <user_memory>, <wiki_entries>, <memory>, <episodic>
     return f"<memory>\n{memory_context}\n\n---\n{_MEMORY_MAINTENANCE}\n</memory>"
 
 

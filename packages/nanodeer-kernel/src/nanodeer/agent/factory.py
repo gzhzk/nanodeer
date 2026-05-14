@@ -63,12 +63,17 @@ class NanoDeerFactory:
         ]
 
     def _chain(self, *specs, extras=None):
-        """Build chain from specs: (cls, feature_flag, kwargs)."""
+        """Build chain from specs: (cls, feature_flag, kwargs) or pre-instantiated object."""
         result = []
-        for cls, feature, kw in specs:
-            if feature and not getattr(self.features, feature):
-                continue
-            result.append(cls(**kw) if kw else cls())
+        for spec in specs:
+            if isinstance(spec, tuple) and len(spec) == 3:
+                cls, feature, kw = spec
+                if feature and not getattr(self.features, feature):
+                    continue
+                result.append(cls(**kw) if kw else cls())
+            else:
+                # Pre-instantiated object — use directly
+                result.append(spec)
         if extras:
             result.extend(extras)
         return result
@@ -109,11 +114,18 @@ class NanoDeerFactory:
             keep_recent=self.features.compression_keep_recent,
         ) if self.features.compression else None
 
+        # Single MemoryMiddleware instance shared across before_llm and before_tools hooks.
+        # Both hooks operate on the same memory_store — before_llm loads context from disk,
+        # before_tools intercepts save_memory and writes to disk. A single instance ensures
+        # any future per-instance state (e.g., wiki search cache, recent writes buffer) is
+        # shared between the two hooks, not silently split across two objects.
+        memory_mw = MemoryMiddleware(memory_store=memory_store) if memory_store is not None else MemoryMiddleware()
+
         chain = MiddlewareChain(
             before_llm=self._chain(
                 (ThreadDataMiddleware, None, {}),
                 (FileMiddleware, "uploads", {}),
-                (MemoryMiddleware, None, {"memory_store": memory_store}),
+                memory_mw,
                 (TodoMiddleware, None, {}),
                 (SandboxMiddleware, "sandbox", sp_kw),
                 extras=extra.get("before_llm"),
@@ -128,7 +140,7 @@ class NanoDeerFactory:
                 # before Sandbox's bash security audit (save_memory writes to host, not sandbox)
                 (DetectionMiddleware, None, {}),
                 (HandlingMiddleware, None, {}),
-                (MemoryMiddleware, None, {"memory_store": memory_store}),
+                memory_mw,
                 (SandboxMiddleware, "sandbox", sp_kw),
                 extras=extra.get("before_tools"),
             ),
@@ -169,7 +181,7 @@ class NanoDeerFactory:
 
         if compression_mw:
             compression_mw.set_llm(llm)
-        if title_mw := next((m for m in chain.after_llm if isinstance(m, TitleMiddleware)), None):
+        if title_mw := next((m for m in chain._after_llm if isinstance(m, TitleMiddleware)), None):
             title_mw.set_llm(llm)
 
         return executor, compression_mw

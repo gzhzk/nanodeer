@@ -7,6 +7,13 @@ import re
 VIRTUAL_PREFIX = "/mnt/user-data"
 WORKSPACE_BASE = "/workspace"
 
+ALLOWED_PREFIXES = (
+    VIRTUAL_PREFIX,
+    WORKSPACE_BASE,
+    "/tmp",
+    "/home",
+)
+
 
 def validate_path(path: str) -> str | None:
     """Validate path: normalize, block traversal, block dangerous system paths."""
@@ -23,8 +30,8 @@ def validate_path(path: str) -> str | None:
     if normalized.startswith("..") or "/.." in normalized:
         return None
 
-    # Only allow mount points or workspace paths
-    if not (normalized.startswith(VIRTUAL_PREFIX) or normalized.startswith(WORKSPACE_BASE)):
+    # Only allow mount points, workspace paths, or common user directories
+    if not any(normalized.startswith(prefix) for prefix in ALLOWED_PREFIXES):
         return None
 
     # Block dangerous system paths
@@ -52,6 +59,10 @@ def virtual2physical(virtual_path: str, exec_id: str) -> str:
         if rel == ".":
             return os.path.join(WORKSPACE_BASE, safe_exec_id)
         return os.path.join(WORKSPACE_BASE, safe_exec_id, rel)
+
+    # /tmp and /home paths: use as-is (host paths, not virtual)
+    if virtual_path.startswith("/tmp") or virtual_path.startswith("/home"):
+        return virtual_path
 
     # Relative paths: route to workspace
     return f"{WORKSPACE_BASE}/{safe_exec_id}/{virtual_path.lstrip('/')}"
