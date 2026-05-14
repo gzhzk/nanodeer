@@ -3,6 +3,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from nanodeer.agent.middlewares.memory import MemoryMiddleware
+from nanodeer.agent.messages import HumanMessage
 from nanodeer.agent.state import ThreadState, TurnSignals
 
 
@@ -31,41 +32,41 @@ def signals():
 class TestMemoryMiddleware:
     async def test_loads_memory_context(self, middleware, state, signals):
         """Loads memory from store into signals.memory_context."""
-        await middleware.before_llm(state, signals)
+        async for _ in middleware.before_llm_streaming(state, signals):
+            pass
         assert signals.memory_context is not None
         assert "User prefers Python" in signals.memory_context
 
     async def test_no_memory_store(self, state, signals):
         """No memory store → no-op."""
         mw = MemoryMiddleware(memory_store=None)
-        await mw.before_llm(state, signals)
+        async for _ in mw.before_llm_streaming(state, signals):
+            pass
         assert signals.memory_context is None
 
-    async def test_appends_uploaded_files(self, middleware, state, signals, mock_store):
-        """Appends uploaded file list to memory_context."""
-        signals._uploaded_files = [
-            {"name": "data.csv", "content": b"x,y", "mime_type": "text/csv"},
-            {"name": "report.pdf", "content": b"pdf", "mime_type": "application/pdf"},
-        ]
+    async def test_injects_context_hint_from_user_message(self, middleware, state, signals, mock_store):
+        """Passes last user message as context_hint to load_for_prompt."""
+        state.messages.append(HumanMessage(content="what about python?"))
         mock_store.load_for_prompt.return_value = ""
 
-        await middleware.before_llm(state, signals)
+        async for _ in middleware.before_llm_streaming(state, signals):
+            pass
 
-        assert "<uploaded_files>" in signals.memory_context
-        assert "data.csv" in signals.memory_context
-        assert "report.pdf" in signals.memory_context
+        # Should pass context_hint derived from user message
+        mock_store.load_for_prompt.assert_called_with(context_hint="what about python?")
 
     async def test_loads_memory_context_no_args(self, mock_store, signals):
-        """load_for_prompt is called with no arguments."""
+        """load_for_prompt is called with context_hint from user message."""
         state = ThreadState(thread_id="some-thread")
         mw = MemoryMiddleware(memory_store=mock_store)
-        await mw.before_llm(state, signals)
-        mock_store.load_for_prompt.assert_called_with()  # no args
+        async for _ in mw.before_llm_streaming(state, signals):
+            pass
+        # No user message → context_hint is None
+        mock_store.load_for_prompt.assert_called_with(context_hint=None)
 
     async def test_empty_memory(self, mock_store, middleware, state, signals):
-        """Empty memory → memory_context may be None or empty."""
+        """Empty memory → memory_context is falsy."""
         mock_store.load_for_prompt.return_value = ""
-        signals._uploaded_files = []
-        await middleware.before_llm(state, signals)
-        # Empty memory + no uploads → memory_context is empty string (falsy)
-        # or may not be set at all
+        async for _ in middleware.before_llm_streaming(state, signals):
+            pass
+        # memory_context should be empty/falsy when store returns empty

@@ -1,11 +1,14 @@
-"""Memory storage: USER.md (user preferences) + MEMORY.md (long-term facts) + episodic (session logs)."""
+"""Memory storage: USER.md (user preferences) + MEMORY.md (long-term facts) + episodic (session logs) + wiki (structured knowledge)."""
 
 import json
+import re
+import uuid
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
-from .types import MemoryEntry
+from .types import MemoryEntry, WikiEntry
+from .wiki import WikiStore
 
 # Memory directory root (single-user, no user_id)
 MEMORY_ROOT = Path.home() / ".nanodeer" / "memory"
@@ -13,18 +16,23 @@ MEMORY_ROOT = Path.home() / ".nanodeer" / "memory"
 EPISODIC_DIR = "episodic"
 USER_FILE = "USER.md"
 MEMORY_FILE = "MEMORY.md"
+WIKI_DIR = Path("wiki")
+WIKI_ENTRIES_DIR = WIKI_DIR / "entries"
+WIKI_INDEX_FILE = WIKI_DIR / "index.json"
 
 
 class MemoryStore:
-    """USER.md + MEMORY.md + episodic storage."""
+    """USER.md + MEMORY.md + episodic + wiki storage."""
 
     def __init__(self, root: Optional[Path] = None):
         self.root = root or MEMORY_ROOT
+        self._wiki = WikiStore(root=self.root)
         self._ensure_root()
 
     def _ensure_root(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
         (self.root / EPISODIC_DIR).mkdir(exist_ok=True)
+        # wiki dirs are created by WikiStore.__init__
 
     # -------------------------------------------------------------------------
     # USER memory
@@ -149,22 +157,87 @@ class MemoryStore:
         return sorted(dates)
 
     # -------------------------------------------------------------------------
+    # Wiki operations (delegated to WikiStore)
+    # -------------------------------------------------------------------------
+
+    def save_wiki_entry(
+        self, path: str, content: str, tags: Optional[list[str]] = None
+    ) -> WikiEntry:
+        """Save a wiki entry (create or overwrite)."""
+        return self._wiki.save_wiki_entry(path, content, tags=tags)
+
+    def load_wiki_entry(self, path: str) -> Optional[WikiEntry]:
+        """Load a wiki entry by path."""
+        return self._wiki.load_wiki_entry(path)
+
+    def delete_wiki_entry(self, path: str) -> bool:
+        """Delete a wiki entry."""
+        return self._wiki.delete_wiki_entry(path)
+
+    def search_wiki(
+        self,
+        tags: Optional[list[str]] = None,
+        query: str = "",
+        max_entries: int = 5,
+    ) -> list[WikiEntry]:
+        """Search wiki entries by tag and keyword matching."""
+        return self._wiki.search_wiki(tags=tags, query=query, max_entries=max_entries)
+
+    def list_wiki_entries(self, tag: Optional[str] = None) -> list[dict]:
+        """List wiki entries from index, optionally filtered by tag."""
+        return self._wiki.list_wiki_entries(tag=tag)
+
+    def list_wiki_categories(self) -> list[str]:
+        """List all wiki category directories."""
+        return self._wiki.list_wiki_categories()
+
+    # -------------------------------------------------------------------------
     # Prompt injection
     # -------------------------------------------------------------------------
 
-    def load_for_prompt(self) -> str:
+    def load_for_prompt(self, context_hint: str | None = None) -> str:
         """Load combined memories for prompt injection.
 
-        Returns tagged content: USER + MEMORY + episodic.
+        v2 注入顺序（含 Wiki）：
+        1. USER.md（用户偏好，全量）
+        2. Wiki 条目（按 context_hint 检索匹配的条目）
+        3. MEMORY.md（长期记忆，全量）
+        4. episodic/（仅今日+昨日摘要）
+
+        Args:
+            context_hint: Current user message for wiki retrieval context.
+                          Pass None to skip wiki search (fallback to recent entries).
+
+        Returns:
+            Tagged memory content string.
         """
         parts = []
+
+        # 1. USER.md always
         user = self.load_user_memory()
         if user:
             parts.append(f"<user_memory>\n{user}\n</user_memory>")
+
+        # 2. Wiki entries — search by context or load recent
+        wiki_entries = self.search_wiki(query=context_hint or "", max_entries=5)
+        if wiki_entries:
+            wiki_parts = []
+            for entry in wiki_entries:
+                wiki_parts.append(
+                    f'<wiki_entry path="{entry.path}" title="{entry.title}">\n'
+                    f"{entry.content}\n"
+                    f"</wiki_entry>"
+                )
+            parts.append(f"<wiki_entries>\n" + "\n\n".join(wiki_parts) + "\n</wiki_entries>")
+
+        # 3. MEMORY.md (legacy)
         memory = self.load_memory()
         if memory:
             parts.append(f"<memory>\n{memory}\n</memory>")
+
+        # 4. Recent episodic
         recent = self.load_recent_episodic()
         if recent:
             parts.append(f"<episodic>\n{recent}\n</episodic>")
+
         return "\n\n".join(parts)

@@ -13,6 +13,7 @@ class TestSaveMemoryTool:
             MockStore.return_value = mock_store
 
             result = save_memory.invoke({
+                "target": "memory",
                 "content": "User prefers dark mode and uses VSCode as primary editor, typically works on Python projects."
             })
 
@@ -40,7 +41,7 @@ class TestSaveMemoryTool:
             MockStore.return_value = mock_store
 
             long_content = "This is a very long content string that exceeds two hundred characters in length. " * 5
-            result = save_memory.invoke({"content": long_content})
+            result = save_memory.invoke({"target": "memory", "content": long_content})
 
             assert "..." in result  # truncated
 
@@ -50,6 +51,6 @@ class TestSaveMemoryTool:
             mock_store = MagicMock()
             MockStore.return_value = mock_store
 
-            result = save_memory.invoke({"content": "Short note for memory"})
+            result = save_memory.invoke({"target": "memory", "content": "Short note for memory"})
             assert "..." not in result
             assert "Short note for memory" in result

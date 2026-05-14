@@ -12,7 +12,7 @@ MemoryType = Literal["user", "project"]
 class MemoryEntry:
     """A single memory entry with frontmatter metadata.
 
-    Used for L3 (MEMORY.md) and project memories.
+    Used for MEMORY.md and project memories.
     """
     name: str
     description: str
@@ -67,3 +67,27 @@ updated: {self.updated_at}
             content=content,
             updated_at=updated_at,
         )
+
+
+@dataclass
+class WikiEntry:
+    """A single wiki entry — structured knowledge curated by the LLM.
+
+    Stored as JSON in wiki/entries/<path>.json.
+    The LLM decides what to create, update, and organize via save_memory.
+    """
+    path: str                     # e.g. "project/language"
+    title: str                    # human-readable title
+    summary: str                  # one-line summary for index
+    content: str                  # full markdown content
+    tags: list[str] = field(default_factory=list)
+    updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
+
+
+@dataclass
+class WikiIndex:
+    """Wiki index — lightweight metadata for fast retrieval without loading all entries."""
+    version: int = 1
+    updated_at: str = ""
+    entries: dict[str, dict] = field(default_factory=dict)
+    # entries key = path, value = {title, summary, tags, updated_at}
