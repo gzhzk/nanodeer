@@ -23,7 +23,6 @@
   - [执行流程](#执行流程)
   - [存储路径](#存储路径)
   - [信号与状态设计](#信号与状态设计)
-  - [Agent / Harness / App 解耦](#agent--harness--app-解耦)
 - [App 设计](#app-设计)（规划中）
   - [三种模式](#三种模式)
 - [工具](#工具)
@@ -36,7 +35,7 @@
 
 - **DeerFlow** — 中间件链 + 状态机；`next_action` 信号路由
 - **Claude Code** — 工具优先、clarification 驱动；`<clarification>` 标签暂停执行
-- **OpenClaw** — L1/L2/L3 三层记忆；Agent 通过 `save_memory` 主动维护 L3
+- **OpenClaw** — L1-L4 分层记忆；LLM 通过 `save_memory` 主动维护 wiki 结构化知识
 - **NanoClaw** — Docker 沙箱隔离；每线程独享容器、卷挂载、路径映射
 
 ## 状态
@@ -133,7 +132,7 @@ docker run -v $(pwd):/workspace nanodeer "整理 PDF"
 
 ## 背景
 
-去年年末，我开始接触 Agent 相关实践 —— 彼时理解很粗糙，就是觉得能让 AI 帮自己干活。今年3月初，导师随口提了一句 "harness engineering 最近挺火的，多了解了解一下"，我开始四处找资料学习，也顺手用起了 Claude Code。3月底，**DeerFlow** 进入了我的视线：字节开源的这个项目让我第一次看到企业级 Agent 框架应该长什么样子——状态机、中间件链、沙箱隔离、分层记忆，每块各司其职。我反复读了好几篇介绍文章，心想：原来 Agent 可以这样工程化。
+去年年末，我开始接触 Agent 相关实践 —— 彼时理解还很粗糙，就是觉得 Agent 就是在 LLM 的基础上加上了一些工具、存储记忆等功能实现让 AI 帮自己干活。今年3月初，导师随口提了一句 "Harness Engineering 最近挺火的，多了解了解一下"，我开始四处找资料学习，也顺手用起了 Claude Code。3月底，**DeerFlow** 进入了我的视线：字节开源的这个项目让我第一次看到企业级 Agent 框架应该长什么样子——状态机、中间件链、沙箱隔离、分层记忆，每块各司其职。我反复读了好几篇介绍文章，心想：原来 Agent 可以这样工程化。
 
 本来故事可能到这里就结束了。但3月最后一天晚上，我去参加了字节的暑期招聘宣讲。印象很深的是那句字节的企业口号 —— *"和优秀的人，做有挑战的事"*。宣讲会进行中，手机屏幕上无意间闪过一行消息 —— Claude Code "开源了"。那一刻突然有种说不清的冲动：DeerFlow 让我看到了框架该有的样子，Claude Code 让我看到了产品能做成什么样，再加上国内爆火的小龙虾 OpenClaw 的启发，所有东西突然串在了一起。当晚回到宿舍，我写下了第一版设想。
 
@@ -265,139 +264,14 @@ nanodeer/
 
 ### 层级设计
 
-#### Layer 1: 数据层
+**Layer 1 — 数据层**: 两个数据载体 — `ThreadState`（持久化：messages、next_action、todos、artifacts、sandbox）和 `TurnSignals`（临时：memory_context、error、clarification、skip_tool）。
+**Layer 2 — 沙箱隔离层**: 每线程 Docker 容器，宿主机路径映射到 `/mnt/user-data/`。9 个 sandbox-aware 工具通过 `SandboxExecTool` 路由。
 
-两个数据载体：
+**Layer 3 — 工具与中间件链**: 16 个内置 `@tool` 函数。9 个中间件分布在 4 个钩子上 — before_llm、after_llm、before_tools、after_tools_all。沙箱工具在工厂组装时包装。
 
-**ThreadState** — 跨 turn 持久化，pydantic BaseModel：
-```python
-class ThreadState(BaseModel):
-    thread_id     : str | None        # 线程标识
-    messages      : list[BaseMessage]  # 对话历史
-    next_action   : NextAction         # PROCESS | WAIT | END
-    todos         : Annotated[list[dict], merge_todos]   # 任务列表
-    artifacts     : Annotated[list[str], merge_artifacts] # 产物路径
-    title         : str | None        # 对话标题
-    sandbox       : SandboxState | None  # 容器状态
-```
+**Layer 4 — 编排层**: `ReActExecutor` 原生异步循环。`NanoDeerFactory` 组装链、工具和 LLM。Prompt 按上下文自动渲染。
 
-**TurnSignals** — 单 turn 临时数据载体：
-```python
-class TurnSignals:
-    clarification_question : str | None   # <clarification>...</clarification>
-    memory_context       : str | None   # MemoryMiddleware 写入
-    error                : dict | None  # {"type": "...", "detail": "..."}
-    skip_tool            : bool = False  # 跳过 tool.ainvoke()，用 skip_tool_result
-    skip_tool_result     : str | None    # skip_tool=True 时作为工具结果返回
-```
-
-#### Layer 2: 沙箱隔离层
-
-**Sandbox** — 敏感操作执行空间。
-
-| 方面 | 详情 |
-|------|------|
-| **每线程容器** | 每个线程拥有独立的 Docker 容器 |
-| **宿主机挂载** | `base_path/{thread_id}/user-data` → `/mnt/user-data/` |
-| **工作目录** | `{base_path}/{thread_id}/user-data`（Docker 和 Local 统一） |
-| **默认 Provider** | `DockerSandboxProvider` — 卷挂载，`network=none`，`read_only` rootfs |
-| **回退 Provider** | `LocalSandboxProvider` — 子进程，无隔离 |
-
-sandbox-aware 工具：`read_file` `write_file` `ls` `glob` `grep` `bash` `git` `exec_python`
-
-Host 直连工具（无沙箱路由）：`web_search` `read_image` `save_memory` `save_user_memory` `write_todo` `list_todos` `spawn_subagent`
-
-#### Layer 3: 工具层
-
-**Tools** — 纯执行单元，LangChain `@tool` 装饰，无沙箱感知。Skills（`invoke_skill`）是工具的数据扩展。sandbox-aware 工具通过 `wrap_tool_for_sandbox` 路由到 Layer 2；host 工具直连。
-
-**MiddlewareChain** — 4 个钩子，9 个链中拦截器 + 1 个 App 层：
-
-```
-before_llm:       ThreadData → File → Memory → Todo → Sandbox
-after_llm:        Clarification → Title
-before_tools:     Detection → Handling → MemoryMiddleware → Sandbox
-after_tools_all:  Sandbox
-```
-
-**9 个链中中间件 + 1 个 App 层中间件：**
-
-| 分组 | 中间件 | 钩子 | 职责 |
-|------|--------|------|------|
-| **Context** | ThreadDataMiddleware | before_llm | 创建线程目录 |
-| | FileMiddleware | before_llm | 写上传文件到磁盘 |
-| | MemoryMiddleware | before_llm | 加载记忆上下文 + file list |
-| | TodoMiddleware | before_llm | 解析 write_todo 结果 |
-| **Signal** | ClarificationMiddleware | after_llm | 检测 `<clarification>` 标签 |
-| | TitleMiddleware | after_llm | 首轮生成标题 |
-| **Safety** | DetectionMiddleware | before_llm | 沙箱已释放检查 |
-| | HandlingMiddleware | before_tools/after_llm | 错误处理框架（placeholder） |
-| | SandboxMiddleware | multi-hook | 容器获取/释放 + bash 审计 |
-| **Intercept** | MemoryMiddleware | before_llm + before_tools | before_llm: 加载记忆上下文；before_tools: 拦截 save_memory，写宿主机 |
-| **App 层** | CompressionMiddleware | NanoEngine 调用 | Token 阈值压缩 |
-
-**wrap_tool_for_sandbox** — 把 sandbox-aware 工具路由到 Layer 2 容器内执行。配置驱动（`SANDBOX_TOOL_CONFIGS`），单一 `SandboxExecTool` 类。
-
-#### Layer 4: 编排层
-
-**ReActExecutor** — 原生 ReAct 循环，无 LangGraph 依赖：
-
-```
-while True:
-    before_llm()  → END? break → WAIT? return
-    LLM.invoke()
-    after_llm()   → WAIT? return → END? break
-    for tool_call:
-        before_tools() → END? break
-        tool.invoke()
-    after_tools_all()
-    → PROCESS? continue
-```
-
-**NanoDeerFactory** — 将 `MiddlewareChain` + modules + LLM + tools 接入 `ReActExecutor`，通过 `RuntimeFeatures` 控制功能开关。
-
-**CompressionMiddleware** — 不在链中，由 App 层在 `executor.run()` 结束后调用：
-```python
-final_state = await executor.run(state)
-compressed = compression_mw.compress(final_state.messages)
-if compressed:
-    final_state.messages = compressed
-```
-
-**PromptConfig** — 按需自动渲染 sections，节省 token：
-
-| Section | 渲染条件 |
-|---------|---------|
-| `<memory>` | `signals.memory_context` 非空 |
-| `<todos>` | `state.todos` 非空 |
-| `<skills>` | `config.skills=True` 且 `"invoke_skill"` 在 tools 里 |
-| `<subagent>` | `config.subagent=True` 且 `"spawn_subagent"` 在 tools 里 |
-| `<tools>` | 始终渲染 |
-
-#### Layer 5: 应用层
-
-**NanoEngine** — 应用层入口：
-
-```python
-from nanodeer.engine import NanoEngine
-
-engine = NanoEngine(config)
-result = await engine.run("分析这个文件", thread_id="xxx")
-```
-
-**create_nanodeer_agent** — 底层入口，返回 `(executor, compression_mw)`：
-
-```python
-from nanodeer.agent.factory import create_nanodeer_agent
-
-executor, compression_mw = create_nanodeer_agent(
-    model=llm,
-    tools=my_tools,
-    features=RuntimeFeatures(),
-    memory_store=...,       # Agent 实现（MemoryStore）
-    subagent_runner=...,   # Agent 实现（SubagentRunner）
-)
-```
+**Layer 5 — 应用层**: `NanoEngine` 入口点。`CompressionMiddleware` 在执行后压缩消息。
 
 ### 执行流程
 
@@ -459,9 +333,11 @@ checkpoint 保存 → 下一轮或结束
 
 ```
 ~/.nanodeer/
-├── memory/                  # L3 记忆（Agent 主动维护的知识）
+├── memory/                  # 记忆（Agent 主动维护的知识）
 │   ├── USER.md              # 用户偏好和上下文
-│   ├── MEMORY.md            # 长期事实和知识
+│   ├── MEMORY.md            # 传统扁平记忆
+│   ├── wiki/                # Wiki 条目（结构化、带标签、可搜索）
+│   │   └── entries/         # 各条目独立存储为 JSON 文件
 │   └── episodic/            # 会话日志（仅追加）
 │
 ├── todos/                   # 任务规划
@@ -483,7 +359,7 @@ checkpoint 保存 → 下一轮或结束
 
 | 路径 | 所属 | 用途 | 运行后是否保留 |
 |------|------|------|--------------|
-| `~/.nanodeer/memory/` | Agent | L3 记忆（USER/MEMORY/episodic） | 是 |
+| `~/.nanodeer/memory/` | Agent | 记忆（USER/MEMORY/wiki/episodic） | 是 |
 | `~/.nanodeer/todos/` | Agent | 任务追踪 | 是 |
 | `~/.nanodeer/threads/{id}/` | Harness | 沙箱工作目录 | 否（容器清理） |
 | `~/.nanodeer/threads/{id}/checkpoint.json` | Harness | ThreadState 快照 | 是（session resume） |
@@ -526,40 +402,7 @@ NanoDeer 使用**信号**（临时数据）和**状态**（持久数据）进行
 | `status` | "ready" / "released" |
 
 
-### Agent / Harness / App 解耦
-
-#### 依赖方向
-
-```
-App 层  ──imports──→  Harness 层（框架）
-                        │
-                        ├── ThreadState / TurnSignals  （数据总线）
-                        ├── MiddlewareChain            （拦截机制）
-                        ├── Sandbox / ToolRunner       （执行空间）
-                        ├── ReActExecutor              （循环执行）
-                        └── Factory                    （装配）
-
-Harness 内部无 Agent 业务逻辑，memory/plan/subagent 由 App 注入。
-```
-
-**单向依赖原则**：Agent 实现可以依赖 Harness 接口，但 Harness 绝对不知道 Agent 的业务逻辑。
-
-#### 三层角色
-
-| 层级 | 谁 | 做什么 |
-|---|---|---|
-| **App** | 你的应用代码 | 调用 `NanoEngine.run()` 或 `create_nanodeer_agent()`，把 Agent 实现作为参数传入 |
-| **Harness** | nanodeer 框架 | 定义接口；执行 ReAct 循环；不知道 memory/subagent 的业务逻辑 |
-| **Agent** | 你写的业务逻辑 | 实现 `MemoryStore`、`SubagentRunner`；在构建时注入到 Harness |
-
-#### 注入点
-
-| Harness 注入点 | Agent 实现什么 | App 传入 |
-|---|---|---|
-| `memory_store` | `load()`、`save()`、`load_for_prompt()` | `MyMemoryStore()` |
-| `subagent_runner` | `collect_spawn()`、`get_results()` | `MySubagentRunner()` |
-| `extra_middlewares` | 按 hook 名的自定义中间件列表 | `{"before_llm": [...], "after_tools_all": [...]}` |
-| `tools` | `list[BaseTool]` | `my_custom_tools` |
+<!-- Agent / Harness / App 解耦 — 详见 docs/ -->
 
 ---
 
@@ -577,50 +420,23 @@ Harness 内部无 Agent 业务逻辑，memory/plan/subagent 由 App 注入。
 
 ## 工具
 
-**文件 & Shell**（沙箱感知 — 在 Docker 容器内运行）
-
-| 工具 | 描述 |
-|------|------|
-| `read_file` | 从虚拟路径读取文件内容 |
-| `write_file` | 向虚拟路径写入内容 |
-| `ls` | 列出目录内容 |
-| `glob` | 查找匹配 glob 模式的文件 |
-| `grep` | 在文件中搜索正则模式 |
-| `bash` | 在容器内执行 Bash 命令 |
-| `git` | Git 操作（本地，在沙箱内执行） |
-| `exec_python` | 在沙箱内执行任意 Python 代码 |
-
-**外部**（在宿主机运行 — 网络可用）
-
-| 工具 | 描述 |
-|------|------|
-| `web_search` | 通过 DuckDuckGo HTML 搜索 |
-| `read_image` | 读取图片文件，返回 base64 给视觉模型 |
-
-**记忆**
-
-| 工具 | 描述 |
-|------|------|
-| `save_memory` | 保存内容到 USER.md 或 MEMORY.md（target 参数）；`mode="append"` 追加，`mode="replace"` 覆盖 |
-
-**待办事项**
-
-| 工具 | 描述 |
-|------|------|
-| `write_todo` | 创建/更新待办，含 content、status、priority |
-| `list_todos` | 列出所有当前待办事项 |
-
-**子 Agent**
-
-| 工具 | 描述 |
-|------|------|
-| `spawn_subagent` | 在独立沙箱容器中运行并行子 Agent 任务 |
-
-**技能**
-
-| 工具 | 描述 |
-|------|------|
-| `invoke_skill` | 从 `.md` 文件加载并返回技能工作流 |
+| 工具 | 分类 | 描述 |
+|------|------|------|
+| `read_file` | 文件 & Shell | 从虚拟路径读取文件内容 |
+| `write_file` | 文件 & Shell | 向虚拟路径写入内容 |
+| `ls` | 文件 & Shell | 列出目录内容 |
+| `glob` | 文件 & Shell | 查找匹配 glob 模式的文件 |
+| `grep` | 文件 & Shell | 在文件中搜索正则模式 |
+| `bash` | 文件 & Shell | 在容器内执行 Bash 命令 |
+| `git` | 文件 & Shell | Git 操作（本地，在沙箱内执行） |
+| `exec_python` | 文件 & Shell | 在沙箱内执行任意 Python 代码 |
+| `web_search` | 外部 | 通过 DuckDuckGo HTML 搜索 |
+| `read_image` | 外部 | 读取图片文件，返回 base64 给视觉模型 |
+| `save_memory` | 记忆 | 保存到 wiki（`wiki/<category>/<name>`）、user（`user`）或 memory（`memory`）。支持 `tags` 和 `mode`（append/replace）。 |
+| `write_todo` | 待办事项 | 创建/更新待办，含 content、status、priority |
+| `list_todos` | 待办事项 | 列出所有当前待办事项 |
+| `spawn_subagent` | 子 Agent | 在独立沙箱容器中运行并行子 Agent 任务 |
+| `invoke_skill` | 技能 | 从 `.md` 文件加载并返回技能工作流 |
 
 ---
 
@@ -638,7 +454,7 @@ Harness 内部无 Agent 业务逻辑，memory/plan/subagent 由 App 注入。
 
 **Prompt 自动检测**：prompt sections 只在数据存在且功能开关打开时渲染，最小化轻量任务的 token 消耗。
 
-**记忆层级**：L1（当前消息）、L2（每日情景）、L3（Agent 通过 `save_memory` 主动维护）。
+**记忆层级**：L1（当前消息）· L2（会话日志）· L3（USER.md / MEMORY.md，Agent 主动维护的事实）· L4（wiki 条目，结构化、带标签、上下文感知检索）
 
 ---
 
@@ -670,7 +486,11 @@ Harness 内部无 Agent 业务逻辑，memory/plan/subagent 由 App 注入。
 
 [NanoClaw](https://github.com/qwibitai/nanoclaw) —— Docker 沙箱隔离模式的启发。
 
+[DeepSeek](https://deepseek.com/) —— 提供 deepseek-v4-flash 模型，推理效率极高。
+
 [MiniMax](https://www.minimaxi.com/) —— 提供驱动本项目的 MiniMax-M2.7 模型服务。
+
+[Andrej Karpathy](https://github.com/karpathy) —— [LLM wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) 概念的提出者，启发了本项目的 wiki 记忆系统：让 LLM 自主策展结构化知识库。
 
 ## 许可证
 

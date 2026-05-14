@@ -1,6 +1,6 @@
 # NanoDeer
 
-[English](./README.md) | 中文
+English | [中文](./README_zh.md) 
 
 🚀 **NanoDeer** is a minimal AI agent harness with native async ReAct, middleware interception, and Docker-sandbox isolation.
 
@@ -19,11 +19,10 @@ Built-in capabilities: file/git/bash tools with sandbox routing, async parallel 
 - [Background](#background)
 - [Main Architecture](#main-architecture)
   - [6-Layer Architecture](#6-layer-harness-design)
+  - [Layers Design](#layers-design)
   - [Execution Flow](#execution-flow)
   - [Storage Paths](#storage-paths)
   - [Signal & State Design](#signal--state-design)
-  - [Layers Design](#layers-design)
-  - [Agent / Harness / App Decoupling](#agent-harness-app-decoupling)
 - [App Design（Planned）](#app-designplanned)
   - [Three Modes](#three-modes)
 - [Tools](#tools)
@@ -87,7 +86,7 @@ nanodeer/
 |--------|-------------|
 | **DeerFlow** | Middleware chain + state machine; `next_action` signal routing |
 | **Claude Code** | Tool-first, clarification-driven; `<clarification>` tag pauses execution |
-| **OpenClaw** | L1/L2/L3 tiered memory; agent self-maintains L3 via `save_memory` |
+| **OpenClaw** | Layered memory (L1-L4); wiki-structured knowledge curated by the LLM via `save_memory` |
 | **NanoClaw** | Docker sandbox isolation; per-thread container, volume mount, path translation |
 
 ## Status
@@ -261,139 +260,14 @@ The story might have ended there. But on the last evening of March, I attended B
 
 ### Layers Design
 
-#### Layer 1: Data
+**Layer 1 — Data**: Two carriers — `ThreadState` (persistent: messages, next_action, todos, artifacts, sandbox) and `TurnSignals` (ephemeral: memory_context, error, clarification, skip_tool).
+**Layer 2 — Sandbox**: Per-thread Docker containers via `DockerSandboxProvider`. Host path mapped to `/mnt/user-data/`. 9 sandbox-aware tools routed through `SandboxExecTool`.
 
-Two data carriers:
+**Layer 3 — Tools + MiddlewareChain**: 16 built-in `@tool` functions. 9 middlewares in 4 hooks — before_llm, after_llm, before_tools, after_tools_all. Sandbox-aware tools wrapped at assembly.
 
-**ThreadState** — persistent across turns, pydantic BaseModel:
-```python
-class ThreadState(BaseModel):
-    thread_id     : str | None        # thread identifier
-    messages      : list[BaseMessage]  # conversation history
-    next_action   : NextAction         # PROCESS | WAIT | END
-    todos         : Annotated[list[dict], merge_todos]   # task list
-    artifacts     : Annotated[list[str], merge_artifacts] # artifact paths
-    title         : str | None        # conversation title
-    sandbox       : SandboxState | None  # container state
-```
+**Layer 4 — Orchestration**: `ReActExecutor` runs native async loop. `NanoDeerFactory` assembles chain + tools + LLM. Prompt sections auto-render based on available context.
 
-**TurnSignals** — ephemeral, fresh each turn:
-```python
-class TurnSignals:
-    clarification_question : str | None   # <clarification>...</clarification>
-    memory_context       : str | None   # MemoryMiddleware writes
-    error                : dict | None  # {"type": "...", "detail": "..."}
-    skip_tool            : bool = False  # skip tool.ainvoke(), use skip_tool_result
-    skip_tool_result     : str | None    # result returned when skip_tool=True
-```
-
-#### Layer 2: Sandbox
-
-**Sandbox** — execution space for sensitive operations.
-
-| Aspect | Detail |
-|--------|--------|
-| **Per-thread container** | Each thread gets its own Docker container |
-| **Host mount** | `base_path/{thread_id}/user-data` → `/mnt/user-data/` |
-| **Working dir** | `{base_path}/{thread_id}/user-data` (Docker and Local unified) |
-| **Default provider** | `DockerSandboxProvider` — volume mount, `network=none`, `read_only` rootfs |
-| **Fallback provider** | `LocalSandboxProvider` — subprocess, no isolation |
-
-sandbox-aware tools: `read_file` `write_file` `ls` `glob` `grep` `bash` `git` `exec_python`
-
-Host tools (no sandbox routing): `web_search` `read_image` `save_memory` `save_user_memory` `write_todo` `list_todos` `spawn_subagent`
-
-#### Layer 3: Tools
-
-**Tools** — pure execution units, LangChain `@tool` decorated, no sandbox awareness. Skills (`invoke_skill`) are data extensions for tools. sandbox-aware tools route through `wrap_tool_for_sandbox` to Layer 2; host tools run directly.
-
-**MiddlewareChain** — 9 interceptors in 4 hooks:
-
-```
-before_llm:       ThreadData → File → Memory → Todo
-after_llm:        Clarification → Title
-before_tools:     Detection → Handling → MemoryMiddleware → Sandbox
-after_tools_all:  Sandbox
-```
-
-**9 Middlewares in chain + 1 App-layer:**
-
-| Group | Middleware | Hook | Responsibility |
-|-------|-----------|------|----------------|
-| **Context** | ThreadDataMiddleware | before_llm | Create thread directories |
-| | FileMiddleware | before_llm | Write uploaded files to disk |
-| | MemoryMiddleware | before_llm | Load memory context + file list |
-| | TodoMiddleware | before_llm | Parse write_todo results |
-| **Signal** | ClarificationMiddleware | after_llm | Detect `<clarification>` tag |
-| | TitleMiddleware | after_llm | Generate title from first turn |
-| **Safety** | DetectionMiddleware | before_llm | Sandbox released check |
-| | HandlingMiddleware | before_tools/after_llm | Error handling |
-| | SandboxMiddleware | multi-hook | Container acquire/release + bash audit |
-| **Intercept** | MemoryMiddleware | before_llm + before_tools | before_llm: load memory context; before_tools: intercept save_memory, write on host |
-| **App-layer** | CompressionMiddleware | called by NanoEngine | Token threshold compression |
-
-**wrap_tool_for_sandbox** — routes sandbox-aware tools to Layer 2 containers. Config-driven (`SANDBOX_TOOL_CONFIGS`), single `SandboxExecTool` class.
-
-#### Layer 4: Orchestration
-
-**ReActExecutor** — native ReAct loop, no LangGraph dependency:
-
-```
-while True:
-    before_llm()  → END? break → WAIT? return
-    LLM.invoke()
-    after_llm()   → WAIT? return → END? break
-    for tool_call:
-        before_tools() → END? break
-        tool.invoke()
-    after_tools_all()
-    → PROCESS? continue
-```
-
-**NanoDeerFactory** — assembles `MiddlewareChain` + modules + LLM + tools into `ReActExecutor`, feature-gated via `RuntimeFeatures`.
-
-**CompressionMiddleware** — not in chain, called by App layer after `executor.run()`:
-```python
-final_state = await executor.run(state)
-compressed = compression_mw.compress(final_state.messages)
-if compressed:
-    final_state.messages = compressed
-```
-
-**PromptConfig** — auto-detect sections for token optimization:
-
-| Section | Render condition |
-|---------|------------------|
-| `<memory>` | `signals.memory_context` non-empty |
-| `<todos>` | `state.todos` non-empty |
-| `<skills>` | `config.skills=True` AND `"invoke_skill"` in tools |
-| `<subagent>` | `config.subagent=True` AND `"spawn_subagent"` in tools |
-| `<tools>` | always |
-
-#### Layer 5: Application
-
-**NanoEngine** — App layer entry point:
-
-```python
-from nanodeer.engine import NanoEngine
-
-engine = NanoEngine(config)
-result = await engine.run("analyze this file", thread_id="xxx")
-```
-
-**create_nanodeer_agent** — lower-level entry, returns `(executor, compression_mw)`:
-
-```python
-from nanodeer.agent.factory import create_nanodeer_agent
-
-executor, compression_mw = create_nanodeer_agent(
-    model=llm,
-    tools=my_tools,
-    features=RuntimeFeatures(),
-    memory_store=...,       # Agent implementation (MemoryStore)
-    subagent_runner=...,   # Agent implementation (SubagentRunner)
-)
-```
+**Layer 5 — Application**: `NanoEngine` entry point. `CompressionMiddleware` compresses messages post-execution.
 
 
 ### Execution Flow
@@ -456,9 +330,11 @@ All runtime data is stored under `~/.nanodeer/`. Harness and App layers maintain
 
 ```
 ~/.nanodeer/
-├── memory/                  # L3 Memory (agent-maintained knowledge)
+├── memory/                  # Memory (agent-maintained knowledge)
 │   ├── USER.md              # User preferences and context
-│   ├── MEMORY.md            # Long-term facts and knowledge
+│   ├── MEMORY.md            # Legacy flat-file memory
+│   ├── wiki/                # Wiki entries (structured, tagged, searchable)
+│   │   └── entries/         # Individual entries as JSON files
 │   └── episodic/            # Session logs (append-only)
 │
 ├── todos/                   # Task planning
@@ -480,7 +356,7 @@ All runtime data is stored under `~/.nanodeer/`. Harness and App layers maintain
 
 | Path | Owner | Purpose | Persists After Run |
 |------|-------|---------|-------------------|
-| `~/.nanodeer/memory/` | Agent | L3 memory (USER/MEMORY/episodic) | Yes |
+| `~/.nanodeer/memory/` | Agent | Memory (USER/MEMORY/wiki/episodic) | Yes |
 | `~/.nanodeer/todos/` | Agent | Task tracking | Yes |
 | `~/.nanodeer/threads/{id}/` | Harness | Sandbox working directory | No (container cleanup) |
 | `~/.nanodeer/threads/{id}/checkpoint.json` | Harness | ThreadState snapshot | Yes (session resume) |
@@ -524,41 +400,7 @@ NanoDeer uses **signals** (ephemeral data) and **state** (persistent data) for m
 
 
 
-### Agent / Harness / App Decoupling
-
-#### Dependency Direction
-
-```
-App Layer  ──imports──→  Harness Layer (framework)
-                        │
-                        ├── ThreadState / TurnSignals  （data bus）
-                        ├── MiddlewareChain            （interception）
-                        ├── Sandbox / ToolRunner       （execution space）
-                        ├── ReActExecutor              （loop execution）
-                        └── Factory                    （assembly）
-
-Harness has zero knowledge of Agent business logic.
-memory/plan/subagent are injected by App, not imported by Harness.
-```
-
-**One-way dependency**: Agent implementations can depend on Harness interfaces, but Harness has no knowledge of Agent's business logic.
-
-#### Three Parts
-
-| Part | Who | Does |
-|---|---|---|
-| **App** | Your application code | Calls `NanoEngine.run()` or `create_nanodeer_agent()`, passes Agent implementations as arguments |
-| **Harness** | nanodeer framework | Defines interfaces; executes ReAct loop; knows nothing about memory/subagent business |
-| **Agent** | Your implementation | Implements `MemoryStore`, `SubagentRunner`; injected into Harness at build time |
-
-#### Injection Points
-
-| Harness Injection Point | Agent Implements | App Passes |
-|---|---|---|
-| `memory_store` | `load()`, `save()`, `load_for_prompt()` | `MyMemoryStore()` |
-| `subagent_runner` | `collect_spawn()`, `get_results()` | `MySubagentRunner()` |
-| `extra_middlewares` | Custom middleware list per hook | `{"before_llm": [...], "after_tools_all": [...]}` |
-| `tools` | `list[BaseTool]` | `my_custom_tools` |
+<!-- Agent / Harness / App Decoupling removed — see docs/ for details -->
 
 ---
 
@@ -576,50 +418,23 @@ memory/plan/subagent are injected by App, not imported by Harness.
 
 ## Tools
 
-**File & Shell** (sandbox-aware — run inside Docker container)
-
-| Tool | Description |
-|------|-------------|
-| `read_file` | Read file content from virtual path |
-| `write_file` | Write content to virtual path |
-| `ls` | List directory contents |
-| `glob` | Find files matching glob pattern |
-| `grep` | Search for regex pattern in files |
-| `bash` | Execute bash command in container |
-| `git` | Git operations (local only, inside sandbox) |
-| `exec_python` | Execute arbitrary Python code inside sandbox |
-
-**External** (run on host — network available)
-
-| Tool | Description |
-|------|-------------|
-| `web_search` | Search via DuckDuckGo HTML |
-| `read_image` | Read image file, return base64 for vision |
-
-**Memory**
-
-| Tool | Description |
-|------|-------------|
-| `save_memory` | Save to USER.md or MEMORY.md (target); `mode="append"` or `mode="replace"` |
-
-**Plan**
-
-| Tool | Description |
-|------|-------------|
-| `write_todo` | Create/update todo with content, status, priority |
-| `list_todos` | List all current todos |
-
-**Subagent**
-
-| Tool | Description |
-|------|-------------|
-| `spawn_subagent` | Run parallel subagent task in own sandbox container |
-
-**Skills**
-
-| Tool | Description |
-|------|-------------|
-| `invoke_skill` | Load and return skill workflow from `.md` file |
+| Tool | Category | Description |
+|------|----------|-------------|
+| `read_file` | File & Shell | Read file content from virtual path |
+| `write_file` | File & Shell | Write content to virtual path |
+| `ls` | File & Shell | List directory contents |
+| `glob` | File & Shell | Find files matching glob pattern |
+| `grep` | File & Shell | Search for regex pattern in files |
+| `bash` | File & Shell | Execute bash command in container |
+| `git` | File & Shell | Git operations (local only, inside sandbox) |
+| `exec_python` | File & Shell | Execute arbitrary Python code inside sandbox |
+| `web_search` | External | Search via DuckDuckGo HTML |
+| `read_image` | External | Read image file, return base64 for vision |
+| `save_memory` | Memory | Save to wiki (`wiki/<category>/<name>`), user (`user`), or memory (`memory`). Supports `tags` and `mode` (append/replace). |
+| `write_todo` | Plan | Create/update todo with content, status, priority |
+| `list_todos` | Plan | List all current todos |
+| `spawn_subagent` | Subagent | Run parallel subagent task in own sandbox container |
+| `invoke_skill` | Skills | Load and return skill workflow from `.md` file |
 
 ---
 
@@ -637,7 +452,7 @@ memory/plan/subagent are injected by App, not imported by Harness.
 
 **Prompt Auto-Detection** — prompt sections render only when their data is present AND their feature flag is True, minimizing token waste for lightweight tasks.
 
-**Memory Tiers** — L1: `ThreadState.messages` (current context) · L2: append-once episodic log · L3: agent actively maintained via `save_memory` tool.
+**Memory Tiers** — L1: `ThreadState.messages` (current context) · L2: episodic session logs · L3: USER.md / MEMORY.md (agent-maintained facts) · L4: wiki entries (structured, tagged, context-aware retrieval)
 
 ---
 
@@ -668,7 +483,11 @@ To my mentor — for opening the door to Agent and Harness Engineering, and enco
 
 [NanoClaw](https://github.com/qwibitai/nanoclaw) — for the Docker sandbox isolation pattern.
 
+[DeepSeek](https://deepseek.com/) — for providing the deepseek-v4-flash model with exceptional inference efficiency.
+
 [MiniMax](https://www.minimaxi.com/) — for providing the MiniMax-M2.7 model service that powers this project.
+
+[Andrej Karpathy](https://github.com/karpathy) — for the [LLM wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) concept that inspired the wiki memory system: letting the LLM curate its own structured knowledge base.
 
 ## License
 
