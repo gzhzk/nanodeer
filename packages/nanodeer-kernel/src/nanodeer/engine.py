@@ -37,10 +37,16 @@ class RunResult:
     events: list = field(default_factory=list)  # JSON events from --json-events mode
 
 
-def _create_llm(config: HarnessConfig, model_name: str | None = None):
-    """Create a ChatModel from HarnessConfig."""
-    from langchain_anthropic import ChatAnthropic
+# Providers whose native API follows OpenAI's format
+_OPENAI_COMPATIBLE = {"openai", "siliconflow", "gemini", "groq", "ollama"}
 
+
+def _create_llm(config: HarnessConfig, model_name: str | None = None):
+    """Create a ChatModel from HarnessConfig.
+
+    Routes to ChatOpenAI for OpenAI-compatible providers (siliconflow, openai,
+    gemini, groq, ollama) and ChatAnthropic for Anthropic-compatible ones.
+    """
     prov_cfg = config.agents.defaults
     provider = prov_cfg.provider
     name = model_name or prov_cfg.model
@@ -55,13 +61,26 @@ def _create_llm(config: HarnessConfig, model_name: str | None = None):
     if pcfg is None:
         raise ValueError(f"Provider '{provider}' not found in config.yaml.")
 
-    return ChatAnthropic(
-        model=name,
-        anthropic_api_key=pcfg.api_key,
-        base_url=pcfg.api_base,
-        max_tokens=prov_cfg.max_tokens,
-        temperature=prov_cfg.temperature,
-    )
+    if provider in _OPENAI_COMPATIBLE:
+        from langchain_openai import ChatOpenAI
+
+        return ChatOpenAI(
+            model=name,
+            api_key=pcfg.api_key,
+            base_url=pcfg.api_base,
+            max_tokens=prov_cfg.max_tokens,
+            temperature=prov_cfg.temperature,
+        )
+    else:
+        from langchain_anthropic import ChatAnthropic
+
+        return ChatAnthropic(
+            model=name,
+            anthropic_api_key=pcfg.api_key,
+            base_url=pcfg.api_base,
+            max_tokens=prov_cfg.max_tokens,
+            temperature=prov_cfg.temperature,
+        )
 
 
 class NanoEngine:
@@ -107,11 +126,16 @@ class NanoEngine:
                     from nanodeer.agent.checkpoint import FileCheckpointer
                     self._checkpointer = FileCheckpointer(self.config.thread.storage_path)
                 # else: None (no checkpoint)
+            display_name = self._model_name
+            if display_name is None:
+                cfg = self.config.agents.defaults
+                display_name = f"{cfg.provider}/{cfg.model}"
             self._executor, self._compression_mw = create_nanodeer_agent(
                 model=llm,
                 tools=self._tools,
                 features=self._features,
                 checkpointer=self._checkpointer,
+                model_name=display_name,
             )
         return self._executor
 

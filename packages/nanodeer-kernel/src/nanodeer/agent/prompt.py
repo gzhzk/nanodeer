@@ -94,14 +94,15 @@ _CRITICAL_REMINDERS = """**Clarification Signal**: When you need clarification, 
 **Be direct and helpful**"""
 
 
-def _identity_section() -> str:
-    return """<identity_and_constraints>
+def _identity_section(model_name: str = "") -> str:
+    model_line = f"\nModel: {model_name}" if model_name else ""
+    return f"""<identity_and_constraints>
 <role>
-You are NanoDeer, a lightweight AI super agent built with NanoDeer.
+You are NanoDeer, a lightweight AI super agent built with NanoDeer.{model_line}
 </role>
 
 {_SAFETY_RULES}
-</identity_and_constraints>""".format(_SAFETY_RULES=_SAFETY_RULES)
+</identity_and_constraints>"""
 
 
 def _tools_section(tools: list[str]) -> str:
@@ -161,6 +162,7 @@ def _todos_section(todos: list[dict]) -> str:
 def build_base_system_prompt(
     tools: list[str],
     config: PromptConfig | None = None,
+    model_name: str = "",
 ) -> str:
     """Build static base (identity + tools + safety + working_dir + output).
 
@@ -170,7 +172,7 @@ def build_base_system_prompt(
         config = PromptConfig()
 
     sections = [
-        _identity_section(),
+        _identity_section(model_name),
         _tools_section(tools),
     ]
     if config.skills and "invoke_skill" in tools:
@@ -188,6 +190,7 @@ def build_lead_agent_prompt(
     tools: list[str],
     signals: "TurnSignals",
     config: PromptConfig | None = None,
+    model_name: str = "",
 ) -> str:
     """Build full prompt: cached static base + fresh dynamic injection.
 
@@ -200,7 +203,7 @@ def build_lead_agent_prompt(
         config = PromptConfig()
 
     if state.system_prompt is None:
-        state.system_prompt = build_base_system_prompt(tools, config)
+        state.system_prompt = build_base_system_prompt(tools, config, model_name)
 
     dynamic = []
     if config.memory and signals and signals.memory_context:

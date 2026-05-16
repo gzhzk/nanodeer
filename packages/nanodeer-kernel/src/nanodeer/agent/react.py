@@ -28,6 +28,7 @@ Loop:
       → END?   break
 """
 
+import json
 import time
 from typing import AsyncGenerator
 
@@ -54,6 +55,7 @@ class ReActExecutor:
         chain: MiddlewareChain,
         prompt_config: PromptConfig | None = None,
         checkpointer=None,
+        model_name: str = "",
     ):
         self.llm = llm.bind_tools(tools)
         self._tools = tools
@@ -61,6 +63,7 @@ class ReActExecutor:
         self._tool_map = {t.name: t for t in tools}
         self._prompt_config = prompt_config or PromptConfig()
         self._checkpointer = checkpointer
+        self._model_name = model_name
 
     async def run(
         self,
@@ -89,7 +92,7 @@ class ReActExecutor:
 
             # LLM call
             tools_names = [t.name for t in self._tools]
-            prompt = build_lead_agent_prompt(state, tools_names, signals, self._prompt_config)
+            prompt = build_lead_agent_prompt(state, tools_names, signals, self._prompt_config, self._model_name)
             # Convert custom messages to LangChain types for LLM compatibility
             lc_messages = [LCSystemMessage(content=prompt)]
             for msg in state.messages:
@@ -111,7 +114,7 @@ class ReActExecutor:
                 for tc in raw_tcs
             ]
             state.messages.append(AIMessage(
-                content=final_resp.content,
+                content=resp.content,
                 tool_calls=our_tcs or None,
             ))
 
@@ -239,7 +242,7 @@ class ReActExecutor:
 
             # Build LLM messages
             tools_names = [t.name for t in self._tools]
-            prompt = build_lead_agent_prompt(state, tools_names, signals, self._prompt_config)
+            prompt = build_lead_agent_prompt(state, tools_names, signals, self._prompt_config, self._model_name)
             lc_messages = [LCSystemMessage(content=prompt)]
             for msg in state.messages:
                 if isinstance(msg, HumanMessage):
@@ -250,48 +253,52 @@ class ReActExecutor:
                     lc_messages.append(LCHumanMessage(content=f"[tool: {msg.name}] {msg.content}"))
 
             # LLM streaming — yield tokens as they arrive
-            # NOTE: with streaming, tool_calls accumulate incrementally. We must
-            # collect from ALL chunks and merge based on tool index to avoid duplicates.
             raw_tcs_by_index: dict[int, dict] = {}
             collected_content = ""
-            last_chunk = None
 
-            # TEMP: Use ainvoke for testing framework completeness
-            # TODO: Re-enable astream once MiniMax streaming format is properly handled
-            resp = await self.llm.ainvoke(lc_messages)
-            raw_tcs_raw = getattr(resp, "tool_calls", None) or []
-            if isinstance(resp.content, str):
-                collected_content = resp.content
-            elif isinstance(resp.content, list):
-                for block in resp.content:
-                    if isinstance(block, dict):
-                        if block.get("type") == "text":
-                            collected_content += block.get("text", "")
-                        elif block.get("type") == "tool_use":
-                            # tool_use block: extract name/id for this tool
-                            idx = block.get("index", 0)
-                            if idx not in raw_tcs_by_index:
-                                raw_tcs_by_index[idx] = {"name": "", "args": {}, "id": ""}
-                            raw_tcs_by_index[idx]["name"] = block.get("name", "")
-                            raw_tcs_by_index[idx]["id"] = block.get("id", "")
-            for tc in raw_tcs_raw:
-                idx = tc.get("index", 0)
-                if idx not in raw_tcs_by_index:
-                    raw_tcs_by_index[idx] = {"name": "", "args": {}, "id": ""}
-                if tc.get("name"):
-                    raw_tcs_by_index[idx]["name"] = tc["name"]
-                if tc.get("id"):
-                    raw_tcs_by_index[idx]["id"] = tc["id"]
-                if tc.get("args"):
-                    raw_tcs_by_index[idx]["args"].update(tc["args"])
+            # Use astream for incremental token & tool_call delivery
+            async for chunk in self.llm.astream(lc_messages):
+                # Accumulate text content + yield token events
+                if isinstance(chunk.content, str):
+                    if chunk.content:
+                        collected_content += chunk.content
+                        yield {
+                            "event": "llm_token",
+                            "text": chunk.content,
+                            "threadId": thread_id,
+                        }
+                elif isinstance(chunk.content, list):
+                    for block in chunk.content:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            text = block.get("text", "")
+                            if text:
+                                collected_content += text
+                                yield {
+                                    "event": "llm_token",
+                                    "text": text,
+                                    "threadId": thread_id,
+                                }
 
-            # Build final response
-            final_resp = LAIMessage(content=collected_content, tool_calls=[])
+                # Accumulate tool call chunks (built up incrementally)
+                for tcc in getattr(chunk, "tool_call_chunks", []):
+                    idx = tcc.get("index", 0)
+                    if idx not in raw_tcs_by_index:
+                        raw_tcs_by_index[idx] = {"name": "", "args": {}, "id": ""}
+                    if tcc.get("name"):
+                        raw_tcs_by_index[idx]["name"] = tcc["name"]
+                    if tcc.get("id"):
+                        raw_tcs_by_index[idx]["id"] = tcc["id"]
+                    if tcc.get("args"):
+                        try:
+                            parsed = json.loads(tcc["args"]) if isinstance(tcc["args"], str) else tcc["args"]
+                            raw_tcs_by_index[idx]["args"].update(parsed)
+                        except (json.JSONDecodeError, TypeError):
+                            pass
 
             # Convert indexed tool_calls to list (only complete ones with name)
             raw_tcs = [
                 tc for tc in raw_tcs_by_index.values()
-                if tc["name"]  # Only include if name is complete
+                if tc["name"]
             ]
 
             our_tcs = [
@@ -299,9 +306,17 @@ class ReActExecutor:
                 for tc in raw_tcs
             ]
             state.messages.append(AIMessage(
-                content=final_resp.content,
+                content=collected_content,
                 tool_calls=our_tcs or None,
             ))
+
+            # Yield assistant response text for the UI to display
+            yield {
+                "event": "assistant_response",
+                "text": collected_content,
+                "has_tools": bool(raw_tcs),
+                "threadId": thread_id,
+            }
 
             # after_llm chain (streaming)
             async for ev in self._chain.after_llm_streaming(state, signals):
@@ -341,6 +356,13 @@ class ReActExecutor:
 
                 if state.next_action == NextAction.END:
                     break
+
+                yield {
+                    "event": "tool_call",
+                    "name": tc["name"],
+                    "args": tc.get("args", {}),
+                    "threadId": thread_id,
+                }
 
                 if signals.skip_tool:
                     content = signals.skip_tool_result or "Done"

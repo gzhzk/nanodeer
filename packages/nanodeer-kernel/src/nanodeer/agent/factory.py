@@ -87,6 +87,7 @@ class NanoDeerFactory:
         subagent_runner=None,
         extra_middlewares: dict[str, list] | None = None,
         checkpointer=None,
+        model_name: str = "",
     ):
         from .middlewares import MiddlewareChain
         from .middlewares.thread_data import ThreadDataMiddleware
@@ -174,6 +175,7 @@ class NanoDeerFactory:
                 subagent=self.features.prompt_subagent,
             ),
             checkpointer=checkpointer,
+            model_name=model_name,
         )
         # Replace with wrapped tools for actual execution (sandbox routing)
         executor._tools = wrapped_tools
@@ -196,6 +198,7 @@ def create_nanodeer_agent(
     subagent_runner: Any = None,
     extra_middlewares: dict[str, list] | None = None,
     checkpointer=None,
+    model_name: str = "",
 ):
     """Create ReActExecutor (was: CompiledStateGraph)."""
     from ..tools import default_tools
@@ -209,4 +212,5 @@ def create_nanodeer_agent(
         subagent_runner=subagent_runner,
         extra_middlewares=extra_middlewares,
         checkpointer=checkpointer,
+        model_name=model_name,
     )  # returns (executor, compression_mw)
