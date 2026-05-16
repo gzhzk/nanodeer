@@ -17,7 +17,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # Load .env file for development
 # Search upward from this file's location for .env
 from pathlib import Path as _P
-_env = _P(__file__).resolve().parents[3] / ".env"
+_env = _P(__file__).resolve().parents[4] / ".env"
 load_dotenv(_env)
 
 

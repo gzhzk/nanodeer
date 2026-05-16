@@ -21,6 +21,7 @@ dependencies = [
 
 [project.optional-dependencies]
 docker = ["docker>=7.0.0"]
+web = ["gradio>=6.0.0"]
 
 [project.scripts]
 nanodeer = "nanodeer.brain:main"
