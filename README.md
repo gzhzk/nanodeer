@@ -2,7 +2,7 @@
 
 # NanoDeer
 
-**A 6-Layer AI Agent Harness Built from Scratch**
+**🚀 A 6-Layer AI Agent Harness Built from Scratch**
 
 [![MIT License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 [![Python 3.13](https://img.shields.io/badge/Python-3.13-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
@@ -11,7 +11,7 @@
 [![Docker](https://img.shields.io/badge/Docker-required-2496ED?style=flat-square&logo=docker&logoColor=white)](https://docker.com)
 [![Version 0.1.0](https://img.shields.io/badge/Version-0.1.0-orange?style=flat-square)](https://github.com/gzhzk/nanodeer)
 
-Layered Architecture · Middleware Pipeline · Sandbox Isolation · Tiered Memory System
+Native ReAct · Middleware Pipeline · Sandbox Isolation · Brain/Shell Protocol
 
 *Architecture is what you build. Engineering is how you build it.*
 
@@ -19,130 +19,66 @@ English | [中文](./README_zh.md)
 
 </div>
 
+---
+
 ## Table of Contents
 
 - [Project Structure](#project-structure)
-- [Design Inspirations](#design-inspirations)
-- [Status](#status)
-- [Target Users & Tasks](#target-users--tasks)
-  - [What does it solve](#what-does-it-solve)
-  - [Supported Channels](#supported-channels)
-  - [Safety](#safety)
-- [Installation & Quick Start](#installation--quick-start)
+- [Quick Start](#quick-start)
 - [Background](#background)
-- [Main Architecture](#main-architecture)
-  - [6-Layer Architecture](#6-layer-harness-design)
-  - [Layers Design](#layers-design)
+- [Key Differentiators](#key-differentiators)
+- [Architecture](#architecture)
+  - [6-Layer Overview](#6-layer-overview)
   - [Execution Flow](#execution-flow)
+  - [Design Decisions Deep Dive](#design-decisions-deep-dive)
   - [Storage Paths](#storage-paths)
   - [Signal & State Design](#signal--state-design)
-- [App Design（Planned）](#app-designplanned)
-  - [Three Modes](#three-modes)
-- [Tools](#tools)
 - [Core Patterns](#core-patterns)
 - [Design Principles](#design-principles)
+- [Tools](#tools)
+- [Project Status & Roadmap](#project-status--roadmap)
+- [Design Inspirations](#design-inspirations)
 - [Acknowledgments](#acknowledgments)
 - [License](#license)
+
+---
 
 ## Project Structure
 
 ```
 nanodeer/
 ├── packages/
-│   ├── nanodeer-kernel/          # Python Kernel (Layer 1-4) — pip install nanodeer
+│   ├── nanodeer-kernel/          # Python Kernel (Layer 1-4)
 │   │   └── src/nanodeer/
 │   │       ├── agent/           # ReActExecutor, MiddlewareChain, State
-│   │       │   ├── react.py    # ReActExecutor.run() + run_streaming()
-│   │       │   ├── factory.py   # NanoDeerFactory
-│   │       │   ├── state.py    # ThreadState, TurnSignals
-│   │       │   ├── messages.py  # Message types
-│   │       │   ├── prompt.py   # System prompt
-│   │       │   └── middlewares/ # MiddlewareChain (9 middlewares)
-│   │       │       ├── base.py           # Middleware + MiddlewareChain
-│   │       │       ├── thread_data.py   # Per-thread directory init
-│   │       │       ├── file.py         # User-uploaded file handling
-│   │       │       ├── memory.py       # Memory context injection
-│   │       │       ├── todo.py         # Todo tool result parsing
-│   │       │       ├── clarification.py # <clarification> tag detection
-│   │       │       ├── title.py       # Thread title generation
-│   │       │       ├── detection.py    # Health check
-│   │       │       ├── handling.py    # Error handling
-│   │       │       └── sandbox.py     # Container lifecycle + bash audit
-│   │       ├── sandbox/           # Docker sandbox isolation
-│   │       ├── tools/             # 16 built-in tools
-│   │       ├── subagent/          # Parallel subagent execution
-│   │       ├── skills/            # Skill loader
-│   │       ├── memory/            # L3 memory storage
-│   │       ├── plan/              # Task planning (TodoStore)
-│   │       ├── brain.py           # NDJSON stdio interface (Layer 5)
-│   │       ├── engine.py         # NanoEngine (Layer 5 entry)
-│   │       └── config.py         # HarnessConfig
+│   │       │   ├── react.py    # Native async ReAct loop (no LangGraph)
+│   │       │   ├── factory.py  # NanoDeerFactory — assembles chain + tools
+│   │       │   ├── state.py    # ThreadState, TurnSignals, NextAction
+│   │       │   ├── messages.py # HumanMessage, AIMessage, ToolMessage
+│   │       │   ├── prompt.py   # System prompt assembly
+│   │       │   └── middlewares/ # 9 middlewares, 4 hooks
+│   │       ├── sandbox/         # Docker + Local sandbox providers
+│   │       ├── tools/           # 16 built-in tools
+│   │       ├── subagent/        # Parallel subagent executor
+│   │       ├── skills/          # Skill workflow loader
+│   │       ├── engine.py        # NanoEngine entry point
+│   │       ├── brain.py         # NDJSON stdio protocol adapter
+│   │       └── config.py        # HarnessConfig
 │   │
-│   └── nanodeer-sdk/             # TypeScript Shell (Layer 5-6)
+│   └── nanodeer-sdk/            # TypeScript Shell (Layer 5-6)
 │       └── src/
-│           ├── cli.ts            # CLI entry point
+│           ├── cli.ts           # Terminal UI
 │           ├── brain-client.ts  # Python process manager
-│           └── events.ts        # StreamEvent types
+│           └── events.ts        # StreamEvent type definitions
 │
-├── sandbox/                     # Sandbox Docker image
-├── tests/                       # Test suite
-├── docs/                        # Architecture docs
-├── examples/                    # Usage examples
-├── config.yaml                  # Configuration
-├── pyproject.toml               # Python package config
-└── .gitignore                   # Git ignore rules
+├── app/webui.py                 # Gradio debug console
+├── config.yaml                  # Harness configuration
+└── tests/                       # Test suite
 ```
 
-## Design Inspirations
+---
 
-| Source | Inspiration |
-|--------|-------------|
-| **DeerFlow** | Middleware chain + state machine; `next_action` signal routing |
-| **Claude Code** | Tool-first, clarification-driven; `<clarification>` tag pauses execution |
-| **OpenClaw** | Layered memory (L1-L4); wiki-structured knowledge curated by the LLM via `save_memory` |
-| **NanoClaw** | Docker sandbox isolation; per-thread container, volume mount, path translation |
-
-## Status
-
-**In development** — core framework stable.
-
-## Target Users & Tasks
-
-| User | Technical Level | Usage |
-|------|-----------------|-------|
-| Individual developers | High | CLI commands, direct interaction |
-| Small teams (3-5 people) | Medium | Feishu/WeCom Work bot, message-driven |
-
-### What does it solve
-
-**Lightweight tasks that web LLMs can't handle and OpenClaw is too heavy for:**
-
-```
-Task examples:
-• "Organize all PDFs on my desktop into folders"
-• "Analyze this Excel file and generate charts"
-• "Send me a weekly report every Friday at 5 PM"
-• "Write an automation script for me"
-• "Scrape competitor pricing from their website"
-• "Make a visualization report from this data"
-```
-
-**Core value: user says one thing in IM → Agent does the work locally in sandbox → result returned**
-
-### Supported Channels
-
-- **CLI**: `nanodeer cli "analyze this data"`
-- **API**: HTTP API (rebuilding)
-- **Channels**: IM bot integration (planned)
-
-### Safety
-
-- **Sandbox isolation**: All file operations run inside Docker containers
-- **Local only**: Data never leaves your machine, open source for audit
-- **Dangerous command blacklist**: `rm -rf /`, `mkfs`, `curl|bash`, etc.
-- **Path whitelist**: Only workspace directory accessible, system paths blocked
-
-## Installation & Quick Start
+## Quick Start
 
 ### Prerequisites
 - Python 3.10+
@@ -151,334 +87,403 @@ Task examples:
 ### Install
 
 ```bash
-# Clone
 git clone https://github.com/gzhzk/nanodeer
 cd nanodeer
 
-# Configure API key
 cp .env.example .env
-# Edit .env and add your API key (e.g., MINIMAX_API_KEY)
+# Edit .env with your API key
 
-# Install Python Kernel
+# Python Kernel
 pip install -e packages/nanodeer-kernel
 
-# Install TypeScript Shell
+# TypeScript Shell
 cd packages/nanodeer-sdk && npm install
 ```
 
 ### Run
 
 ```bash
-# From project root
-cd nanodeer
-
-# Single command mode
+# Single command
 npx tsx packages/nanodeer-sdk/src/cli.ts "say hello in 5 words"
 
-# Or install CLI globally
+# Or install globally
 npm install -g packages/nanodeer-sdk
-nanodeer "say hello"
+nanodeer "analyze this data"
 ```
 
-### Docker (Recommended for Teams)
+### Docker (Recommended)
 
 ```bash
-# Build image
 docker build -t nanodeer .
+docker run -v $(pwd):/workspace nanodeer "organize my PDFs"
+```
 
-# Run with workspace mount
-docker run -v $(pwd):/workspace nanodeer "organize PDFs"
+### Debug Console
+
+```bash
+.venv/bin/python app/webui.py
+# Opens at http://127.0.0.1:20264
 ```
 
 ### Configuration
 
 Edit `config.yaml` to configure:
-- LLM provider (MiniMax, Anthropic, OpenAI, etc.)
-- Sandbox settings (Docker image, container prefix)
+- LLM provider (MiniMax, Anthropic, OpenAI, SiliconFlow, etc.)
+- Sandbox settings (Docker image, network mode)
 - Thread storage paths
-
-## Background
-
-At the end of last year I started working on agent-related projects — my understanding was rough: just AI doing things for you. In early March my mentor mentioned "harness engineering is getting popular lately, maybe look into it." So I started searching for materials and picked up Claude Code along the way. By late March, **DeerFlow** came onto my radar. ByteDance's open-source project showed me for the first time what a proper enterprise-grade Agent harness framework should look like — state machine, middleware chain, sandbox isolation, tiered memory, every piece in its right place. I read through several articles multiple times. So this is how you engineer an agent.
-
-The story might have ended there. But on the last evening of March, I attended ByteDance's campus recruiting talk. One thing that stuck with me was their motto — *"(Work with great people, on challenging things." During the talk, a message flashed across my phone screen — Claude Code "went open source." Something clicked in that moment. DeerFlow showed me what a framework should look like. Claude Code showed me what a product could feel like. And with the inspiration of OpenClaw trending in China, everything suddenly connected. That night, back in my dorm, I wrote down the first draft.
-
-**The core idea**: distill the patterns that work — **native ReAct loop**, **middleware chain**, **Docker sandbox isolation**, **tiered memory** — into a focused, auditable foundation where every module has one job and every cross-cutting concern is interceptable.
 
 ---
 
-## Main Architecture
+## Background
 
-### 6-Layer Architecture
+At the end of last year I started working on agent-related projects — my understanding was rough: just AI doing things for you. In early March my mentor mentioned "harness engineering is getting popular lately, maybe look into it." So I started searching for materials and picked up Claude Code along the way.
+
+By late March, **DeerFlow** came onto my radar. ByteDance's open-source project showed me for the first time what a proper enterprise-grade Agent harness framework should look like — state machine, middleware chain, sandbox isolation, tiered memory, every piece in its right place.
+
+The story might have ended there. But on the last evening of March, I attended ByteDance's campus recruiting talk. One thing that stuck with me was their motto — *"Work with great people on challenging things."* During the talk, a message flashed across my phone screen — Claude Code went open source. Something clicked in that moment. DeerFlow showed me what a framework should look like. Claude Code showed me what a product could feel like. With OpenClaw trending in China, everything suddenly connected. That night, back in my dorm, I wrote down the first draft.
+
+**The core idea**: distill the patterns that work — native ReAct loop, middleware chain, Docker sandbox isolation, tiered memory — into a focused, auditable foundation where every module has one job and every cross-cutting concern is interceptable.
+
+---
+
+## Key Differentiators
+
+NanoDeer is a lightweight Agent harness built from scratch. What makes it different from LangGraph, CrewAI, and AutoGen:
+
+### 1. No LangGraph — Native ReAct Loop
+
+No graph compilation, no nodes, no edges. Just a pure `while True` async loop with 4 middleware hooks:
+
+```
+before_llm → LLM.ainvoke() → after_llm → [tool loop] → after_tools_all → loop or break
+```
+
+This is not a simplification for its own sake — it means you can read the entire execution path in one file ([react.py](packages/nanodeer-kernel/src/nanodeer/agent/react.py)), debug with standard Python tooling, and understand control flow without learning a graph DSL. No hidden state, no opaque serialization, no framework lock-in.
+
+### 2. Middleware Chain with `skip_tool` / `WAIT` Interception
+
+Most Agent frameworks route middleware as pre/post hooks around the LLM call. NanoDeer's middleware chain does that — but also intercepts **inside the tool loop**:
+
+| Mechanism | What it does |
+|-----------|-------------|
+| `skip_tool` | A middleware can intercept a tool call before execution, run its own logic, and set `skip_tool=True`. The tool loop skips `tool.ainvoke()` and uses `signals.skip_tool_result` instead. |
+| `WAIT` | Middleware sets `next_action = WAIT`, the ReAct loop breaks, and execution returns to the caller with a `clarification_question`. The LLM never sees the turn as "complete." |
+| `before_tools` | Middleware runs per-tool-call — not before all tools, but before **each individual** tool invocation. |
+
+This enables patterns like: memory middleware intercepts `save_memory`, writes directly to host storage, and skips sandbox routing — all without the executor knowing.
+
+### 3. Brain/Shell Protocol Separation
+
+Python is the **kernel** (brain), TypeScript is the **shell** (CLI). They communicate via NDJSON over stdio — no HTTP, no gRPC, no RPC framework.
+
+```
+TypeScript CLI  ──stdin──→  Python Brain  ──→  NanoEngine  ──→  ReActExecutor
+                              │
+                              └──stdout──  NDJSON stream events
+```
+
+This means:
+- You can `python -m nanodeer.brain --stdio` and pipe NDJSON manually for debugging
+- The kernel has zero HTTP dependencies
+- The shell can be replaced independently (CLI, Web UI, IM bot — all just consume NDJSON lines)
+- Process isolation: a kernel crash doesn't take down the UI
+
+### 4. Dual-Layer Sandbox Architecture
+
+Three design layers, not one:
+
+| Layer | File | Role |
+|-------|------|------|
+| **Tool Routing** | [sandbox/tools.py](packages/nanodeer-kernel/src/nanodeer/sandbox/tools.py) | SandboxExecTool wraps 9 tools at factory assembly, routes to Docker or Local transparently |
+| **Path Translation** | [sandbox/path.py](packages/nanodeer-kernel/src/nanodeer/sandbox/path.py) | Virtual `/mnt/user-data/...` ↔ physical `{base_path}/{exec_id}/user-data/...`, traversal-protected |
+| **Security Audit** | [middlewares/sandbox.py](packages/nanodeer-kernel/src/nanodeer/agent/middlewares/sandbox.py) | `before_tools` hook audits bash commands, blacklists dangerous patterns |
+
+### 5. Detection/Handling Separation
+
+Most frameworks handle errors in a single catch block. NanoDeer separates detection from decision across two middleware hooks:
+
+```
+DetectionMiddleware (before_tools)
+  └── writes signals.error = "sandbox_released" | "loop_timeout"
+  
+HandlingMiddleware (before_tools, runs after Detection)
+  └── reads signals.error, decides: END? retry? continue?
+```
+
+To add a new error type, you add a DetectionMiddleware entry and a HandlingMiddleware case — the control flow stays unchanged.
+
+---
+
+## Architecture
+
+### 6-Layer Overview
 
 ```
     ┌─────────────────────────────────────────────────────────┐
     │ Layer 6: TypeScript SDK / CLI                           │
-    │ nanodeer-sdk/src/                                       │
-    │   cli.ts          — Terminal UI (readline + chalk)      │
+    │   cli.ts          — Terminal UI                         │
     │   brain-client.ts — Process manager + NDJSON stdio      │
-    │   events.ts       — TypeScript type definitions         │
+    │   events.ts       — TypeScript types                    │
     └────────────────────────┬────────────────────────────────┘
                              │  spawn python -m nanodeer.brain
                              ▼
     ┌─────────────────────────────────────────────────────────┐
     │ Layer 5: Python Brain — Protocol Adapter                │
-    │ nanodeer-kernel/src/nanodeer/brain.py                   │
-    │   Responsibility: NDJSON stdin/stdout protocol          │
+    │   brain.py — NDJSON stdin/stdout protocol               │
     │   Receives execute/cancel/ping, yields stream events    │
     └────────────────────────┬────────────────────────────────┘
                              │  calls engine.run_streaming()
                              ▼
     ┌─────────────────────────────────────────────────────────┐
     │ Layer 4: NanoEngine — Application Entry                 │
-    │ nanodeer-kernel/src/nanodeer/engine.py                  │
-    │   Responsibility: creates ThreadState, calls executor,  │
-    │   extracts RunResult                                    │
-    │   App-layer compression (CompressionMiddleware hooks    │
-    │   here)                                                 │
+    │   engine.py — creates ThreadState, calls executor       │
+    │   App-layer compression lives here, not in middleware   │
     └────────────────────────┬────────────────────────────────┘
                              │  calls executor.run()
                              ▼
     ┌─────────────────────────────────────────────────────────┐
     │ Layer 3: ReActExecutor + MiddlewareChain                │
-    │   react.py       — Native async ReAct loop, 4 hooks     │
-    │   factory.py     — NanoDeerFactory assembles chain      │
-    │   state.py       — ThreadState, TurnSignals             │
-    │   prompt.py      — Prompt construction                  │
+    │   react.py   — Native async ReAct loop, 4 hooks        │
+    │   factory.py — NanoDeerFactory assembles chain          │
+    │   state.py   — ThreadState, TurnSignals, NextAction     │
+    │   prompt.py  — Prompt construction                      │
     └────────────────────────┬────────────────────────────────┘
                              │  tools.invoke()
                              ▼
     ┌─────────────────────────────────────────────────────────┐
     │ Layer 2: Tools + Sandbox                                │
-    │   tools/         — 16 built-in tools                    │
-    │   sandbox/       — DockerSandboxProvider / LocalSandbox │
-    │   sandbox/tools.py — SandboxExecTool wrapper            │
-    │   subagent/      — SubagentExecutor parallel execution  │
+    │   tools/     — 16 built-in tools                        │
+    │   sandbox/   — DockerSandboxProvider, path translation  │
+    │   subagent/  — SubagentExecutor (parallel)              │
     └────────────────────────┬────────────────────────────────┘
                              │  exec in container / local
                              ▼
     ┌─────────────────────────────────────────────────────────┐
     │ Layer 1: Data Layer                                     │
-    │   messages.py   — HumanMessage / AIMessage / ToolMessage│
-    │   memory/storage.py — File-based MemoryStore            │
-    │   checkpoint/   — FileCheckpointer for resume           │
+    │   messages.py — HumanMessage / AIMessage / ToolMessage  │
+    │   memory/     — File-based MemoryStore (3 tiers)        │
+    │   checkpoint/ — FileCheckpointer for session resume     │
     └─────────────────────────────────────────────────────────┘
 ```
-
-**Notes**:
-- Layer 5 (`brain.py`) is the stdio protocol adapter — allows external programs (TypeScript) to call Python Kernel
-- Layer 6 (`nanodeer-sdk`) is the TypeScript Shell — provides CLI, IM Bot interface, Web UI
-- Python Kernel (Layer 1-4) has no knowledge of TypeScript — communication is via NDJSON over stdio
-
-
-### Layers Design
-
-**Layer 1 — Data**: Two carriers — `ThreadState` (persistent: messages, next_action, todos, artifacts, sandbox) and `TurnSignals` (ephemeral: memory_context, error, clarification, skip_tool).
-**Layer 2 — Sandbox**: Per-thread Docker containers via `DockerSandboxProvider`. Host path mapped to `/mnt/user-data/`. 9 sandbox-aware tools routed through `SandboxExecTool`.
-
-**Layer 3 — Tools + MiddlewareChain**: 16 built-in `@tool` functions. 9 middlewares in 4 hooks — before_llm, after_llm, before_tools, after_tools_all. Sandbox-aware tools wrapped at assembly.
-
-**Layer 4 — Orchestration**: `ReActExecutor` runs native async loop. `NanoDeerFactory` assembles chain + tools + LLM. Prompt sections auto-render based on available context.
-
-**Layer 5 — Application**: `NanoEngine` entry point. `CompressionMiddleware` compresses messages post-execution.
-
 
 ### Execution Flow
 
 ```
-User Input (TypeScript CLI)
-  ↓
-brain-client.ts launches Python process, communicates via NDJSON stdin/stdout
+User Input (CLI / Web UI)
   ↓
 brain.py receives request, forwards to NanoEngine
   ↓
 NanoEngine.run_streaming() → ReActExecutor.run()
   ↓
-┌─ before_llm chain ──────────────────────────────────────────────────────┐
+┌─ before_llm chain ───────────────────────────────────────────────────────┐
 │  ThreadData   Creates {thread_id}/user-data/{workspace,uploads,outputs} │
-│  File         Writes uploaded files to uploads/ directory               │
-│  Memory       Loads USER/MEMORY/episodic into context                   │
+│  File         Writes uploaded files to uploads/                         │
+│  Memory       Loads USER/MEMORY/wiki/episodic into context              │
 │  Todo         Loads default.json todos                                  │
-│  Sandbox      Acquires or reuses Docker container                       │
-└─────────────────────────────────────────────────────────────────────────┘
+│  Sandbox      Acquires or reuses Docker container (idempotent)          │
+└──────────────────────────────────────────────────────────────────────────┘
   ↓
-LLM.ainvoke(prompt + messages)  ← LangChain call
+LLM.ainvoke(prompt + messages)
   ↓
-┌─ after_llm chain ───────────────────────────────────────────────────────┐
-│  Clarification   Detects <clarification> tag → WAIT                     │
-│  Title           Generates session title (after first turn)             │
-└─────────────────────────────────────────────────────────────────────────┘
+┌─ after_llm chain ────────────────────────────────────────────────────────┐
+│  Clarification  Detects <clarification> tag → sets WAIT → return to user │
+│  Title          Generates session title                                  │
+└──────────────────────────────────────────────────────────────────────────┘
   ↓
-[no tool_calls? → after_tools_all → END]
+[no tool_calls? → after_tools_all → END / WAIT? → break]
   ↓
-for each tool_call:
-  ┌─ before_tools chain ─────────────────────────────────────────────────┐
-  │  Detection   Checks if sandbox has been released                     │
-  │  Handling   Decides END or continue based on error type              │
-  │  Memory     Intercepts save_memory, writes directly to host          │
-  │  Sandbox    Bash command security audit                              │
-  └──────────────────────────────────────────────────────────────────────┘
+for each tool_call (individually, not batched):
+  ┌─ before_tools chain (per call) ───────────────────────────────────────┐
+  │  Detection   Checks sandbox health, detects anomalies                 │
+  │  Handling    Reads signals.error, decides END or continue             │
+  │  Memory      Intercepts save_memory → writes host → skip_tool=True    │
+  │  Sandbox     Audits bash commands for dangerous patterns              │
+  └───────────────────────────────────────────────────────────────────────┘
   ↓
-  tool.ainvoke(args, exec_id)
-    → SandboxExecTool routes to Docker or Local
+  tool.ainvoke(args)  ← SandboxExecTool routes to Docker or Local
   ↓
-┌─ after_tools_all chain ────────────────────────────────────────────────┐
-│  Sandbox   Releases container only on END (preserves PROCESS)          │
-└────────────────────────────────────────────────────────────────────────┘
+┌─ after_tools_all chain ─────────────────────────────────────────────────┐
+│  Sandbox  Releases container only on END (preserves on PROCESS)         │
+└──────────────────────────────────────────────────────────────────────────┘
   ↓
 checkpoint saved → next turn or END
 ```
 
-**Key design points**:
-- `before_llm` SandboxMiddleware checks module-level `_sandbox_context` for idempotent acquire across turns
-- `after_tools_all` releases sandbox only on `END`; `PROCESS` keeps container alive for next turn
-- `SandboxExecTool` wraps 9 tools (bash/git/read_file etc.) for Docker routing; virtual paths `/mnt/user-data/...` translate to host physical paths
-- `wrap_tool_for_sandbox` in the factory wraps tools at assembly time; routing is automatic at runtime
-- `save_memory`/`save_user_memory` bypass sandbox via `skip_tool` signal; written directly on host via MemoryMiddleware
-- `save_memory` supports `mode="append"` (default) or `mode="replace"`; LLM decides based on context
+Key design decisions visible in this flow:
+- **before_tools runs per tool call**, not once for all tools — each invocation gets independent middleware inspection
+- **skip_tool** lets middleware bypass `tool.ainvoke()` entirely (used by MemoryMiddleware for `save_memory`)
+- **Sandbox release is END-only** — `PROCESS` keeps the container alive across turns
+- **before_llm SandboxMiddleware is idempotent** — checks `_sandbox_context` before acquiring
+
+### Design Decisions Deep Dive
+
+#### Why no LangGraph?
+
+LangGraph's graph model adds indirection: you define nodes, edges, routing functions, and a compiled graph. To understand a single execution path, you trace through 4-5 indirections. NanoDeer's ReAct loop is a single `while True` block in [react.py](packages/nanodeer-kernel/src/nanodeer/agent/react.py) — you can read the entire control flow from top to bottom. The tradeoff: NanoDeer doesn't support branching graphs or parallel node execution natively. But for a linear ReAct loop (LLM → tools → LLM → tools → ...), graph compilation buys nothing.
+
+#### Why NDJSON over stdio instead of HTTP?
+
+- Zero network configuration — stdin/stdout works across SSH, Docker, tmux, systemd
+- Process isolation — a kernel crash doesn't take down the shell
+- Pipeable debugging — `echo '{"type":"ping"}' | python -m nanodeer.brain --stdio`
+- No HTTP server, no ports, no firewall rules
+- The tradeoff: no native request multiplexing (serial processing per process). Solved by spawning one kernel per session.
+
+#### Why `skip_tool` instead of conditional branches in the executor?
+
+The alternative is to write `if tool_name == "save_memory": ...` directly in the ReAct loop. That couples the executor to specific tool logic. With `skip_tool`, the MemoryMiddleware intercepts transparently — adding a new interceptor pattern doesn't require changing `react.py`. Same mechanism could be used for caching, rate limiting, or authorization checks.
+
+#### Why file-based persistence (no database)?
+
+Every persistence path in NanoDeer — checkpointer, MemoryStore, TodoStore, conversation history — uses flat files (JSON, Markdown). This is deliberate:
+- Zero infrastructure: no PostgreSQL, SQLite, Redis, or any daemon
+- Inspectable: `cat ~/.nanodeer/memory/USER.md` to see what the agent knows
+- Auditable: every write is a file create — backup is `cp -r ~/.nanodeer`
+- The tradeoff: no query language, no indexing beyond filename patterns. Acceptable for single-user/ small-team use.
+
+#### Why app-layer compression?
+
+Compression (summarizing old messages to stay within context window) runs in `NanoEngine.run()` after `executor.run()` returns — not as a middleware hook inside the loop. This means:
+- Compression doesn't affect the executor's control flow
+- The executor works with raw messages throughout the turn
+- Compression timing is controlled by the app layer, not the framework
+- Alternative compression strategies don't require middleware changes
 
 ### Storage Paths
 
-All runtime data is stored under `~/.nanodeer/`. Harness and App layers maintain separate subtrees.
+All runtime data under `~/.nanodeer/`. Harness and App layers maintain separate subtrees.
 
 ```
 ~/.nanodeer/
-├── memory/                  # Memory (agent-maintained knowledge)
+├── memory/                  # Agent-maintained knowledge
 │   ├── USER.md              # User preferences and context
 │   ├── MEMORY.md            # Legacy flat-file memory
-│   ├── wiki/                # Wiki entries (structured, tagged, searchable)
-│   │   └── entries/         # Individual entries as JSON files
+│   ├── wiki/entries/        # Structured wiki entries (JSON, tagged)
 │   └── episodic/            # Session logs (append-only)
 │
-├── todos/                   # Task planning
+├── todos/
 │   └── {slug}.json          # Todo list per project slug
 │
-├── threads/                 # Harness sandbox working dirs
-│   └── {thread_id}/         # Per-thread sandbox
-│       ├── checkpoint.json   # ThreadState snapshot (resumable)
-│       └── user-data/       # Volume-mounted to container /mnt/user-data/
-│           ├── workspace/   # User workspace
-│           ├── uploads/     # Uploaded files
-│           └── outputs/     # Generated outputs
+├── threads/{thread_id}/     # Per-thread sandbox
+│   ├── checkpoint.json      # ThreadState snapshot (resumable)
+│   └── user-data/           # Volume-mounted to container /mnt/user-data/
+│       ├── workspace/
+│       ├── uploads/
+│       └── outputs/
 │
-└── app/                     # App layer (API server — rebuilding)
-    ├── uploads/             # Uploaded file storage
-    ├── schedules/           # Scheduled job definitions
-    └── history/             # Thread run history (JSONL)
+├── conversations/           # Gradio web UI history (JSON)
+└── app/                     # App layer (API server)
 ```
 
-| Path | Owner | Purpose | Persists After Run |
-|------|-------|---------|-------------------|
-| `~/.nanodeer/memory/` | Agent | Memory (USER/MEMORY/wiki/episodic) | Yes |
-| `~/.nanodeer/todos/` | Agent | Task tracking | Yes |
-| `~/.nanodeer/threads/{id}/` | Harness | Sandbox working directory | No (container cleanup) |
-| `~/.nanodeer/threads/{id}/checkpoint.json` | Harness | ThreadState snapshot | Yes (session resume) |
-| `~/.nanodeer/app/uploads/` | App | File uploads | Configurable |
-| `~/.nanodeer/app/schedules/` | App | Scheduled jobs | Yes |
-| `~/.nanodeer/app/history/` | App | Run history | Yes |
-
-**Key principle**: `~/.nanodeer/threads/` is a sandbox workspace (ephemeral containers), while `~/.nanodeer/app/` stores persistent application data. They are separate concerns, not merged.
+| Path | Persists | Purpose |
+|------|----------|---------|
+| `~/.nanodeer/memory/` | Yes | Agent knowledge (USER/MEMORY/wiki/episodic) |
+| `~/.nanodeer/todos/` | Yes | Task tracking |
+| `~/.nanodeer/threads/{id}/` | No (ephemeral) | Sandbox working directory |
+| `~/.nanodeer/threads/{id}/checkpoint.json` | Yes | Session resume |
+| `~/.nanodeer/conversations/` | Yes | Web UI chat history |
 
 ### Signal & State Design
 
-NanoDeer uses **signals** (ephemeral data) and **state** (persistent data) for middleware communication and control flow.
+NanoDeer uses two data carriers with distinct lifetimes:
 
 **TurnSignals** — ephemeral, fresh each turn:
 
 | Signal | Written by | Read by | Effect |
 |--------|-----------|--------|--------|
 | `clarification_question` | ClarificationMiddleware | App layer | Display question to user, WAIT |
-| `memory_context` | MemoryMiddleware | Prompt | Inject memory into LLM context |
-| `error` | DetectionMiddleware | HandlingMiddleware | Decision: retry? fallback? END? |
+| `memory_context` | MemoryMiddleware | Prompt builder | Inject memory into LLM context |
+| `error` | DetectionMiddleware | HandlingMiddleware | Decision: END, retry, or continue |
+| `skip_tool` | Any before_tools middleware | ReActExecutor | Skip `tool.ainvoke()`, use `skip_tool_result` |
 
-**ThreadState fields** — persistent across turns:
+**ThreadState** — persistent across turns:
 
-| Field | Written by | Read by | Effect |
-|-------|-----------|---------|--------|
-| `thread_id` | App layer | All components | Thread identifier |
-| `messages` | Human/AI/Tool messages | Prompt | Conversation history |
-| `next_action` | Any middleware | ReActExecutor | `PROCESS` → tools; `WAIT` → return to caller; `END` → terminate |
-| `todos` | TodoMiddleware | Prompt | Inject task list into LLM context |
-| `artifacts` | Tools | App layer | Track generated file paths |
-| `title` | TitleMiddleware | App layer | Display conversation title |
-| `sandbox` | SandboxMiddleware | DetectionMiddleware | Container state |
-
-**SandboxState fields** — sub-field of ThreadState.sandbox:
-
-| Field | Meaning |
-|-------|---------|
-| `container_id` | Docker container ID or "local-{thread_id}" |
-| `working_dir` | Execution working directory |
-| `status` | "ready" / "released" |
-
-
-
-<!-- Agent / Harness / App Decoupling removed — see docs/ for details -->
-
----
-
-## App Design（Planned）
-
-### Three Modes
-
-| Mode | Description |
-|------|-------------|
-| **CLI** | `nanodeer cli "prompt"` — single-shot, colored output |
-| **Chat** | `nanodeer chat` — interactive multi-turn conversation |
-| **API** | `nanodeer run` — HTTP server (rebuilding) |
-
----
-
-## Tools
-
-| Tool | Category | Description |
-|------|----------|-------------|
-| `read_file` | File & Shell | Read file content from virtual path |
-| `write_file` | File & Shell | Write content to virtual path |
-| `ls` | File & Shell | List directory contents |
-| `glob` | File & Shell | Find files matching glob pattern |
-| `grep` | File & Shell | Search for regex pattern in files |
-| `bash` | File & Shell | Execute bash command in container |
-| `git` | File & Shell | Git operations (local only, inside sandbox) |
-| `exec_python` | File & Shell | Execute arbitrary Python code inside sandbox |
-| `web_search` | External | Search via DuckDuckGo HTML |
-| `read_image` | External | Read image file, return base64 for vision |
-| `save_memory` | Memory | Save to wiki (`wiki/<category>/<name>`), user (`user`), or memory (`memory`). Supports `tags` and `mode` (append/replace). |
-| `write_todo` | Plan | Create/update todo with content, status, priority |
-| `list_todos` | Plan | List all current todos |
-| `spawn_subagent` | Subagent | Run parallel subagent task in own sandbox container |
-| `invoke_skill` | Skills | Load and return skill workflow from `.md` file |
-
----
-
-## Core Patterns
-
-**Signal & State Architecture** — TurnSignals carry ephemeral data across hooks; ThreadState carries persistent data across turns. Middlewares write signals/state; other layers read and act on them.
-
-**Middleware** — Horizontal interceptor with hooks (`before_llm`, `after_llm`, `before_tools`, `after_tools_all`). Reads/writes `ThreadState`/`TurnSignals` but does not modify LLM or tools directly.
-
-**ThreadState** — Persistent data across turns. `TurnSignals` — ephemeral per-turn data.
-
-**ReAct Loop** — `LLM.invoke()` → if `tool_calls` exist, execute them → loop until `next_action != "process"`.
-
-**Detection/Handling Separation** — DetectionMiddleware detects issues and writes `signals.error`. HandlingMiddleware reads `signals.error` and decides the response. Future error types (llm_error, tool_error) can be added to both without changing the architecture.
-
-**Prompt Auto-Detection** — prompt sections render only when their data is present AND their feature flag is True, minimizing token waste for lightweight tasks.
-
-**Memory Tiers** — L1: `ThreadState.messages` (current context) · L2: episodic session logs · L3: USER.md / MEMORY.md (agent-maintained facts) · L4: wiki entries (structured, tagged, context-aware retrieval)
+| Field | Role |
+|-------|------|
+| `messages` | Full conversation history (Human/AI/Tool) |
+| `next_action` | `PROCESS` → continue loop; `WAIT` → return to caller; `END` → terminate |
+| `todos` | Task list injected into LLM context |
+| `artifacts` | File paths generated by tools |
+| `sandbox` | Container state (container_id, status) |
 
 ---
 
 ## Design Principles
 
-1. **One-way dependency**: Agent → Harness, Harness has no knowledge of Agent's business logic
-2. **Separation of concerns**: State / Sandbox / Tools / Middleware / Executor each has its own responsibility
-3. **Middleware intercepts**: Does not handle business logic, only handles cross-cutting concerns
-4. **Detection/Handling separation**: Detection writes signals, Handling decides response — expand error types without changing architecture
-5. **Compression App-layer controlled**: trigger timing decided by NanoEngine, not auto in before_llm
-6. **Prompt auto-detection**: sections render only when data present, minimizing token waste
-7. **Sandbox + Host dual paths**: Sensitive ops go through containers, host tools run directly on the host
-8. **Native ReAct loop**: no LangGraph dependency, lightweight and auditable
+1. **One-way dependency**: Agent → Harness. Harness has no knowledge of Agent's business logic.
+2. **Middleware intercepts, does not handle**: Cross-cutting concerns only. Business logic stays in tools.
+3. **Detection/Handling separation**: Detection writes `signals.error`, Handling decides the response. Add error types without changing architecture.
+4. **Compression is app-layer**: Timing decided by NanoEngine, not auto-triggered in middleware.
+5. **Prompt auto-detection**: Sections render only when data is present AND feature flag is True.
+6. **Sandbox + Host dual paths**: Sensitive ops through containers, `save_memory`/`write_todo` directly on host.
+7. **Native ReAct loop**: No LangGraph dependency. 300 lines of `while True` instead of a graph compiler.
+8. **File-based everything**: No database dependency. Inspectable, auditable, backup is `cp -r`.
+
+---
+
+## Core Patterns
+
+| Pattern | Description | Implementation |
+|---------|-------------|----------------|
+| **Middleware Chain** | 4 hooks intercept the ReAct loop at specific points. Middlewares read/write state and signals but don't modify LLM or tools directly. | [middlewares/base.py](packages/nanodeer-kernel/src/nanodeer/agent/middlewares/base.py) |
+| **Signal/State Separation** | TurnSignals carry ephemeral per-turn data. ThreadState carries persistent cross-turn data. | [state.py](packages/nanodeer-kernel/src/nanodeer/agent/state.py) |
+| **skip_tool Interception** | Middleware bypasses tool execution by setting a flag. Executor reads the flag and skips `tool.ainvoke()`. | [middlewares/memory.py](packages/nanodeer-kernel/src/nanodeer/agent/middlewares/memory.py) → [react.py](packages/nanodeer-kernel/src/nanodeer/agent/react.py) |
+| **WAIT / Clarification** | LLM's `<clarification>` tag triggers middleware to set `WAIT`, breaking the loop. Execution resumes on next user message. | [middlewares/clarification.py](packages/nanodeer-kernel/src/nanodeer/agent/middlewares/clarification.py) |
+| **Sandbox Tool Wrapping** | Tools wrapped at factory assembly time. Executor calls `SandboxExecTool.ainvoke()` transparently. | [sandbox/tools.py](packages/nanodeer-kernel/src/nanodeer/sandbox/tools.py) |
+| **Path Translation** | Virtual container paths mapped to physical host paths with exec_id isolation. Traversal protection. | [sandbox/path.py](packages/nanodeer-kernel/src/nanodeer/sandbox/path.py) |
+| **Brain/Shell Protocol** | NDJSON lines over stdin/stdout. Zero HTTP dependencies in kernel. Shell is independently replaceable. | [brain.py](packages/nanodeer-kernel/src/nanodeer/brain.py) |
+| **Memory Tiers** | L1: messages (context) · L2: episodic logs · L3: USER.md/MEMORY.md · L4: wiki entries (tagged, retrievable) | [memory/](packages/nanodeer-kernel/src/nanodeer/agent/memory/) |
+
+---
+
+## Tools
+
+| Tool | Category | Sandbox |
+|------|----------|---------|
+| `read_file`, `write_file`, `ls`, `glob`, `grep` | File | ✅ Docker/Local |
+| `bash`, `git`, `exec_python` | Shell | ✅ Docker/Local |
+| `web_search`, `read_image` | External | ✅ Docker/Local |
+| `save_memory` | Memory | ❌ Host (intercepted by middleware) |
+| `write_todo`, `list_todos` | Plan | ❌ Host (direct write) |
+| `spawn_subagent` | Subagent | ✅ Own sandbox container |
+| `invoke_skill` | Skills | ❌ Host |
+
+---
+
+## Project Status & Roadmap
+
+**Current (v0.1.0)** — Core framework stable:
+- ✅ Native ReAct loop with middleware chain
+- ✅ Docker + Local sandbox with path isolation
+- ✅ 16 built-in tools
+- ✅ File-based memory, todo, checkpoint, conversation persistence
+- ✅ NDJSON brain/shell protocol
+- ✅ TypeScript CLI + Gradio debug console
+- ✅ Subagent parallel execution (max 3 concurrent)
+- ✅ Skill workflow loader
+
+**In progress / planned:**
+
+| Area | Status |
+|------|--------|
+| Middleware: guardrail, retry, timeout, fallback | 📝 Planned |
+| Middleware: dangling tool call injection | 📝 Planned |
+| Middleware: view_image (base64 injection) | 📝 Planned |
+| HTTP API server (FastAPI, rebuilding) | 🔄 In progress |
+| IM bot integration (Feishu/WeCom) | 📝 Planned |
+| Evaluation framework | 📝 Planned |
+| Multi-model comparison benchmarks | 📝 Planned |
+
+---
+
+## Design Inspirations
+
+| Source | What it taught me |
+|--------|-------------------|
+| **DeerFlow** | Middleware chain + state machine; `next_action` signal routing |
+| **Claude Code** | Tool-first design, clarification-driven pauses via `<clarification>` tags |
+| **OpenClaw** | Layered memory (L1-L4); wiki-structured knowledge curated by the LLM |
+| **NanoClaw** | Docker sandbox isolation; per-thread containers, volume mounts, path translation |
 
 ---
 
@@ -500,7 +505,7 @@ To my mentor — for opening the door to Agent and Harness Engineering, and enco
 
 [MiniMax](https://www.minimaxi.com/) — for providing the MiniMax-M2.7 model service that powers this project.
 
-[Andrej Karpathy](https://github.com/karpathy) — for the [LLM wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) concept that inspired the wiki memory system: letting the LLM curate its own structured knowledge base.
+[Andrej Karpathy](https://github.com/karpathy) — for the LLM wiki concept that inspired the wiki memory system: letting the LLM curate its own structured knowledge base.
 
 ## License
 
