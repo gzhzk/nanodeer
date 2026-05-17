@@ -9,8 +9,7 @@ from .handling import HandlingMiddleware
 from .memory import MemoryMiddleware
 from .sandbox import SandboxMiddleware
 from .thread_data import ThreadDataMiddleware
-from .title import TitleMiddleware
-from .todo import TodoMiddleware
+from .plan import PlanMiddleware
 
 __all__ = [
     "Middleware",
@@ -22,7 +21,6 @@ __all__ = [
     "SandboxMiddleware",
     "ClarificationMiddleware",
     "CompressionMiddleware",
-    "TitleMiddleware",
     "ThreadDataMiddleware",
-    "TodoMiddleware",
+    "PlanMiddleware",
 ]

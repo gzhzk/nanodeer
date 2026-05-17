@@ -4,7 +4,8 @@ import pytest
 from nanodeer.tools import (
     read_file, write_file, ls, glob, grep, bash, git,
     web_search, read_image, exec_python, invoke_skill,
-    save_memory, write_todo, list_todos, spawn_subagent,
+    save_memory, create_plan, add_step, update_step, list_plans,
+    spawn_subagent,
 )
 
 
@@ -97,21 +98,45 @@ class TestToolSchema:
         assert "content" in props
         assert "target" in props
 
-    def test_write_todo_schema(self):
-        """write_todo accepts content, id, status, priority."""
-        schema = get_schema(write_todo)
+    def test_create_plan_schema(self):
+        """create_plan takes goal, optional title, optional steps."""
+        schema = get_schema(create_plan)
         props = schema["properties"]
-        assert "content" in props
-        assert "id" in props
-        assert "status" in props
-        assert "priority" in props
+        assert "goal" in props
+        assert "title" in props
+        assert "steps" in props
+        assert "goal" in schema.get("required", [])
 
-    def test_list_todos_schema(self):
-        """list_todos takes no arguments (empty required)."""
-        schema = get_schema(list_todos)
-        # list_todos has no required fields
+    def test_add_step_schema(self):
+        """add_step takes plan_id and content, optional dependencies."""
+        schema = get_schema(add_step)
+        props = schema["properties"]
+        assert "plan_id" in props
+        assert "content" in props
+        assert "dependencies" in props
         required = schema.get("required", [])
-        assert len(required) == 0
+        assert "plan_id" in required
+        assert "content" in required
+
+    def test_update_step_schema(self):
+        """update_step takes plan_id and step_id, optional status/result."""
+        schema = get_schema(update_step)
+        props = schema["properties"]
+        assert "plan_id" in props
+        assert "step_id" in props
+        assert "status" in props
+        assert "result" in props
+        required = schema.get("required", [])
+        assert "plan_id" in required
+        assert "step_id" in required
+
+    def test_list_plans_schema(self):
+        """list_plans takes optional plan_id."""
+        schema = get_schema(list_plans)
+        props = schema["properties"]
+        assert "plan_id" in props
+        required = schema.get("required", [])
+        assert len(required) == 0 or "plan_id" not in required
 
     def test_spawn_subagent_schema(self):
         """spawn_subagent takes name (optional), task (required)."""

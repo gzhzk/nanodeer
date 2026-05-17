@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 @dataclass
 class PromptConfig:
     memory: bool = True
-    todos: bool = True
+    plan: bool = True
     skills: bool = True
     subagent: bool = True
 
@@ -34,8 +34,10 @@ _TOOL_DESCRIPTIONS = {
     "exec_python": "Execute Python code. Args: code (str), timeout (int, optional)",
     "invoke_skill": "Load a skill workflow. Args: skill_name (str)",
     "save_memory": 'Save to long-term memory. Args: target (str: "wiki/<category>/<name>"|"user"|"memory"), content (str), tags (list[str], optional), mode (str: "append"|"replace", optional). wiki/ entries are structured, tagged, searchable — preferred for all durable knowledge.',
-    "write_todo": "Create or update a task. Args: content (str, optional), id (str, optional), status (str, optional), priority (int, optional)",
-    "list_todos": "List all tasks. No args.",
+    "create_plan": "Create a plan with a goal and optional initial steps. Args: goal (str), title (str, optional), steps (list[str], optional)",
+    "add_step": "Add a step to an existing plan. Args: plan_id (str), content (str), dependencies (list[str], optional)",
+    "update_step": "Update a step status/result. Args: plan_id (str), step_id (str), status (str, optional), result (str, optional)",
+    "list_plans": "List plans and their steps. Args: plan_id (str, optional)",
     "spawn_subagent": "Spawn a subagent and get results. Args: name (str), task (str), subagent_type (str, optional), thread_id (str, optional)",
 }
 
@@ -147,16 +149,8 @@ def _memory_section(memory_context: str) -> str:
     return f"<memory>\n{memory_context}\n\n---\n{_MEMORY_MAINTENANCE}\n</memory>"
 
 
-def _todos_section(todos: list[dict]) -> str:
-    if not todos:
-        return ""
-    lines = []
-    for todo in todos:
-        status = todo.get("status", "pending")
-        content = todo.get("content", "")
-        checkbox = "[x]" if status == "completed" else "[*]" if status == "in_progress" else "[ ]"
-        lines.append(f"{checkbox} {content}")
-    return "<todos>\n" + "\n".join(lines) + "\n</todos>"
+def _plan_section(plan_context: str) -> str:
+    return f"<plan>\n{plan_context}\n</plan>"
 
 
 def build_base_system_prompt(
@@ -197,7 +191,7 @@ def build_lead_agent_prompt(
     Static base (identity + tools + skills + subagent + working_dir + output)
     built once and cached in state.system_prompt.
 
-    Dynamic content (memory + todos + uploaded_files + date) built fresh each turn.
+    Dynamic content (plan + memory + uploaded_files + date) built fresh each turn.
     """
     if config is None:
         config = PromptConfig()
@@ -206,14 +200,12 @@ def build_lead_agent_prompt(
         state.system_prompt = build_base_system_prompt(tools, config, model_name)
 
     dynamic = []
+    if config.plan and signals and signals.plan_context:
+        dynamic.append(_plan_section(signals.plan_context))
     if config.memory and signals and signals.memory_context:
         dynamic.append(_memory_section(signals.memory_context))
     if signals and signals.uploaded_files_list:
         dynamic.append(f"<uploaded_files>\n{signals.uploaded_files_list}\n</uploaded_files>")
-    if config.todos and state.todos:
-        todos_text = _todos_section(state.todos)
-        if todos_text:
-            dynamic.append(todos_text)
     dynamic.append(f"<current_date>{date.today().isoformat()}</current_date>")
 
     return state.system_prompt + "\n\n" + "\n\n".join(dynamic)
