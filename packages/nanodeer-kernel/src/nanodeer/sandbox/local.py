@@ -8,12 +8,16 @@ For production, always use DockerSandboxProvider.
 """
 
 import asyncio
+import logging
 import os
 import re
 import shutil
+import time
 from pathlib import Path
 
 from . import Sandbox, SandboxProvider, RunResult
+
+logger = logging.getLogger(__name__)
 
 
 class LocalSandboxProvider(SandboxProvider):
@@ -36,19 +40,24 @@ class LocalSandboxProvider(SandboxProvider):
 
     async def acquire(self, exec_id: str) -> Sandbox:
         """Create a local workspace directory for the exec context."""
+        t0 = time.monotonic()
         from ..config import get_config
         safe_id = re.sub(r'[^a-zA-Z0-9_-]', '', exec_id)
         base = get_config().thread.storage_path
         working_dir = base / safe_id / "user-data"
         working_dir.mkdir(parents=True, exist_ok=True)
-        return Sandbox(
+        sandbox = Sandbox(
             exec_id=exec_id,
             container_id=f"local-{safe_id}",
             working_dir=str(working_dir),
         )
+        logger.info("acquire exec_id=%s provider=local container=%s duration=%.2fs",
+                    exec_id, sandbox.container_id, time.monotonic() - t0)
+        return sandbox
 
     async def run(self, sandbox: Sandbox, command: str, timeout: int = 30) -> RunResult:
         """Execute command in local subprocess with env isolation and timeout."""
+        t0 = time.monotonic()
         # Translate virtual paths to actual host paths
         cmd = self._translate_cmd(command, sandbox)
 
@@ -73,7 +82,7 @@ class LocalSandboxProvider(SandboxProvider):
                 stdout, stderr = await asyncio.wait_for(
                     process.communicate(), timeout=timeout
                 )
-                return RunResult(
+                result = RunResult(
                     stdout=stdout.decode(errors="replace"),
                     stderr=stderr.decode(errors="replace"),
                     returncode=process.returncode,
@@ -86,13 +95,19 @@ class LocalSandboxProvider(SandboxProvider):
                         process.kill()
                 except Exception:
                     pass
-                return RunResult(
+                result = RunResult(
                     stdout="",
                     stderr=f"Timeout: Command exceeded {timeout} seconds",
                     returncode=124,
                 )
         except Exception as e:
-            return RunResult(stdout="", stderr=str(e), returncode=1)
+            result = RunResult(stdout="", stderr=str(e), returncode=1)
+
+        level = logger.warning if result.returncode != 0 else logger.info
+        level("run exit_code=%d stdout=%dB stderr=%dB duration=%.2fs",
+              result.returncode, len(result.stdout), len(result.stderr),
+              time.monotonic() - t0)
+        return result
 
     def _translate_cmd(self, cmd: str, sandbox: Sandbox) -> str:
         """Replace virtual /mnt/user-data/ paths with actual sandbox working_dir.
@@ -105,6 +120,8 @@ class LocalSandboxProvider(SandboxProvider):
 
     async def release(self, sandbox: Sandbox) -> None:
         """Clean up thread workspace directory with path hardening."""
+        t0 = time.monotonic()
+
         def _cleanup():
             from ..config import get_config
             base = get_config().thread.storage_path
@@ -115,3 +132,5 @@ class LocalSandboxProvider(SandboxProvider):
 
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, _cleanup)
+        logger.info("release exec_id=%s container=%s duration=%.2fs",
+                    sandbox.exec_id, sandbox.container_id, time.monotonic() - t0)

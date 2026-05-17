@@ -24,28 +24,28 @@ def signals():
 class TestClarificationMiddleware:
     async def test_no_message(self, middleware, state, signals):
         """No messages → no clarification."""
-        await middleware.after_llm(state, signals)
+        async for _ in middleware.after_llm_streaming(state, signals): pass
         assert signals.clarification_question is None
         assert state.next_action == NextAction.PROCESS
 
     async def test_non_ai_message(self, middleware, state, signals):
         """Last message is not AIMessage → no clarification."""
         state.messages.append(HumanMessage(content="Hello"))
-        await middleware.after_llm(state, signals)
+        async for _ in middleware.after_llm_streaming(state, signals): pass
         assert signals.clarification_question is None
         assert state.next_action == NextAction.PROCESS
 
     async def test_ai_message_no_tag(self, middleware, state, signals):
         """AIMessage without clarification tag → no clarification."""
         state.messages.append(AIMessage(content="Here is the answer."))
-        await middleware.after_llm(state, signals)
+        async for _ in middleware.after_llm_streaming(state, signals): pass
         assert signals.clarification_question is None
         assert state.next_action == NextAction.PROCESS
 
     async def test_ai_message_with_tag(self, middleware, state, signals):
         """AIMessage with clarification tag → sets clarification_question and WAIT."""
         state.messages.append(AIMessage(content="I need clarification:<clarification>Which file?</clarification>"))
-        await middleware.after_llm(state, signals)
+        async for _ in middleware.after_llm_streaming(state, signals): pass
         assert signals.clarification_question == "Which file?"
         assert state.next_action == NextAction.WAIT
 
@@ -57,7 +57,7 @@ Which version of Python should I use?
 </clarification>
 Please clarify."""
         state.messages.append(AIMessage(content=content))
-        await middleware.after_llm(state, signals)
+        async for _ in middleware.after_llm_streaming(state, signals): pass
         assert "Which version of Python" in signals.clarification_question
         assert state.next_action == NextAction.WAIT
 
@@ -65,6 +65,6 @@ Please clarify."""
         """Clarification content is stripped of whitespace."""
         content = "<clarification>   Some question   </clarification>"
         state.messages.append(AIMessage(content=content))
-        await middleware.after_llm(state, signals)
+        async for _ in middleware.after_llm_streaming(state, signals): pass
         assert signals.clarification_question == "Some question"
         assert state.next_action == NextAction.WAIT

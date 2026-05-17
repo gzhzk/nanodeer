@@ -21,7 +21,7 @@ def validate_path(path: str) -> str | None:
         return None
 
     # Block traversal: check raw input before normpath resolves ..
-    if ".." in path:
+    if re.search(r"(^|/)\.\.(/|$)", path):
         return None
 
     normalized = os.path.normpath(path)

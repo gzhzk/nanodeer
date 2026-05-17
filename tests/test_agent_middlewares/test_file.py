@@ -27,13 +27,13 @@ class TestFileMiddleware:
         """No thread_id → no-op."""
         state = ThreadState(thread_id=None)
         signals._uploaded_files = [{"name": "test.txt", "content": b"hello", "mime_type": "text/plain"}]
-        await middleware.before_llm(state, signals)
+        async for _ in middleware.before_llm_streaming(state, signals): pass
         # No files created
 
     async def test_no_uploaded_files_skips(self, middleware, state, signals):
         """No _uploaded_files → no-op."""
         signals._uploaded_files = None
-        await middleware.before_llm(state, signals)
+        async for _ in middleware.before_llm_streaming(state, signals): pass
         # No files created
 
     async def test_writes_text_file(self, middleware, state, signals, tmp_path):
@@ -42,7 +42,7 @@ class TestFileMiddleware:
             {"name": "readme.md", "content": b"# Hello World\n\nThis is a test.", "mime_type": "text/markdown"}
         ]
 
-        await middleware.before_llm(state, signals)
+        async for _ in middleware.before_llm_streaming(state, signals): pass
 
         dest = tmp_path / "test-thread-abc" / "user-data" / "uploads" / "readme.md"
         assert dest.exists()
@@ -54,7 +54,7 @@ class TestFileMiddleware:
             {"name": "image.png", "content": b"\x89PNG\r\n\x1a\n", "mime_type": "image/png"}
         ]
 
-        await middleware.before_llm(state, signals)
+        async for _ in middleware.before_llm_streaming(state, signals): pass
 
         dest = tmp_path / "test-thread-abc" / "user-data" / "uploads" / "image.png"
         assert dest.exists()
@@ -66,7 +66,7 @@ class TestFileMiddleware:
             {"name": "data.csv", "content": b"\xff\xfe\xfd", "mime_type": "text/csv"}
         ]
 
-        await middleware.before_llm(state, signals)
+        async for _ in middleware.before_llm_streaming(state, signals): pass
 
         dest = tmp_path / "test-thread-abc" / "user-data" / "uploads" / "data.csv"
         assert dest.exists()
@@ -78,7 +78,7 @@ class TestFileMiddleware:
             {"name": "notes.txt", "content": b"Plain text content", "mime_type": ""}
         ]
 
-        await middleware.before_llm(state, signals)
+        async for _ in middleware.before_llm_streaming(state, signals): pass
 
         dest = tmp_path / "test-thread-abc" / "user-data" / "uploads" / "notes.txt"
         assert dest.exists()
@@ -92,7 +92,7 @@ class TestFileMiddleware:
             {"name": "c.bin", "content": b"\x00\x01\x02", "mime_type": "application/octet-stream"},
         ]
 
-        await middleware.before_llm(state, signals)
+        async for _ in middleware.before_llm_streaming(state, signals): pass
 
         assert (tmp_path / "test-thread-abc" / "user-data" / "uploads" / "a.txt").read_bytes() == b"Content A"
         assert (tmp_path / "test-thread-abc" / "user-data" / "uploads" / "b.txt").read_bytes() == b"Content B"
@@ -103,12 +103,12 @@ class TestFileMiddleware:
         signals._uploaded_files = [
             {"name": "data.txt", "content": b"Version 1", "mime_type": "text/plain"}
         ]
-        await middleware.before_llm(state, signals)
+        async for _ in middleware.before_llm_streaming(state, signals): pass
 
         signals._uploaded_files = [
             {"name": "data.txt", "content": b"Version 2", "mime_type": "text/plain"}
         ]
-        await middleware.before_llm(state, signals)
+        async for _ in middleware.before_llm_streaming(state, signals): pass
 
         dest = tmp_path / "test-thread-abc" / "user-data" / "uploads" / "data.txt"
         assert dest.read_text(encoding="utf-8") == "Version 2"
@@ -119,7 +119,7 @@ class TestFileMiddleware:
             {"name": "report.txt", "content": b"Simple content", "mime_type": "text/plain"}
         ]
 
-        await middleware.before_llm(state, signals)
+        async for _ in middleware.before_llm_streaming(state, signals): pass
 
         dest = tmp_path / "test-thread-abc" / "user-data" / "uploads" / "report.txt"
         assert dest.exists()
@@ -131,7 +131,7 @@ class TestFileMiddleware:
             {"name": "empty.txt", "content": b"", "mime_type": "text/plain"}
         ]
 
-        await middleware.before_llm(state, signals)
+        async for _ in middleware.before_llm_streaming(state, signals): pass
 
         dest = tmp_path / "test-thread-abc" / "user-data" / "uploads" / "empty.txt"
         assert dest.exists()

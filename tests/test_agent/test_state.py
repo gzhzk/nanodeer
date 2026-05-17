@@ -7,7 +7,6 @@ from nanodeer.agent.state import (
     TurnSignals,
     NextAction,
     SandboxState,
-    merge_todos,
     merge_artifacts,
 )
 
@@ -41,7 +40,6 @@ class TestThreadState:
         assert t.thread_id is None
         assert t.messages == []
         assert t.next_action == NextAction.PROCESS
-        assert t.todos == []
         assert t.artifacts == []
         assert t.title is None
         assert t.sandbox is None
@@ -55,40 +53,6 @@ class TestThreadState:
         assert t.thread_id == "thread-1"
         assert t.next_action == NextAction.END
         assert t.title == "Test"
-
-
-class TestMergeTodos:
-    def test_empty_both(self):
-        assert merge_todos([], []) == []
-        assert merge_todos(None, None) == []
-
-    def test_new_only(self):
-        new = [{"id": "1", "content": "A"}]
-        assert merge_todos([], new) == new
-
-    def test_existing_only(self):
-        existing = [{"id": "1", "content": "A"}]
-        assert merge_todos(existing, []) == existing
-
-    def test_merge_by_id(self):
-        existing = [{"id": "1", "content": "Old"}]
-        new = [{"id": "2", "content": "New"}]
-        result = merge_todos(existing, new)
-        assert len(result) == 2
-        ids = {r["id"] for r in result}
-        assert ids == {"1", "2"}
-
-    def test_idempotent(self):
-        todos = [{"id": "1", "content": "A"}, {"id": "2", "content": "B"}]
-        result = merge_todos(todos, todos)
-        assert len(result) == 2
-
-    def test_replaces_id_if_conflict(self):
-        existing = [{"id": "1", "content": "Old"}]
-        new = [{"id": "1", "content": "New"}]
-        result = merge_todos(existing, new)
-        assert len(result) == 1
-        assert result[0]["content"] == "New"
 
 
 class TestMergeArtifacts:

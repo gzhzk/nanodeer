@@ -1,12 +1,16 @@
 """Docker-based sandbox provider. Ephemeral containers, one per thread."""
 import asyncio
+import logging
 import os
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import docker
 
 from . import Sandbox, SandboxProvider, RunResult
+
+logger = logging.getLogger(__name__)
 
 # Container resource limits
 DEFAULT_MEM_LIMIT = "256m"       # 256MB memory
@@ -93,6 +97,8 @@ class DockerSandboxProvider(SandboxProvider):
 
     async def acquire(self, exec_id: str) -> Sandbox:
         """Create ephemeral container for exec context (reuses existing if already running)."""
+        t0 = time.monotonic()
+
         # Cleanup stale containers on each acquire attempt
         self._cleanup_stale_containers()
 
@@ -113,11 +119,14 @@ class DockerSandboxProvider(SandboxProvider):
 
         existing = await loop.run_in_executor(None, _get_existing)
         if existing:
-            return Sandbox(
+            sandbox = Sandbox(
                 exec_id=exec_id,
                 container_id=existing.id,
                 working_dir=working_dir,
             )
+            logger.info("acquire exec_id=%s provider=docker container=%s duration=%.2fs (reused)",
+                        exec_id, sandbox.container_id, time.monotonic() - t0)
+            return sandbox
 
         await loop.run_in_executor(None, self._pull_image)
 
@@ -147,11 +156,14 @@ class DockerSandboxProvider(SandboxProvider):
             )
         )
 
-        return Sandbox(
+        sandbox = Sandbox(
             exec_id=exec_id,
             container_id=container.id,
             working_dir=working_dir,
         )
+        logger.info("acquire exec_id=%s provider=docker container=%s duration=%.2fs",
+                    exec_id, sandbox.container_id, time.monotonic() - t0)
+        return sandbox
 
     def _pull_image(self) -> None:
         """Pull image if not present locally."""
@@ -162,6 +174,7 @@ class DockerSandboxProvider(SandboxProvider):
 
     async def release(self, sandbox: Sandbox) -> None:
         """Stop and remove container."""
+        t0 = time.monotonic()
         loop = asyncio.get_event_loop()
         try:
             container = await loop.run_in_executor(
@@ -171,9 +184,12 @@ class DockerSandboxProvider(SandboxProvider):
             await loop.run_in_executor(None, container.stop)
         except docker.errors.NotFound:
             pass  # already removed
+        logger.info("release exec_id=%s container=%s duration=%.2fs",
+                    sandbox.exec_id, sandbox.container_id, time.monotonic() - t0)
 
     async def run(self, sandbox: Sandbox, command: str, timeout: int = 30) -> RunResult:
         """Execute command inside container with timeout and OOM detection."""
+        t0 = time.monotonic()
         loop = asyncio.get_event_loop()
         try:
             container = await loop.run_in_executor(
@@ -193,35 +209,49 @@ class DockerSandboxProvider(SandboxProvider):
             try:
                 container.reload()
             except docker.errors.NotFound:
-                return RunResult(
+                run_result = RunResult(
                     stdout="",
                     stderr=f"Container {sandbox.container_id} was killed (likely OOM)",
                     returncode=137,
                 )
+                logger.warning("run exit_code=%d stdout=%dB stderr=%dB duration=%.2fs (OOM)",
+                              run_result.returncode, len(run_result.stdout), len(run_result.stderr),
+                              time.monotonic() - t0)
+                return run_result
             if container.status != "running" and result.exit_code == 137:
-                return RunResult(
+                run_result = RunResult(
                     stdout="",
                     stderr=f"Container exited with code 137 (OOM or killed)",
                     returncode=137,
                 )
+                logger.warning("run exit_code=%d stdout=%dB stderr=%dB duration=%.2fs (OOM)",
+                              run_result.returncode, len(run_result.stdout), len(run_result.stderr),
+                              time.monotonic() - t0)
+                return run_result
 
             stdout_bytes, stderr_bytes = result.output
             stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
             stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
-            return RunResult(
+            run_result = RunResult(
                 stdout=stdout,
                 stderr=stderr,
                 returncode=result.exit_code,
             )
         except asyncio.TimeoutError:
-            return RunResult(
+            run_result = RunResult(
                 stdout="",
                 stderr=f"Timeout: Command exceeded {timeout} seconds",
                 returncode=124,
             )
-        except docker.errors.NotFound:
-            return RunResult(
+        except docker.errors.NotFound as e:
+            run_result = RunResult(
                 stdout="",
                 stderr=f"Container {sandbox.container_id} not found",
                 returncode=127,
             )
+
+        level = logger.warning if run_result.returncode != 0 else logger.info
+        level("run exit_code=%d stdout=%dB stderr=%dB duration=%.2fs",
+              run_result.returncode, len(run_result.stdout), len(run_result.stderr),
+              time.monotonic() - t0)
+        return run_result

@@ -28,14 +28,14 @@ class TestThreadDataMiddleware:
         state = ThreadState(thread_id=None)
         with patch("nanodeer.agent.middlewares.thread_data.get_config") as mock_cfg:
             mock_cfg.return_value.thread.storage_path = Path("/tmp/test")
-            await middleware.before_llm(state, signals)
+            async for _ in middleware.before_llm_streaming(state, signals): pass
         # Should not raise
 
     async def test_creates_directory_structure(self, middleware, state, signals, tmp_path):
         """Creates workspace/uploads/outputs directories."""
         with patch("nanodeer.agent.middlewares.thread_data.get_config") as mock_cfg:
             mock_cfg.return_value.thread.storage_path = tmp_path
-            await middleware.before_llm(state, signals)
+            async for _ in middleware.before_llm_streaming(state, signals): pass
 
         root = tmp_path / "test-thread-123" / "user-data"
         assert (root / "workspace").exists()
@@ -46,5 +46,5 @@ class TestThreadDataMiddleware:
         """Calling twice does not raise (exist_ok=True)."""
         with patch("nanodeer.agent.middlewares.thread_data.get_config") as mock_cfg:
             mock_cfg.return_value.thread.storage_path = tmp_path
-            await middleware.before_llm(state, signals)
-            await middleware.before_llm(state, signals)  # Should not raise
+            async for _ in middleware.before_llm_streaming(state, signals): pass
+            async for _ in middleware.before_llm_streaming(state, signals): pass  # Should not raise

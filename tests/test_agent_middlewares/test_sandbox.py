@@ -36,7 +36,7 @@ def signals():
 class TestSandboxMiddleware:
     async def test_before_llm_acquires_sandbox(self, middleware, mock_provider, state, signals):
         """Sets up sandbox state with container info."""
-        await middleware.before_llm(state, signals)
+        async for _ in middleware.before_llm_streaming(state, signals): pass
 
         assert state.sandbox is not None
         assert state.sandbox.container_id == "container-123"
@@ -47,7 +47,7 @@ class TestSandboxMiddleware:
     async def test_before_llm_reuses_existing_container(self, middleware, mock_provider, state, signals):
         """Does not re-acquire if container already exists."""
         state.sandbox = SandboxState(container_id="existing-container", status="ready")
-        await middleware.before_llm(state, signals)
+        async for _ in middleware.before_llm_streaming(state, signals): pass
 
         mock_provider.acquire.assert_not_called()
         assert state.sandbox.container_id == "existing-container"
@@ -56,31 +56,31 @@ class TestSandboxMiddleware:
         """Raises if thread_id is missing."""
         state = ThreadState(thread_id=None)
         with pytest.raises(ValueError, match="thread_id"):
-            await middleware.before_llm(state, signals)
+            async for _ in middleware.before_llm_streaming(state, signals): pass
 
     async def test_before_tools_blocks_shell_metacharacters(self, middleware, state, signals):
         """Shell metacharacters cause END."""
-        await middleware.before_tools(state, signals, "bash", {"command": "ls && cat /etc/passwd"})
+        async for _ in middleware.before_tools_streaming(state, signals, "bash", {"command": "ls && cat /etc/passwd"}): pass
         assert state.next_action == NextAction.END
 
     async def test_before_tools_blocks_high_risk(self, middleware, state, signals):
         """HIGH risk commands cause END."""
-        await middleware.before_tools(state, signals, "bash", {"command": "rm -rf / --no-preserve-root"})
+        async for _ in middleware.before_tools_streaming(state, signals, "bash", {"command": "rm -rf / --no-preserve-root"}): pass
         assert state.next_action == NextAction.END
 
     async def test_before_tools_allows_low_risk(self, middleware, state, signals):
         """LOW risk commands proceed."""
-        await middleware.before_tools(state, signals, "bash", {"command": "ls -la /mnt/user-data/workspace"})
+        async for _ in middleware.before_tools_streaming(state, signals, "bash", {"command": "ls -la /mnt/user-data/workspace"}): pass
         assert state.next_action == NextAction.PROCESS
 
     async def test_before_tools_medium_risk_warns(self, middleware, state, signals, caplog):
         """MEDIUM risk commands log warning but proceed."""
-        await middleware.before_tools(state, signals, "bash", {"command": "pip install requests"})
+        async for _ in middleware.before_tools_streaming(state, signals, "bash", {"command": "pip install requests"}): pass
         assert state.next_action == NextAction.PROCESS  # warning only
 
     async def test_before_tools_non_bash_noop(self, middleware, state, signals):
         """Non-bash tools are ignored."""
-        await middleware.before_tools(state, signals, "read_file", {"file_path": "/etc/passwd"})
+        async for _ in middleware.before_tools_streaming(state, signals, "read_file", {"file_path": "/etc/passwd"}): pass
         assert state.next_action == NextAction.PROCESS
 
     async def test_classify_high_risk_patterns(self, middleware):
@@ -131,7 +131,7 @@ class TestSandboxMiddleware:
         state.sandbox = SandboxState(container_id="container-123", thread_id="test-thread", status="ready")
         state.next_action = NextAction.END
 
-        await middleware.after_llm(state, signals)
+        async for _ in middleware.after_llm_streaming(state, signals): pass
 
         mock_provider.release.assert_called_once()
         assert state.sandbox.status == "released"
@@ -139,8 +139,9 @@ class TestSandboxMiddleware:
     async def test_after_tools_all_releases(self, middleware, mock_provider, state, signals):
         """Releases container after all tools."""
         state.sandbox = SandboxState(container_id="container-123", thread_id="test-thread", status="ready")
+        state.next_action = NextAction.END
 
-        await middleware.after_tools_all(state, signals)
+        async for _ in middleware.after_tools_all_streaming(state, signals): pass
 
         mock_provider.release.assert_called_once()
         assert state.sandbox.status == "released"
@@ -149,11 +150,12 @@ class TestSandboxMiddleware:
         """Multiple releases don't error."""
         mock_provider.release.side_effect = [None, Exception("Already released")]
         state.sandbox = SandboxState(container_id="container-123", thread_id="test-thread", status="ready")
+        state.next_action = NextAction.END
 
         # First release
-        await middleware.after_tools_all(state, signals)
+        async for _ in middleware.after_tools_all_streaming(state, signals): pass
         assert state.sandbox.status == "released"
 
         # Second release (error ignored)
-        await middleware.after_tools_all(state, signals)
+        async for _ in middleware.after_tools_all_streaming(state, signals): pass
         assert state.sandbox.status == "released"  # still released from first call
