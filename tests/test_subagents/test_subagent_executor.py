@@ -1,10 +1,10 @@
-"""Unit tests for SubagentExecutor — parallel task execution."""
+"""Unit tests for SubagentCoordinator — legacy run() interface."""
 
 import pytest
-import asyncio
 from unittest.mock import MagicMock, AsyncMock
 
-from nanodeer.subagent.runner import SubagentExecutor, format_result, run_many
+from nanodeer.subagent.coordinator import SubagentCoordinator, uuid_hex
+from nanodeer.subagent.runner import format_result
 
 
 class MockTool:
@@ -46,16 +46,11 @@ class MockLLMWithTools:
     async def ainvoke(self, messages):
         self.call_count += 1
         if self.call_count == 1:
-            # First call: return a tool call
-            tc = MagicMock()
-            tc["name"] = self.tool_name
-            tc["id"] = "call-1"
-            tc["args"] = {"arg1": "value1"}
+            tc = {"name": self.tool_name, "id": "call-1", "args": {"arg1": "value1"}}
             response = MagicMock()
             response.tool_calls = [tc]
             return response
         else:
-            # Second call: return final response
             response = MagicMock()
             response.content = "Task completed"
             response.tool_calls = None
@@ -85,21 +80,21 @@ class MockSandboxProvider:
 
 
 @pytest.fixture
-def executor():
-    """SubagentExecutor with mocks."""
+def coordinator():
+    """SubagentCoordinator with mocks."""
     llm = MockLLM()
     tools = [MockTool("tool_a"), MockTool("tool_b")]
     provider = MockSandboxProvider()
-    return SubagentExecutor(llm=llm, tools=tools, sandbox_provider=provider)
+    return SubagentCoordinator(llm=llm, tools=tools, sandbox_provider=provider)
 
 
-class TestSubagentExecutorRun:
-    """SubagentExecutor.run() tests."""
+class TestSubagentCoordinatorRun:
+    """SubagentCoordinator.run() — legacy synchronous-compat interface."""
 
     @pytest.mark.asyncio
-    async def test_completes_without_tool_calls(self, executor):
+    async def test_completes_without_tool_calls(self, coordinator):
         """Returns output when LLM doesn't call tools."""
-        result = await executor.run("Simple task")
+        result = await coordinator.run("Simple task")
         assert result["status"] == "completed"
         assert "Done" in result["output"]
         assert result["error"] is None
@@ -111,36 +106,34 @@ class TestSubagentExecutorRun:
         llm = MockLLMWithTools()
         tools = [MockTool("mock_tool")]
         provider = MockSandboxProvider()
-        executor = SubagentExecutor(llm=llm, tools=tools, sandbox_provider=provider)
+        coord = SubagentCoordinator(llm=llm, tools=tools, sandbox_provider=provider)
 
-        result = await executor.run("Task requiring tool")
+        result = await coord.run("Task requiring tool")
         assert result["status"] == "completed"
         assert llm.call_count >= 1
 
     @pytest.mark.asyncio
-    async def test_generates_sub_id(self, executor):
+    async def test_generates_sub_id(self, coordinator):
         """Generates sub_id if not provided."""
-        result = await executor.run("Task")
+        result = await coordinator.run("Task")
         assert result["sub_id"].startswith("sub-")
 
     @pytest.mark.asyncio
-    async def test_uses_provided_sub_id(self, executor):
+    async def test_uses_provided_sub_id(self, coordinator):
         """Uses provided sub_id."""
-        result = await executor.run("Task", sub_id="my-sub-123")
+        result = await coordinator.run("Task", sub_id="my-sub-123")
         assert result["sub_id"] == "my-sub-123"
 
     @pytest.mark.asyncio
-    async def test_stores_result_after_completion(self, executor):
-        """Result is stored in _results dict."""
-        result = await executor.run("Task")
-        assert executor.get_result(result["sub_id"]) is not None
+    async def test_stores_result_after_completion(self, coordinator):
+        """Result is stored in _completed dict."""
+        result = await coordinator.run("Task")
+        assert coordinator.get_result(result["sub_id"]) is not None
 
     @pytest.mark.asyncio
     async def test_max_iterations(self):
-        """Stops after MAX_ITERATIONS."""
-        # LLM that always returns tool calls
+        """Stops after max_iterations."""
         llm = MagicMock()
-        llm.llm = True  # Mark as initialized
         llm_response = MagicMock()
         llm_response.tool_calls = [{"name": "tool", "id": "1", "args": {}}]
         llm.ainvoke = AsyncMock(return_value=llm_response)
@@ -148,18 +141,18 @@ class TestSubagentExecutorRun:
 
         tools = [MockTool("tool")]
         provider = MockSandboxProvider()
-        exec = SubagentExecutor(llm=llm, tools=tools, sandbox_provider=provider)
+        coord = SubagentCoordinator(llm=llm, tools=tools, sandbox_provider=provider, max_concurrent=3)
 
-        result = await exec.run("Infinite task")
-        assert result["status"] == "max_iterations"
+        result = await coord.run("Infinite task")
+        assert result["status"] == "failed"
         assert "Max iterations" in result["error"]
 
     @pytest.mark.asyncio
-    async def test_sandbox_acquire_and_release(self, executor):
+    async def test_sandbox_acquire_and_release(self, coordinator):
         """Acquires sandbox before execution, releases after."""
-        await executor.run("Task")
-        assert executor.sandbox_provider.acquire_count == 1
-        assert executor.sandbox_provider.release_count == 1
+        await coordinator.run("Task")
+        assert coordinator.sandbox_provider.acquire_count == 1
+        assert coordinator.sandbox_provider.release_count == 1
 
     @pytest.mark.asyncio
     async def test_exception_handling(self):
@@ -169,61 +162,70 @@ class TestSubagentExecutorRun:
         llm.bind_tools = MagicMock(return_value=llm)
         tools = []
         provider = MockSandboxProvider()
-        exec = SubagentExecutor(llm=llm, tools=tools, sandbox_provider=provider)
+        coord = SubagentCoordinator(llm=llm, tools=tools, sandbox_provider=provider)
 
-        result = await exec.run("Task")
-        assert result["status"] == "error"
+        result = await coord.run("Task")
+        assert result["status"] == "failed"
         assert "LLM error" in result["error"]
 
 
-class TestSubagentExecutorRunMany:
-    """run_many() parallel execution."""
+class TestCoordinatorLifecycle:
+    """SubagentCoordinator spawn/stop/list lifecycle."""
 
     @pytest.mark.asyncio
-    async def test_runs_multiple_tasks(self):
-        """Executes multiple tasks in parallel."""
+    async def test_spawn_returns_worker_id(self):
+        """spawn() returns worker ID immediately."""
         llm = MockLLM()
         provider = MockSandboxProvider()
-        executor = SubagentExecutor(llm=llm, tools=[], sandbox_provider=provider)
+        coord = SubagentCoordinator(llm=llm, tools=[], sandbox_provider=provider, max_concurrent=10)
 
-        tasks = [
-            {"task": "Task 1"},
-            {"task": "Task 2"},
-            {"task": "Task 3"},
-        ]
-        results = await run_many(tasks, executor)
-        assert len(results) == 3
-        assert all(r["status"] == "completed" for r in results)
+        wid = coord.spawn("do something")
+        assert wid.startswith("wkr-")
 
     @pytest.mark.asyncio
-    async def test_uses_provided_sub_ids(self):
-        """Uses provided sub_ids from task dicts."""
+    async def test_spawn_adds_to_pending(self):
+        """spawn() adds worker to pending list."""
         llm = MockLLM()
         provider = MockSandboxProvider()
-        executor = SubagentExecutor(llm=llm, tools=[], sandbox_provider=provider)
+        coord = SubagentCoordinator(llm=llm, tools=[], sandbox_provider=provider, max_concurrent=10)
 
-        tasks = [
-            {"task": "T1", "sub_id": "sub-a"},
-            {"task": "T2", "sub_id": "sub-b"},
-        ]
-        results = await run_many(tasks, executor)
-        ids = {r["sub_id"] for r in results}
-        assert "sub-a" in ids
-        assert "sub-b" in ids
+        wid = coord.spawn("do something")
+        pending = coord.list_pending()
+        pids = [w.worker_id for w in pending]
+        # May have moved to active or completed by now, but was at least created
+        all_ids = [w.worker_id for w in pending] + \
+                  [w.worker_id for w in coord.list_active()] + \
+                  [w.worker_id for w in coord.list_completed()]
+        assert wid in all_ids
 
     @pytest.mark.asyncio
-    async def test_handles_exceptions_in_results(self):
-        """Converts exceptions to error results."""
-        llm = MagicMock()
-        llm.ainvoke = AsyncMock(side_effect=Exception("Boom"))
-        llm.bind_tools = MagicMock(return_value=llm)
-        provider = MockSandboxProvider()
-        executor = SubagentExecutor(llm=llm, tools=[], sandbox_provider=provider)
+    async def test_get_result_returns_none_if_not_found(self, coordinator):
+        """get_result returns None for unknown worker_id."""
+        assert coordinator.get_result("nonexistent") is None
 
-        tasks = [{"task": "Will fail"}]
-        results = await run_many(tasks, executor)
-        assert results[0]["status"] == "error"
-        assert "Boom" in results[0]["error"]
+    @pytest.mark.asyncio
+    async def test_stop_pending_worker(self):
+        """stop() removes a pending worker."""
+        llm = MockLLM()
+        provider = MockSandboxProvider()
+        coord = SubagentCoordinator(llm=llm, tools=[], sandbox_provider=provider, max_concurrent=0)
+
+        wid = coord.spawn("do something")
+        assert coord.stop(wid) is True
+        completed = coord.list_completed()
+        assert any(w.worker_id == wid and w.status.value == "cancelled" for w in completed)
+
+    @pytest.mark.asyncio
+    async def test_stop_nonexistent_returns_false(self, coordinator):
+        """stop() returns False for unknown worker."""
+        assert coordinator.stop("nonexistent") is False
+
+    @pytest.mark.asyncio
+    async def test_list_empty(self, coordinator):
+        """list methods return empty lists when nothing running."""
+        assert coordinator.list_pending() == []
+        assert coordinator.list_active() == []
+        assert coordinator.list_completed() == []
 
 
 class TestFormatResult:

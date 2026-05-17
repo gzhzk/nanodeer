@@ -1,8 +1,5 @@
 """Subagent tools - spawn and retrieve subagent results."""
 
-import asyncio
-import uuid
-
 from langchain_core.tools import tool
 
 from ..subagent import get_executor, format_result
@@ -25,13 +22,10 @@ async def spawn_subagent(
     Returns:
         A message with the subagent ID. Use get_subagent_results(sub_id) to get results.
     """
-    executor = get_executor()
-    sub_id = f"sub-{uuid.uuid4().hex[:8]}"
+    coordinator = get_executor()
+    worker_id = coordinator.spawn(task, name=name)
 
-    # Run in background, don't wait
-    asyncio.create_task(executor.run(task, sub_id))
-
-    return f"Subagent {name} started: {sub_id}"
+    return f"Subagent {name} started: {worker_id}"
 
 
 @tool
@@ -46,8 +40,8 @@ async def get_subagent_results(sub_id: str) -> str:
     Returns:
         Formatted subagent results (status, output, error, duration).
     """
-    executor = get_executor()
-    result = executor.get_result(sub_id)
+    coordinator = get_executor()
+    result = coordinator.get_result(sub_id)
 
     if result is None:
         return f"Subagent {sub_id} is still running or not found."

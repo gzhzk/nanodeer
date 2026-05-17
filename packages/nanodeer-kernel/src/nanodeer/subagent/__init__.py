@@ -1,26 +1,30 @@
-"""Subagent module - lightweight parallel task execution."""
+"""Subagent module — coordinator-worker pattern for parallel task execution."""
 
-from .runner import SubagentExecutor, run_many, format_result
+from .coordinator import SubagentCoordinator
+from .runner import format_result
+from .types import WorkerStatus, WorkerTask, WorkerSpec
 
 __all__ = [
-    "SubagentExecutor",
-    "run_many",
+    "SubagentCoordinator",
+    "WorkerStatus",
+    "WorkerTask",
+    "WorkerSpec",
     "format_result",
     "set_executor",
     "get_executor",
 ]
 
-_executor: SubagentExecutor | None = None
+_coordinator: SubagentCoordinator | None = None
 
 
-def set_executor(executor: SubagentExecutor) -> None:
-    """Set the global SubagentExecutor instance (called by factory)."""
-    global _executor
-    _executor = executor
+def set_executor(coordinator: SubagentCoordinator) -> None:
+    """Set the global SubagentCoordinator instance (called by factory)."""
+    global _coordinator
+    _coordinator = coordinator
 
 
-def get_executor() -> SubagentExecutor:
-    """Get the global SubagentExecutor instance."""
-    if _executor is None:
-        raise RuntimeError("SubagentExecutor not initialized")
-    return _executor
+def get_executor() -> SubagentCoordinator:
+    """Get the global SubagentCoordinator instance."""
+    if _coordinator is None:
+        raise RuntimeError("SubagentCoordinator not initialized")
+    return _coordinator
