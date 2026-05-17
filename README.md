@@ -51,15 +51,15 @@ nanodeer/
 │   ├── nanodeer-kernel/          # Python Kernel (Layer 1-4)
 │   │   └── src/nanodeer/
 │   │       ├── agent/           # ReActExecutor, MiddlewareChain, State
-│   │       │   ├── react.py    # Native async ReAct loop (no LangGraph)
-│   │       │   ├── factory.py  # NanoDeerFactory — assembles chain + tools
-│   │       │   ├── state.py    # ThreadState, TurnSignals, NextAction
-│   │       │   ├── messages.py # HumanMessage, AIMessage, ToolMessage
-│   │       │   ├── prompt.py   # System prompt assembly
+│   │       │   ├── react.py     # Native async ReAct loop (no LangGraph)
+│   │       │   ├── factory.py   # NanoDeerFactory — assembles chain + tools
+│   │       │   ├── state.py     # ThreadState, TurnSignals, NextAction
+│   │       │   ├── messages.py  # HumanMessage, AIMessage, ToolMessage
+│   │       │   ├── prompt.py    # System prompt assembly
 │   │       │   └── middlewares/ # 9 middlewares, 4 hooks
 │   │       ├── sandbox/         # Docker + Local sandbox providers
-│   │       ├── tools/           # 16 built-in tools
-│   │       ├── subagent/        # Parallel subagent executor
+│   │       ├── tools/           # 18 built-in tools
+│   │       ├── subagent/        # SubagentCoordinator (spawn/stop/list lifecycle)
 │   │       ├── skills/          # Skill workflow loader
 │   │       ├── engine.py        # NanoEngine entry point
 │   │       ├── brain.py         # NDJSON stdio protocol adapter
@@ -73,7 +73,7 @@ nanodeer/
 │
 ├── app/webui.py                 # Gradio debug console
 ├── config.yaml                  # Harness configuration
-└── tests/                       # Test suite
+└── tests/                       # 344+ tests across 9 suites
 ```
 
 ---
@@ -140,7 +140,7 @@ At the end of last year I started working on agent-related projects — my under
 
 By late March, **DeerFlow** came onto my radar. ByteDance's open-source project showed me for the first time what a proper enterprise-grade Agent harness framework should look like — state machine, middleware chain, sandbox isolation, tiered memory, every piece in its right place.
 
-The story might have ended there. But on the last evening of March, I attended ByteDance's campus recruiting talk. One thing that stuck with me was their motto — *"Work with great people on challenging things."* During the talk, a message flashed across my phone screen — Claude Code went open source. Something clicked in that moment. DeerFlow showed me what a framework should look like. Claude Code showed me what a product could feel like. With OpenClaw trending in China, everything suddenly connected. That night, back in my dorm, I wrote down the first draft.
+The story might have ended there. But on the last evening of March, I attended ByteDance's campus recruiting talk. One thing that stuck with me was their motto — *"Work with great people on challenging things."* During the talk, a message flashed across my phone screen — **Claude Code** went open source. Something clicked in that moment. DeerFlow showed me what a framework should look like. Claude Code showed me what a product could feel like. With **OpenClaw** trending in China, everything suddenly connected. That night, back in my dorm, I wrote down the first draft.
 
 **The core idea**: distill the patterns that work — native ReAct loop, middleware chain, Docker sandbox isolation, tiered memory — into a focused, auditable foundation where every module has one job and every cross-cutting concern is interceptable.
 
@@ -252,9 +252,9 @@ To add a new error type, you add a DetectionMiddleware entry and a HandlingMiddl
                              ▼
     ┌─────────────────────────────────────────────────────────┐
     │ Layer 2: Tools + Sandbox                                │
-    │   tools/     — 16 built-in tools                        │
+    │   tools/     — 18 built-in tools                        │
     │   sandbox/   — DockerSandboxProvider, path translation  │
-    │   subagent/  — SubagentExecutor (parallel)              │
+    │   subagent/  — SubagentCoordinator (spawn/stop/list)        │
     └────────────────────────┬────────────────────────────────┘
                              │  exec in container / local
                              ▼
@@ -279,7 +279,7 @@ NanoEngine.run_streaming() → ReActExecutor.run()
 │  ThreadData   Creates {thread_id}/user-data/{workspace,uploads,outputs} │
 │  File         Writes uploaded files to uploads/                         │
 │  Memory       Loads USER/MEMORY/wiki/episodic into context              │
-│  Todo         Loads default.json todos                                  │
+│  Plan         Loads plans and step progress into context                │
 │  Sandbox      Acquires or reuses Docker container (idempotent)          │
 └──────────────────────────────────────────────────────────────────────────┘
   ↓
@@ -287,7 +287,6 @@ LLM.ainvoke(prompt + messages)
   ↓
 ┌─ after_llm chain ────────────────────────────────────────────────────────┐
 │  Clarification  Detects <clarification> tag → sets WAIT → return to user │
-│  Title          Generates session title                                  │
 └──────────────────────────────────────────────────────────────────────────┘
   ↓
 [no tool_calls? → after_tools_all → END / WAIT? → break]
@@ -335,7 +334,7 @@ The alternative is to write `if tool_name == "save_memory": ...` directly in the
 
 #### Why file-based persistence (no database)?
 
-Every persistence path in NanoDeer — checkpointer, MemoryStore, TodoStore, conversation history — uses flat files (JSON, Markdown). This is deliberate:
+Every persistence path in NanoDeer — checkpointer, MemoryStore, PlanStore, conversation history — uses flat files (JSON, Markdown). This is deliberate:
 - Zero infrastructure: no PostgreSQL, SQLite, Redis, or any daemon
 - Inspectable: `cat ~/.nanodeer/memory/USER.md` to see what the agent knows
 - Auditable: every write is a file create — backup is `cp -r ~/.nanodeer`
@@ -361,8 +360,9 @@ All runtime data under `~/.nanodeer/`. Harness and App layers maintain separate 
 │   ├── wiki/entries/        # Structured wiki entries (JSON, tagged)
 │   └── episodic/            # Session logs (append-only)
 │
-├── todos/
-│   └── {slug}.json          # Todo list per project slug
+├── plans/
+│   ├── {plan_id}.json      # Full Plan document (goal, steps, status)
+│   └── index.json          # Plan index for fast listing
 │
 ├── threads/{thread_id}/     # Per-thread sandbox
 │   ├── checkpoint.json      # ThreadState snapshot (resumable)
@@ -378,7 +378,7 @@ All runtime data under `~/.nanodeer/`. Harness and App layers maintain separate 
 | Path | Persists | Purpose |
 |------|----------|---------|
 | `~/.nanodeer/memory/` | Yes | Agent knowledge (USER/MEMORY/wiki/episodic) |
-| `~/.nanodeer/todos/` | Yes | Task tracking |
+| `~/.nanodeer/plans/` | Yes | Plans with embedded steps |
 | `~/.nanodeer/threads/{id}/` | No (ephemeral) | Sandbox working directory |
 | `~/.nanodeer/threads/{id}/checkpoint.json` | Yes | Session resume |
 | `~/.nanodeer/conversations/` | Yes | Web UI chat history |
@@ -393,6 +393,7 @@ NanoDeer uses two data carriers with distinct lifetimes:
 |--------|-----------|--------|--------|
 | `clarification_question` | ClarificationMiddleware | App layer | Display question to user, WAIT |
 | `memory_context` | MemoryMiddleware | Prompt builder | Inject memory into LLM context |
+| `plan_context` | PlanMiddleware | Prompt builder | Inject plan + step progress into LLM context |
 | `error` | DetectionMiddleware | HandlingMiddleware | Decision: END, retry, or continue |
 | `skip_tool` | Any before_tools middleware | ReActExecutor | Skip `tool.ainvoke()`, use `skip_tool_result` |
 
@@ -402,7 +403,6 @@ NanoDeer uses two data carriers with distinct lifetimes:
 |-------|------|
 | `messages` | Full conversation history (Human/AI/Tool) |
 | `next_action` | `PROCESS` → continue loop; `WAIT` → return to caller; `END` → terminate |
-| `todos` | Task list injected into LLM context |
 | `artifacts` | File paths generated by tools |
 | `sandbox` | Container state (container_id, status) |
 
@@ -415,7 +415,7 @@ NanoDeer uses two data carriers with distinct lifetimes:
 3. **Detection/Handling separation**: Detection writes `signals.error`, Handling decides the response. Add error types without changing architecture.
 4. **Compression is app-layer**: Timing decided by NanoEngine, not auto-triggered in middleware.
 5. **Prompt auto-detection**: Sections render only when data is present AND feature flag is True.
-6. **Sandbox + Host dual paths**: Sensitive ops through containers, `save_memory`/`write_todo` directly on host.
+6. **Sandbox + Host dual paths**: Sensitive ops through containers, `save_memory`/plan tools directly on host.
 7. **Native ReAct loop**: No LangGraph dependency. 300 lines of `while True` instead of a graph compiler.
 8. **File-based everything**: No database dependency. Inspectable, auditable, backup is `cp -r`.
 
@@ -444,8 +444,8 @@ NanoDeer uses two data carriers with distinct lifetimes:
 | `bash`, `git`, `exec_python` | Shell | ✅ Docker/Local |
 | `web_search`, `read_image` | External | ✅ Docker/Local |
 | `save_memory` | Memory | ❌ Host (intercepted by middleware) |
-| `write_todo`, `list_todos` | Plan | ❌ Host (direct write) |
-| `spawn_subagent` | Subagent | ✅ Own sandbox container |
+| `create_plan`, `add_step`, `update_step`, `list_plans` | Plan | ❌ Host (direct write) |
+| `spawn_subagent`, `get_subagent_results` | Subagent | ✅ Own sandbox container |
 | `invoke_skill` | Skills | ❌ Host |
 
 ---
@@ -455,11 +455,11 @@ NanoDeer uses two data carriers with distinct lifetimes:
 **Current (v0.1.0)** — Core framework stable:
 - ✅ Native ReAct loop with middleware chain
 - ✅ Docker + Local sandbox with path isolation
-- ✅ 16 built-in tools
-- ✅ File-based memory, todo, checkpoint, conversation persistence
+- ✅ 18 built-in tools
+- ✅ File-based memory, plan, checkpoint, conversation persistence
 - ✅ NDJSON brain/shell protocol
 - ✅ TypeScript CLI + Gradio debug console
-- ✅ Subagent parallel execution (max 3 concurrent)
+- ✅ SubagentCoordinator with spawn/stop/list lifecycle (max 3 concurrent)
 - ✅ Skill workflow loader
 
 **In progress / planned:**

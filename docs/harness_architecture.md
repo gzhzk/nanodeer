@@ -23,7 +23,7 @@
   - [5.1 NanoDeerFactory.build() 流程](#51-nanodeerfactorybuild-流程)
   - [5.2 RuntimeFeatures 功能门](#52-runtimefeatures-功能门)
   - [5.3 Tool Wrapping 机制](#53-tool-wrapping-机制)
-  - [5.4 SubagentExecutor 创建](#54-subagentexecutor-创建)
+  - [5.4 SubagentCoordinator 创建](#54-subagentcoordinator-创建)
   - [5.5 CompressionMiddleware（App 层）](#55-compressionmiddlewareapp-层)
   - [5.6 Checkpointer 注入](#56-checkpointer-注入)
   - [5.7 注入点汇总](#57-注入点汇总)
@@ -48,7 +48,7 @@ Layer 5: Python Brain           ─── stdio 协议适配, NanoEngine 入口
 Layer 4: NanoEngine             ─── 应用层, 创建 ThreadState, 调用 executor
 Layer 3: ReActExecutor          ─── 核心循环 + MiddlewareChain
 Layer 2: Tools + Sandbox        ─── 16 个内置工具 + Docker 沙箱
-Layer 1: Data                   ─── messages, memory, checkpoint
+Layer 1: Data                   ─── messages, memory, checkpoint, plan
 ```
 
 ---
@@ -64,11 +64,9 @@ class ThreadState(BaseModel):
     thread_id: str | None                          # 线程标识
     messages: list[BaseMessage]                    # 对话历史（HumanMessage / AIMessage / ToolMessage）
     next_action: NextAction = NextAction.PROCESS   # 当前循环路由信号
-    todos: Annotated[list[dict], merge_todos]      # 待办列表（按 id 合并）
     artifacts: Annotated[list[str], merge_artifacts]  # 产物路径（去重追加）
     title: str | None                              # 会话标题
     sandbox: SandboxState | None                   # 容器状态
-    events: list                                   # 累积的 JSON 事件（用于 --json-events 输出）
     system_prompt: str | None                      # 缓存后的静态 system prompt（首次构建后复用）
 ```
 
@@ -77,11 +75,14 @@ class ThreadState(BaseModel):
 | `thread_id` | NanoEngine | ReActExecutor + 各中间件 | 线程标识，对应 sandbox 容器和工作目录 |
 | `messages` | ReActExecutor（LLM 响应 + tool 结果） | Prompt 构建 | 对话历史上下文 |
 | `next_action` | 各中间件设置 END/WAIT；每次循环开头重置为 PROCESS | ReActExecutor | 路由控制：PROCESS→继续, WAIT→暂停, END→结束 |
-| `todos` | TodoMiddleware（before_llm 加载） | Prompt 构建 | 待办列表注入 |
 | `artifacts` | 工具执行结果 | NanoEngine（RunResult） | 追踪产物路径 |
 | `title` | TitleMiddleware（首轮 after_llm 自动生成） | 显示用 | 会话标题 |
-| `sandbox` | SandboxMiddleware（before_llm 获取） | DetectionMiddleware | 容器状态（container_id, status, working_dir） |
+| `sandbox` | SandboxMiddleware（before_llm 获取） | DetectionMiddleware（before_llm 检测释放状态） | 容器状态（container_id, status, working_dir） |
 | `system_prompt` | build_lead_agent_prompt（首次 lazy init） | 后续 LLM 调用 | 静态 prompt 缓存，避免每轮重复构建 |
+
+**ThreadState 不包含的字段**：
+- **todos** → 已统一为 Plan 系统，通过 `PlanStore` 读写，prompt 注入走 `signals.plan_context`
+- **events** → 已移除，执行日志在 `react.py run()` 中以局部变量 `accumulated_events` 收集，最终返回给 `engine.RunResult`，不参与 checkpoint
 
 ### 2.2 TurnSignals
 
@@ -92,18 +93,21 @@ class ThreadState(BaseModel):
 class TurnSignals:
     clarification_question: str | None = None      # ClarificationMiddleware 写入 → App 层读取
     memory_context: str | None = None              # MemoryMiddleware 写入 → Prompt 构建读取
+    plan_context: str | None = None                # PlanMiddleware 写入 → Prompt 构建读取
     error: dict | None = None                      # DetectionMiddleware 写入 → HandlingMiddleware 读取
     skip_tool: bool = False                        # MemoryMiddleware 写入（拦截 save_memory）
     skip_tool_result: str | None = None            # MemoryMiddleware 写入（预计算结果）
-    events: list = field(default_factory=list)     # JSON 事件（各中间件追加）
+    events: list = field(default_factory=list)     # JSON 事件（各中间件追加，由 ReActExecutor 收集）
     uploaded_files_list: str | None = None         # FileMiddleware 写入 → Prompt 构建读取
+    _uploaded_files: list[dict] | None = None      # App 层传入的原始文件数据 → FileMiddleware
 ```
 
 | 信号 | 写入中间件 | 读取方 | 效果 |
 |------|-----------|--------|------|
 | `clarification_question` | ClarificationMiddleware（after_llm） | App 层（Brain → CLI） | 展示给用户，设置 WAIT 暂停循环 |
 | `memory_context` | MemoryMiddleware（before_llm） | `build_lead_agent_prompt()` | 注入 `<memory>` 段到 system prompt |
-| `error` | DetectionMiddleware（before_tools） | HandlingMiddleware（before_tools） | 根据错误类型决定 END 或继续 |
+| `plan_context` | PlanMiddleware（before_llm） | `build_lead_agent_prompt()` | 注入 `<plan>` 段到 system prompt |
+| `error` | DetectionMiddleware（before_llm） | HandlingMiddleware（before_tools） | 根据错误类型决定 END 或继续 |
 | `skip_tool` | MemoryMiddleware（before_tools） | ReActExecutor（tool loop） | 跳过 `tool.ainvoke()`，用 `skip_tool_result` 替代 |
 | `skip_tool_result` | MemoryMiddleware（before_tools） | ReActExecutor（tool loop） | 预计算的结果，避免沙箱调用 |
 | `uploaded_files_list` | FileMiddleware（before_llm） | `build_lead_agent_prompt()` | 注入 `<uploaded_files>` 段 |
@@ -133,7 +137,7 @@ class NextAction(str, Enum):
 │         │                                                         │
 │         ▼                                                         │
 │  ┌──────────────┐                                                 │
-│  │ before_llm   │  ThreadData → File → Memory → Todo → Sandbox    │
+│  │ before_llm   │  ThreadData→File→Memory→Plan→Detection→Sandbox  │
 │  └──────┬───────┘                                                 │
 │      ┌──┼──┐                                                      │
 │      │  │  │                                                      │
@@ -161,7 +165,7 @@ class NextAction(str, Enum):
 │  ┌──────────────────────────────┐                                 │
 │  │ 工具循环 (每个 tool_call)      │                                 │
 │  │ ┌──────────────┐             │                                 │
-│  │ │ before_tools │ Detection→Handling→Memory→Sandbox             │
+│  │ │ before_tools │ Handling→Memory→Sandbox                       │
 │  │ └──────┬───────┘             │                                 │
 │  │     ┌──┼──┐                 │                                 │
 │  │     │  │  │                 │                                 │
@@ -199,13 +203,14 @@ class NextAction(str, Enum):
 └───────────────────────────────────────────────────────────────────┘
 ```
 
-**三个路由点的含义**：
+**四个路由点**：
 
 | 路由点 | 发生时机 | 可能的 NextAction | 谁设置 |
 |--------|----------|-------------------|--------|
-| A | before_llm 后 | PROCESS→继续, WAIT→暂停, END→跳出 | SandboxMiddleware（容器获取失败→END）、DetectionMiddleware |
-| B | after_llm 后 | PROCESS→继续, WAIT→暂停, END→跳出 | ClarificationMiddleware（检测到 `<clarification>` 标签→WAIT）、TitleMiddleware |
-| C | after_tools_all 后 | PROCESS→继续下一轮, END→跳出 | SandboxMiddleware（容器释放） |
+| A | before_llm 后 | PROCESS→继续, WAIT→暂停, END→跳出 | DetectionMiddleware（容器已释放→END），SandboxMiddleware（获取失败→END） |
+| B | after_llm 后 | PROCESS→继续, WAIT→暂停, END→跳出 | ClarificationMiddleware（检测到 `<clarification>` 标签→WAIT），TitleMiddleware |
+| C | before_tools 后 | PROCESS→继续, END→跳出 | HandlingMiddleware（error 不可恢复→END） |
+| D | after_tools_all 后 | PROCESS→继续下一轮, END→跳出 | SandboxMiddleware（容器释放） |
 
 ---
 
@@ -245,15 +250,15 @@ class MiddlewareChain:
 | **Context** | ThreadDataMiddleware | before_llm | 创建 `{thread_id}/user-data/` 子目录 | 无（始终启用） |
 | | FileMiddleware | before_llm | 将上传文件写入 user-data/ 目录 | `uploads` |
 | | MemoryMiddleware(wiki) | before_llm | 加载记忆上下文 → `signals.memory_context` | 无 |
-| | TodoMiddleware | before_llm | 加载待办列表 → `state.todos` | 无 |
-| **Signal** | ClarificationMiddleware | after_llm | 检测 `<clarification>` 标签 → WAIT | `clarification` |
-| | TitleMiddleware | after_llm | 首轮对话自动生成标题 → `state.title` | 无 |
-| **Safety** | DetectionMiddleware | before_tools | 检测容器是否已释放 → 写 `signals.error` | 无 |
-| | HandlingMiddleware | before_tools | 根据 `signals.error` 决定继续/END | 无 |
+| | PlanMiddleware | before_llm | 加载 Plan 上下文 → `signals.plan_context` | 无 |
+| **Safety** | DetectionMiddleware | before_llm | 检测容器是否已释放 → END | 无 |
 | | SandboxMiddleware | before_llm | 获取/复用容器 | `sandbox` |
 | | | before_tools | bash 安全审计 | |
 | | | after_tools_all | 释放容器 (仅 END) | |
+| | HandlingMiddleware | before_tools | 根据 `signals.error` 决定继续/END | 无 |
 | **Intercept** | MemoryMiddleware | before_tools | 拦截 save_memory，Host 直接写 | 无 |
+| **Signal** | ClarificationMiddleware | after_llm | 检测 `<clarification>` 标签 → WAIT | `clarification` |
+| | TitleMiddleware | after_llm | 首轮对话自动生成标题 → `state.title` | 无 |
 | **App 层** | CompressionMiddleware | 由 NanoEngine 调用 | 消息压缩（不在 chain 中） | `compression` |
 
 ### 3.3 执行顺序详解
@@ -261,26 +266,25 @@ class MiddlewareChain:
 #### before_llm 链（注册顺序 = 执行顺序）
 
 ```
-ThreadData → File → Memory → Todo → Sandbox
-    │          │       │       │       │
-    │          │       │       │       └── 获取/复用 Docker 容器
-    │          │       │       │           → state.sandbox
+ThreadData → File → Memory → Plan → Detection → Sandbox
+    │          │       │       │        │          │
+    │          │       │       │        │          └── 获取/复用 Docker 容器
+    │          │       │       │        │              → state.sandbox
+    │          │       │       │        │
+    │          │       │       │        └── 检查 state.sandbox.status
+    │          │       │       │            如果已释放 → next_action = END
     │          │       │       │
-    │          │       │       └── 加载 default.json
-    │          │       │           → state.todos
+    │          │       │       └── PlanStore.list() → signals.plan_context
     │          │       │
     │          │       └── memory_store.load_for_prompt()
-    │          │           → signals.memory_context (含 wiki 条目)
+    │          │           → signals.memory_context
     │          │
     │          └── 写入 uploaded_files → signals.uploaded_files_list
     │
     └── mkdir -p {thread_id}/user-data/{workspace,uploads,outputs}
 ```
 
-每个中间件的职责顺序很重要：
-- **File** 必须在 **Memory** 之前？不必须，但逻辑上文件处理在记忆加载之前更合理
-- **Memory** 必须在 **Sandbox** 之前：因为 MemoryMiddleware 要注入 memory_context，与容器无关
-- 各中间件之间无数据依赖，可以独立执行
+**DetectionMiddleware 在 SandboxMiddleware 之前的理由**：如果上一轮容器已释放（`state.sandbox.status == "released"`），应该直接 END，不需要再尝试获取新容器。
 
 #### after_llm 链
 
@@ -297,26 +301,23 @@ Clarification → Title
 #### before_tools 链（每个 tool_call 执行一次）
 
 ```
-Detection → Handling → Memory → Sandbox
-    │          │         │         │
-    │          │         │         └── bash 安全审计
-    │          │         │             检查命令是否在黑名单中
-    │          │         │
-    │          │         └── 如果 tool_name == "save_memory":
-    │          │              → 直接写入 MemoryStore（Host）
-    │          │              → skip_tool = True
-    │          │              → 跳过后续 Sandbox 审计
-    │          │
-    │          └── 读取 signals.error
-    │              如果 error 不可恢复 → next_action = END
+Handling → Memory → Sandbox
+    │        │         │
+    │        │         └── bash 安全审计
+    │        │             检查命令是否在黑名单中
+    │        │
+    │        └── 如果 tool_name == "save_memory":
+    │             → 直接写入 MemoryStore（Host）
+    │             → skip_tool = True
+    │             → 跳过后续 Sandbox 审计
     │
-    └── 检查 state.sandbox.status
-        如果 status == "released" → 写 signals.error
+    └── 读取 signals.error
+        如果 error 不可恢复 → next_action = END
 ```
 
 **关键约束**：
 - Memory 必须在 Sandbox 之前：`save_memory` 是 Host 操作，不需要进沙箱。如果先走 Sandbox 审计，会产生不必要的沙箱调用
-- Detection 在 Handling 之前：Detection 写 signals.error，Handling 读 signals.error
+- Detection 不在 before_tools 中：Detection 只检测 sandbox 释放状态，这个发生在 before_llm 阶段（此时 sandbox 刚获取或已存在）。before_tools 阶段不需要重复检测
 
 #### after_tools_all 链
 
@@ -369,15 +370,73 @@ Sandbox
 
 详情见 [Memory 设计文档](memory_design.md)。
 
-#### TodoMiddleware
+#### PlanMiddleware
 
 | 项目 | 说明 |
 |------|------|
 | Hook | before_llm |
 | Feature gate | 无 |
-| 职责 | 加载待办列表 |
-| 数据流 | TodoStore → `state.todos` |
-| 实现 | `TodoStore.load("default")` → 按 id 合并到 `state.todos` |
+| 职责 | 加载 Plan 上下文 |
+| 数据流 | PlanStore → `signals.plan_context` |
+| 实现 | `_compute_plan_context(PlanStore)` → 格式化为 `<plan>` XML 块 |
+
+```python
+def _compute_plan_context(plan_store: PlanStore) -> str:
+    plans = plan_store.list()
+    # 输出格式:
+    # <plan id="plan-abc123">
+    #   <goal>...</goal>
+    #   <progress>1/3 steps completed (33%)</progress>
+    #   [x] Design  (id=step-001)
+    #   [*] Backend  (id=step-002)  assigned: sub-a1b2
+    # </plan>
+```
+
+PlanMiddleware 不在 before_tools 中注册，因为 Plan 信息只需要在 LLM 调用前注入 prompt，不涉及工具执行拦截。
+
+#### DetectionMiddleware
+
+| 项目 | 说明 |
+|------|------|
+| Hook | before_llm |
+| Feature gate | 无 |
+| 职责 | 检测异常状态并设置 END |
+| 数据流 | `state.sandbox.status` → `state.next_action = END` |
+| 当前实现 | 如果 `state.sandbox.status == "released"` → 直接 END（容器已在上一轮释放，本轮无需继续） |
+
+**为什么在 before_llm 而不是 before_tools？** Detection 的 `before_llm_streaming` 方法检查 sandbox 状态。把它放在 before_llm 链、SandboxMiddleware 之前，能在 LLM 调用前就发现 sandbox 已释放，避免无意义的 LLM 调用。它本来就不属于 before_tools 阶段——before_tools 阶段检测的是 tool_call 级别的异常（如循环检测、权限检查），sandbox 释放是跨轮状态，应当在每轮开始时检测。
+
+#### HandlingMiddleware
+
+| 项目 | 说明 |
+|------|------|
+| Hook | before_tools |
+| Feature gate | 无 |
+| 职责 | 读取 `signals.error` 并决定后续行为 |
+| 数据流 | `signals.error` → `state.next_action` |
+| 当前实现 | 如果存在 error 且不可恢复 → END（placeholder, 可扩展） |
+
+**Detection/Handling 分离的原因**：Detection 只负责"检测和报告"，不决定怎么处理；Handling 负责"根据错误决策"。但注意 Detection 当前注册在 before_llm（写入 `signals.error`），Handling 注册在 before_tools（读取 `signals.error`）——这两个 hook 不在同一轮触发的场景下。如果是 before_llm 检测到的错误，当前 Detection 直接设置 `next_action = END` 而不经过 Handling。Handling 主要处理 before_tools 阶段的异常（如未来可能由 Sandbox 审计写入的 error）。
+
+#### SandboxMiddleware
+
+| 项目 | 说明 |
+|------|------|
+| Hooks | before_llm, before_tools, after_tools_all |
+| Feature gate | `sandbox` |
+| 职责 | before_llm：获取/复用容器；before_tools：bash 审计；after_tools_all：释放容器 |
+
+多 hook 职责：
+
+| Hook | 行为 | 条件 |
+|------|------|------|
+| before_llm | `sandbox_provider.acquire()` → `state.sandbox` | `_sandbox_context` 中无此 thread 的容器 |
+| before_tools | bash 命令黑名单检查 | `tool_name == "bash"`，且 `skip_tool != True` |
+| after_tools_all | `provider.release(sandbox)` | `state.next_action == END`（PROCESS 时不释放） |
+
+**Idempotent acquire**：`before_llm` 检查模块级 `_sandbox_context[thread_id]`，如果已存在容器则直接复用，不创建新容器。
+
+**Idempotent release**：`_release_if_needed()` 检查 `state.sandbox.status == "released"` 后跳过。
 
 #### ClarificationMiddleware
 
@@ -405,48 +464,6 @@ LLM 可以在回复中嵌入 `<clarification>你希望我怎么做？</clarifica
 | 幂等性 | 是（只在 `state.title is None` 时执行） |
 
 首轮（`state.title is None` 且 `len(state.messages) >= 2`）时，用 LLM 从对话内容生成一个简短的标题。只有第一轮触发。
-
-#### DetectionMiddleware
-
-| 项目 | 说明 |
-|------|------|
-| Hook | before_tools |
-| Feature gate | 无 |
-| 职责 | 检测异常状态并写 `signals.error` |
-| 数据流 | `state.sandbox.status` → `signals.error` |
-| 当前实现 | 检测容器是否已被释放 |
-
-#### HandlingMiddleware
-
-| 项目 | 说明 |
-|------|------|
-| Hook | before_tools |
-| Feature gate | 无 |
-| 职责 | 读取 `signals.error` 并决定后续行为 |
-| 数据流 | `signals.error` → `state.next_action` |
-| 当前实现 | 如果存在 error 且不可恢复 → END（placeholder, 可扩展） |
-
-**Detection/Handling 分离的原因**：Detection 只负责"检测和报告"，不决定怎么处理；Handling 负责"根据错误决策"。未来新增错误类型时，只需要改 Detection 端添加检测逻辑不改 Handling，或者在 Handling 端调整恢复策略不改 Detection。
-
-#### SandboxMiddleware
-
-| 项目 | 说明 |
-|------|------|
-| Hooks | before_llm, before_tools, after_tools_all |
-| Feature gate | `sandbox` |
-| 职责 | before_llm：获取/复用容器；before_tools：bash 审计；after_tools_all：释放容器 |
-
-多 hook 职责：
-
-| Hook | 行为 | 条件 |
-|------|------|------|
-| before_llm | `sandbox_provider.acquire()` → `state.sandbox` | `_sandbox_context` 中无此 thread 的容器 |
-| before_tools | bash 命令黑名单检查 | `tool_name == "bash"`，且 `skip_tool != True` |
-| after_tools_all | `provider.release(sandbox)` | `state.next_action == END`（PROCESS 时不释放） |
-
-**Idempotent acquire**：`before_llm` 检查模块级 `_sandbox_context[thread_id]`，如果已存在容器则直接复用，不创建新容器。
-
-**Idempotent release**：`_release_if_needed()` 检查 `state.sandbox.status == "released"` 后跳过。
 
 ### 3.5 跨 Hook 中间件特例
 
@@ -502,7 +519,7 @@ class RuntimeFeatures:
 
 ## 4. 提示词注入（Prompt Injection）
 
-> 在 NanoDeer 的语境中，"Prompt Injection" 指**将运行时数据注入 LLM system prompt 的过程**，即 Middleware 和 Builder 向 prompt 填充上下文（记忆、待办、文件列表等）。不是安全意义上的 Prompt Injection 攻击。
+> 在 NanoDeer 的语境中，"Prompt Injection" 指**将运行时数据注入 LLM system prompt 的过程**，即 Middleware 和 Builder 向 prompt 填充运行时上下文（记忆、Plan、文件列表等）。不是安全意义上的 Prompt Injection 攻击。
 
 ### 4.1 分层构建
 
@@ -526,7 +543,7 @@ build_lead_agent_prompt()
       每轮重新构建
       ├── <memory>                     记忆上下文（条件：signals.memory_context 非空）
       ├── <uploaded_files>             上传文件列表（条件：signals.uploaded_files_list 非空）
-      ├── <todos>                      待办列表（条件：state.todos 非空）
+      ├── <plan>                       Plan 上下文（条件：signals.plan_context 非空）
       └── <current_date>               当前日期（始终渲染）
 ```
 
@@ -546,18 +563,18 @@ build_lead_agent_prompt()
 静态缓存的工作原理：
 
 ```python
-def build_lead_agent_prompt(state, tools, signals, config):
+def build_lead_agent_prompt(state, tools, signals, config, model_name):
     # 首次调用时构建并缓存
     if state.system_prompt is None:
-        state.system_prompt = build_base_system_prompt(tools, config)
+        state.system_prompt = build_base_system_prompt(tools, config, model_name)
     # 后续每次组装动态层
     dynamic = []
     if config.memory and signals.memory_context:
         dynamic.append(_memory_section(signals.memory_context))
     if signals.uploaded_files_list:
         dynamic.append(f"<uploaded_files>{signals.uploaded_files_list}</uploaded_files>")
-    if config.todos and state.todos:
-        dynamic.append(_todos_section(state.todos))
+    if config.plan and signals.plan_context:
+        dynamic.append(f"<plan>\n{signals.plan_context}\n</plan>")
     dynamic.append(f"<current_date>{date.today().isoformat()}</current_date>")
     return state.system_prompt + "\n\n" + "\n\n".join(dynamic)
 ```
@@ -570,7 +587,7 @@ def build_lead_agent_prompt(state, tools, signals, config):
 |---------|----------|-----------------|----------|
 | `<memory>` | MemoryStore（文件） | MemoryMiddleware（before_llm）→ `signals.memory_context` | `config.memory=True` 且 `signals.memory_context` 非空 |
 | `<uploaded_files>` | 上传文件数据 | FileMiddleware（before_llm）→ `signals.uploaded_files_list` | `signals.uploaded_files_list` 非空 |
-| `<todos>` | TodoStore（文件） | TodoMiddleware（before_llm）→ `state.todos` | `config.todos=True` 且 `state.todos` 非空 |
+| `<plan>` | PlanStore（文件） | PlanMiddleware（before_llm）→ `signals.plan_context` | `config.plan=True` 且 `signals.plan_context` 非空 |
 | `<current_date>` | `date.today()` | 无（build_lead_agent_prompt 直接生成） | 始终 |
 
 ### 4.4 注入链路
@@ -586,9 +603,9 @@ before_llm chain
   │       └── episodic/     (今日+昨日)
   │   → signals.memory_context (字符串)
   │
-  ├── TodoMiddleware
-  │   └── todo_store.load("default")
-  │   → state.todos (按 id merged)
+  ├── PlanMiddleware
+  │   └── PlanStore.list()
+  │   → signals.plan_context (字符串)
   │
   └── FileMiddleware
       └── 写入 uploads/
@@ -599,8 +616,8 @@ before_llm chain
 build_lead_agent_prompt()
   ← 读 state.system_prompt (cache)
   ← 读 signals.memory_context → <memory>
+  ← 读 signals.plan_context → <plan>
   ← 读 signals.uploaded_files_list → <uploaded_files>
-  ← 读 state.todos → <todos>
   ← 读 date.today() → <current_date>
   → 返回完整 system prompt
 
@@ -620,9 +637,9 @@ executor, compression_mw = NanoDeerFactory(features).build(
     llm,                    # LLM 实例
     tools,                  # 工具列表（None → default_tools()）
     memory_store=...,       # MemoryStore 实现
-    subagent_runner=...,    # SubagentRunner 实现（None → 自动创建）
+    subagent_runner=...,    # SubagentCoordinator 实例（None → 自动创建）
     extra_middlewares=...,  # 额外中间件
-    checkpointer=...,       # Checkpointer（None → FileCheckpointer）
+    checkpointer=...,       # Checkpointer（None → SqliteCheckpointer）
 )
 ```
 
@@ -641,25 +658,28 @@ build() 内部执行顺序：
    └── memory_mw = MemoryMiddleware(memory_store=memory_store)
    └── 注入 before_llm 和 before_tools 两个 hook
 
-4. 装配 MiddlewareChain
-   ├── before_llm:     ThreadData → File → Memory → Todo → Sandbox
+4. 创建 PlanMiddleware
+   └── plan_mw = PlanMiddleware()
+
+5. 装配 MiddlewareChain
+   ├── before_llm:     ThreadData → File → Memory → Plan → Detection → Sandbox
    ├── after_llm:      Clarification → Title
-   ├── before_tools:   Detection → Handling → Memory → Sandbox
+   ├── before_tools:   Handling → Memory → Sandbox
    └── after_tools_all: Sandbox
 
-5. 包装工具
+6. 包装工具
    └── sandbox-aware 工具 → SandboxExecTool 包装
-   └── Host 工具（save_memory, spawn_subagent 等）→ 原样通过
+   └── Host 工具（save_memory, spawn_subagent, create_plan 等）→ 原样通过
 
-6. 创建 SubagentExecutor
-   └── subagent_runner is None → 自动创建
+7. 创建 SubagentCoordinator
+   └── subagent_runner is None → 自动创建（含 wrapped_tools + sandbox）
    └── set_executor() 注册全局
 
-7. 创建 ReActExecutor
+8. 创建 ReActExecutor
    ├── tools = tools（原始工具，用于 llm.bind_tools()）
    └── 之后替换 executor._tools = wrapped_tools
 
-8. 后处理
+9. 后处理
    ├── compression_mw.set_llm(llm)
    └── title_mw.set_llm(llm)
 ```
@@ -682,7 +702,7 @@ class RuntimeFeatures:
 
     # Prompt section 开关
     prompt_memory: bool = True    # <memory> section
-    prompt_todos: bool = True     # <todos> section
+    prompt_plan: bool = True      # <plan> section
     prompt_skills: bool = True    # <skills> section
     prompt_subagent: bool = True  # <subagent> section
 ```
@@ -697,12 +717,12 @@ _chain() 方法：
       result.append(cls(**kw) or cls())
 ```
 
-- `feature=None` 或 `feature=False` → 不受门控，始终注册
+- `feature=None` → 不受门控，始终注册
 - `feature="uploads"` → `getattr(features, "uploads")` → `True` 时注册，`False` 时跳过
 
 Prompt section 开关在 `build_lead_agent_prompt()` 和 `build_base_system_prompt()` 中检查：
 - `<memory>`: `config.memory and signals.memory_context`
-- `<todos>`: `config.todos and state.todos`
+- `<plan>`: `config.plan and signals.plan_context`
 - `<skills>`: `config.skills and "invoke_skill" in tools`
 - `<subagent>`: `config.subagent and "spawn_subagent" in tools`
 
@@ -746,22 +766,25 @@ SANDBOX_TOOL_CONFIGS = {
     "grep":        {"path_vars": {"file_path": ...}, ...},
     "git":         {...},
     "exec_python": {...},
-    "web_search":  {...},  # 某些 provider 下路由到容器
+    "web_search":  {...},
 }
 ```
 
-不在配置中的工具（如 `save_memory`、`spawn_subagent`、`write_todo`）走 Host 直连。
+不在配置中的工具（如 `save_memory`、`spawn_subagent`、`create_plan`、`add_step`）走 Host 直连。
 
-### 5.4 SubagentExecutor 创建
+### 5.4 SubagentCoordinator 创建
 
 ```python
 if subagent_runner is not False:  # None → 自动创建，False → 禁用
-    from ..subagent import SubagentExecutor, set_executor
+    from ..subagent import SubagentCoordinator, set_executor
     if subagent_runner is None:
-        subagent_runner = SubagentExecutor(
+        cfg = get_config()
+        subagent_runner = SubagentCoordinator(
             llm=llm,
             tools=wrapped_tools,       # ← 注意！用的是 wrapped tools
             sandbox_provider=sandbox,
+            max_concurrent=cfg.subagents.max_concurrent,
+            timeout_seconds=cfg.subagents.timeout_seconds,
         )
     set_executor(subagent_runner)     # 注册全局
 ```
@@ -770,11 +793,13 @@ if subagent_runner is not False:  # None → 自动创建，False → 禁用
 
 | 值 | 行为 |
 |----|------|
-| `None`（默认） | 自动创建 SubagentExecutor，使用当前 llm 和 wrapped_tools |
+| `None`（默认） | 自动创建 SubagentCoordinator，使用当前 llm 和 wrapped_tools |
 | 实例对象 | 使用传入的 subagent_runner |
 | `False` | 禁用 subagent |
 
 **全局注册**：`set_executor()` 将 subagent_runner 写入模块级全局变量。`spawn_subagent` 工具通过 `get_executor()` 获取这个实例来派发子任务。设计约束：**单用户模式，不支持同时运行多个 Engine 实例**。
+
+详情见 [Subagent 设计文档](subagent_design.md)。
 
 ### 5.5 CompressionMiddleware（App 层）
 
@@ -782,7 +807,7 @@ CompressionMiddleware 不在 MiddlewareChain 中，而是由 **NanoEngine** 在 
 
 ```python
 # NanoEngine.run()
-final_state = await executor.run(state)
+final_state, events = await executor.run(state)
 
 if self._compression_mw is not None:
     compressed = self._compression_mw.compress(final_state.messages)
@@ -798,11 +823,11 @@ if self._compression_mw is not None:
 ### 5.6 Checkpointer 注入
 
 ```python
-# NanoEngine 创建时决定 checkpointer 类型
+# NanoEngine _get_executor() 中惰性创建
 if self._checkpointer is None:
-    cp_type = self.config.thread.checkpointer_type
-    if cp_type == "file":
-        self._checkpointer = FileCheckpointer(self.config.thread.storage_path)
+    if self.config.thread.checkpointer_type == "sqlite":
+        from nanodeer.agent.checkpoint import SqliteCheckpointer
+        self._checkpointer = SqliteCheckpointer(self.config.thread.db_path)
 
 # 传给 factory
 executor, compression_mw = create_nanodeer_agent(
@@ -810,6 +835,18 @@ executor, compression_mw = create_nanodeer_agent(
     tools=...,
     checkpointer=self._checkpointer,
 )
+```
+
+**SqliteCheckpointer** 替换了原有的 FileCheckpointer。原因：FileCheckpointer 使用 `model_dump_json()` 序列化 ThreadState，但 Pydantic 对嵌套 dataclass 的子类型（BaseMessage → HumanMessage/AIMessage/ToolMessage）不支持多态——`tool_calls` 和 `tool_call_id`/`name` 在序列化中丢失。
+
+SqliteCheckpointer 以 SQLite 存储，`messages` 表的 `role` 列驱动正确的子类型重建：
+
+```
+messages 表:
+  role TEXT         →  HumanMessage / AIMessage / ToolMessage / SystemMessage
+  tool_calls TEXT   →  AIMessage 专用（JSON）
+  tool_call_id TEXT →  ToolMessage 专用
+  tool_name TEXT    →  ToolMessage 专用
 ```
 
 ReActExecutor 在每轮 `after_tools_all` 后自动保存 checkpoint：
@@ -839,9 +876,9 @@ def build(llm, tools, *, memory_store, subagent_runner, extra_middlewares, check
 | `llm` | 必传 | 直接参数 | LLM 实例 |
 | `tools` | `default_tools()` | 直接参数（None 时） | 工具列表 |
 | `memory_store` | `None`（创建默认 MemoryStore） | → MemoryMiddleware | 记忆读写 |
-| `subagent_runner` | `None`（自动创建）或 `False` | → SubagentExecutor 全局注册 | 子 Agent 执行 |
+| `subagent_runner` | `None`（自动创建）或 `False` | → SubagentCoordinator 全局注册 | 子 Agent 执行 |
 | `extra_middlewares` | `None` | → MiddlewareChain（追加到各 hook 尾部） | 扩展中间件 |
-| `checkpointer` | `None`（创建 FileCheckpointer） | → ReActExecutor | 状态持久化 |
+| `checkpointer` | `None`（创建 SqliteCheckpointer） | → ReActExecutor | 状态持久化 |
 
 ---
 
@@ -857,17 +894,18 @@ def build(llm, tools, *, memory_store, subagent_runner, extra_middlewares, check
    a. ThreadDataMiddleware              mkdir user-data/{workspace,uploads,outputs}
    b. FileMiddleware                    写入上传文件
    c. MemoryMiddleware                  memory_store.load_for_prompt() → signals.memory_context
-   d. TodoMiddleware                    todo_store.load() → state.todos
-   e. SandboxMiddleware                 provider.acquire() → state.sandbox
+   d. PlanMiddleware                    PlanStore.list() → signals.plan_context
+   e. DetectionMiddleware               state.sandbox.status == "released" → END
+   f. SandboxMiddleware                 provider.acquire() → state.sandbox
    [如果 END → 跳出循环]
    [如果 WAIT → 返回 state]
 
 4. LLM.ainvoke()
-   a. prompt = build_lead_agent_prompt(state, tools, signals, config)
+   a. prompt = build_lead_agent_prompt(state, tools, signals, config, model_name)
       ├── static: state.system_prompt (cache hit/miss)
       ├── <memory> (if signals.memory_context)
+      ├── <plan> (if signals.plan_context)
       ├── <uploaded_files> (if signals.uploaded_files_list)
-      ├── <todos> (if state.todos)
       └── <current_date>
    b. resp = llm.ainvoke([SystemMessage(prompt), ...HumanMessage, ...])
    c. state.messages.append(AIMessage(content=..., tool_calls=...))
@@ -884,8 +922,7 @@ def build(llm, tools, *, memory_store, subagent_runner, extra_middlewares, check
 
 7. 工具循环 (for each tc in resp.tool_calls):
    a. before_tools (each call):
-       DetectionMiddleware              检查容器状态 → signals.error?
-       HandlingMiddleware               根据 error 决策 → END?
+       HandlingMiddleware               检查 signals.error → END?
        MemoryMiddleware                 拦截 save_memory → skip_tool?
        SandboxMiddleware                bash 审计
    b. tool.ainvoke()                    或者 skip_tool_result
@@ -894,7 +931,7 @@ def build(llm, tools, *, memory_store, subagent_runner, extra_middlewares, check
 8. after_tools_all chain:
    a. SandboxMiddleware                 如果 END → release; 如果 PROCESS → 保留
 
-9. checkpoint save                      写入文件
+9. checkpoint save                      写入 SQLite
 
 10. [如果 next_action == PROCESS → 回到步骤 1]
     [如果 next_action == END → 跳出循环]

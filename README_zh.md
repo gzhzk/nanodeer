@@ -58,8 +58,8 @@ nanodeer/
 │   │       │   ├── prompt.py   # 系统 prompt 组装
 │   │       │   └── middlewares/ # 9 个中间件、4 个钩子
 │   │       ├── sandbox/         # Docker + Local 沙箱提供商
-│   │       ├── tools/           # 16 个内置工具
-│   │       ├── subagent/        # 并行子 Agent 执行器
+│   │       ├── tools/           # 18 个内置工具
+│   │       ├── subagent/        # SubagentCoordinator（spawn/stop/list）
 │   │       ├── skills/          # 技能工作流加载器
 │   │       ├── engine.py        # NanoEngine 入口
 │   │       ├── brain.py         # NDJSON stdio 协议适配器
@@ -73,7 +73,7 @@ nanodeer/
 │
 ├── app/webui.py                 # Gradio 调试控制台
 ├── config.yaml                  # 配置文件
-└── tests/                       # 测试套件
+└── tests/                       # 344+ 测试，9 个套件
 ```
 
 ---
@@ -252,9 +252,9 @@ HandlingMiddleware (before_tools，在 Detection 之后运行)
                              ▼
     ┌─────────────────────────────────────────────────────────┐
     │ Layer 2: Tools + Sandbox                                │
-    │   tools/     — 16 个内置工具                             │
+    │   tools/     — 18 个内置工具                             │
     │   sandbox/   — DockerSandboxProvider、路径翻译           │
-    │   subagent/  — SubagentExecutor（并行）                  │
+    │   subagent/  — SubagentCoordinator（spawn/stop/list）                  │
     └────────────────────────┬────────────────────────────────┘
                              │  exec in container / local
                              ▼
@@ -279,7 +279,7 @@ NanoEngine.run_streaming() → ReActExecutor.run()
 │  ThreadData   创建 {thread_id}/user-data/{workspace,uploads,outputs}  │
 │  File         把上传文件写入 uploads/                                  │
 │  Memory       加载 USER/MEMORY/wiki/episodic 到上下文                  │
-│  Todo         加载 default.json 待办事项                               │
+│  Plan         加载 plans 和 steps 进度                               │
 │  Sandbox      获取或复用 Docker 容器（幂等）                            │
 └────────────────────────────────────────────────────────────────────────┘
   ↓
@@ -287,7 +287,6 @@ LLM.ainvoke(prompt + messages)
   ↓
 ┌─ after_llm 链 ───────────────────────────────────────────────────────┐
 │  Clarification  检测 <clarification> 标签 → WAIT → 返回用户          │
-│  Title          生成会话标题                                          │
 └──────────────────────────────────────────────────────────────────────┘
   ↓
 [无 tool_calls？→ after_tools_all → END / WAIT？→ 中断]
@@ -335,7 +334,7 @@ LangGraph 的图模型增加了间接性：定义节点、边、路由函数、�
 
 #### 为什么用文件持久化（不用数据库）？
 
-NanoDeer 的每个持久化路径——checkpointer、MemoryStore、TodoStore、会话历史——都使用纯文件（JSON、Markdown）。这是刻意的：
+NanoDeer 的每个持久化路径——checkpointer、MemoryStore、PlanStore、会话历史——都使用纯文件（JSON、Markdown）。这是刻意的：
 - 零基础设施：不需要 PostgreSQL、SQLite、Redis 或任何守护进程
 - 可检查：`cat ~/.nanodeer/memory/USER.md` 知道 agent 记住了什么
 - 可审计：每次写入就是一个文件创建——备份就是 `cp -r ~/.nanodeer`
@@ -361,8 +360,9 @@ NanoDeer 的每个持久化路径——checkpointer、MemoryStore、TodoStore、
 │   ├── wiki/entries/        # 结构化 wiki 条目（JSON，带标签）
 │   └── episodic/            # 会话日志（仅追加）
 │
-├── todos/
-│   └── {slug}.json          # 按项目 slug 存储的待办
+├── plans/
+│   ├── {plan_id}.json      # 完整 Plan 文档（目标、步骤、状态）
+│   └── index.json          # Plan 索引（快速列表）
 │
 ├── threads/{thread_id}/     # 每线程沙箱
 │   ├── checkpoint.json      # ThreadState 快照（可恢复）
@@ -378,7 +378,7 @@ NanoDeer 的每个持久化路径——checkpointer、MemoryStore、TodoStore、
 | 路径 | 是否持久 | 用途 |
 |------|---------|------|
 | `~/.nanodeer/memory/` | 是 | Agent 知识（USER/MEMORY/wiki/episodic） |
-| `~/.nanodeer/todos/` | 是 | 任务追踪 |
+| `~/.nanodeer/plans/` | 是 | Plans + 嵌入步骤 |
 | `~/.nanodeer/threads/{id}/` | 否（临时） | 沙箱工作目录 |
 | `~/.nanodeer/threads/{id}/checkpoint.json` | 是 | 会话恢复 |
 | `~/.nanodeer/conversations/` | 是 | Web UI 聊天历史 |
@@ -393,6 +393,7 @@ NanoDeer 使用两个生命周期不同的数据载体：
 |------|--------|--------|------|
 | `clarification_question` | ClarificationMiddleware | App 层 | 显示问题给用户，WAIT |
 | `memory_context` | MemoryMiddleware | Prompt 构建器 | 注入记忆到 LLM 上下文 |
+| `plan_context` | PlanMiddleware | Prompt 构建器 | 注入 plan + step 进度到 LLM 上下文 |
 | `error` | DetectionMiddleware | HandlingMiddleware | 决定：END、重试或继续 |
 | `skip_tool` | 任意 before_tools middleware | ReActExecutor | 跳过 `tool.ainvoke()`，使用 `skip_tool_result` |
 
@@ -402,7 +403,6 @@ NanoDeer 使用两个生命周期不同的数据载体：
 |------|------|
 | `messages` | 完整对话历史（Human/AI/Tool） |
 | `next_action` | `PROCESS` → 继续循环；`WAIT` → 返回调用方；`END` → 终止 |
-| `todos` | 注入 LLM 上下文的待办列表 |
 | `artifacts` | 工具生成的文件路径 |
 | `sandbox` | 容器状态（container_id、status） |
 
@@ -415,7 +415,7 @@ NanoDeer 使用两个生命周期不同的数据载体：
 3. **Detection/Handling 分离**：Detection 写 `signals.error`，Handling 决定处理方式。添加错误类型不改变架构。
 4. **Compression 在 App 层**：触发时机由 NanoEngine 决定，不在 middleware 中自动触发。
 5. **Prompt 按需渲染**：只在数据存在且功能开关打开时渲染对应 section。
-6. **Sandbox + Host 双路径**：敏感操作走容器，`save_memory`/`write_todo` 直连宿主机。
+6. **Sandbox + Host 双路径**：敏感操作走容器，`save_memory`/`create_plan`/`add_step` 直连宿主机。
 7. **原生 ReAct 循环**：无 LangGraph 依赖。300 行 `while True` 代替图编译器。
 8. **全文件持久化**：无数据库依赖。可检查、可审计、备份就是 `cp -r`。
 
@@ -444,8 +444,8 @@ NanoDeer 使用两个生命周期不同的数据载体：
 | `bash`、`git`、`exec_python` | Shell | ✅ Docker/Local |
 | `web_search`、`read_image` | 外部 | ✅ Docker/Local |
 | `save_memory` | 记忆 | ❌ 宿主机（middleware 拦截） |
-| `write_todo`、`list_todos` | 待办 | ❌ 宿主机（直接写入） |
-| `spawn_subagent` | 子 Agent | ✅ 独立沙箱容器 |
+| `create_plan`、`add_step`、`update_step`、`list_plans` | 计划 | ❌ 宿主机（直接写入） |
+| `spawn_subagent`、`get_subagent_results` | 子 Agent | ✅ 独立沙箱容器 |
 | `invoke_skill` | 技能 | ❌ 宿主机 |
 
 ---
@@ -455,11 +455,11 @@ NanoDeer 使用两个生命周期不同的数据载体：
 **当前（v0.1.0）** — 核心框架稳定：
 - ✅ 原生 ReAct 循环 + middleware 链
 - ✅ Docker + Local 沙箱 + 路径隔离
-- ✅ 16 个内置工具
-- ✅ 文件型记忆、待办、checkpoint、会话持久化
+- ✅ 18 个内置工具
+- ✅ 文件型记忆、计划、checkpoint、会话持久化
 - ✅ NDJSON brain/shell 协议
 - ✅ TypeScript CLI + Gradio 调试控制台
-- ✅ 子 Agent 并行执行（最大 3 并发）
+- ✅ SubagentCoordinator（spawn/stop/list 生命周期，最大 3 并发）
 - ✅ 技能工作流加载
 
 **开发中 / 规划中：**
