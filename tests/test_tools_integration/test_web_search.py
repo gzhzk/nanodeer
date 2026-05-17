@@ -1,4 +1,4 @@
-"""Tests for web_search tool."""
+"""Tests for web_search tool (duckduckgo_search)."""
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -17,70 +17,104 @@ class TestWebSearchTool:
         result = web_search.invoke({"query": "   "})
         assert "Error" in result
 
-    def test_invoke_num_results_clamped(self):
-        """num_results is clamped to 1-10 range."""
-        # With invalid URL (will fail), but we can verify clamping behavior
-        with patch("nanodeer.tools.web_search.urllib.request.urlopen") as mock_urlopen:
-            mock_response = MagicMock()
-            mock_response.read.return_value = b"<html></html>"
-            mock_urlopen.return_value = mock_response
+    def test_invoke_num_results_clamped_lower(self):
+        """num_results is clamped to minimum 1."""
+        with patch("nanodeer.tools.web_search.DDGS") as mock_ddgs:
+            mock_instance = MagicMock()
+            mock_ddgs.return_value.__enter__.return_value = mock_instance
+            mock_instance.text.return_value = [
+                {"title": "R1", "href": "https://r1", "body": "Result 1"},
+            ]
+            web_search.invoke({"query": "test", "num_results": 0})
+            # Should call with 1
+            args = mock_instance.text.call_args
+            assert args[1].get("max_results") == 1
 
-            # Test lower bound
-            with patch("re.findall", return_value=[]):
-                result = web_search.invoke({"query": "test", "num_results": 0})
-            # Should clamp to 1
-
-            # Test upper bound
-            with patch("re.findall", return_value=[]):
-                result = web_search.invoke({"query": "test", "num_results": 100})
+    def test_invoke_num_results_clamped_upper(self):
+        """num_results is clamped to maximum 10."""
+        with patch("nanodeer.tools.web_search.DDGS") as mock_ddgs:
+            mock_instance = MagicMock()
+            mock_ddgs.return_value.__enter__.return_value = mock_instance
+            mock_instance.text.return_value = [
+                {"title": "R1", "href": "https://r1", "body": "Result 1"},
+            ]
+            web_search.invoke({"query": "test", "num_results": 100})
+            args = mock_instance.text.call_args
+            assert args[1].get("max_results") == 10
 
     def test_invoke_no_results(self):
         """No results returns appropriate message."""
-        with patch("nanodeer.tools.web_search.urllib.request.urlopen") as mock_urlopen:
-            mock_response = MagicMock()
-            mock_response.read.return_value = b"<html><body><div class=\"result__a\"></div></body></html>"
-            mock_urlopen.return_value = mock_response
-
-            with patch("re.findall", side_effect=[[], []]):
-                result = web_search.invoke({"query": "xyznonexistentquery123"})
-
+        with patch("nanodeer.tools.web_search.DDGS") as mock_ddgs:
+            mock_instance = MagicMock()
+            mock_ddgs.return_value.__enter__.return_value = mock_instance
+            mock_instance.text.return_value = []
+            result = web_search.invoke({"query": "xyznonexistentquery123"})
             assert "No results found" in result
 
-    def test_invoke_http_error(self):
-        """HTTP error returns error message."""
-        import urllib.error
+    def test_invoke_success(self):
+        """Successful search returns formatted results."""
+        with patch("nanodeer.tools.web_search.DDGS") as mock_ddgs:
+            mock_instance = MagicMock()
+            mock_ddgs.return_value.__enter__.return_value = mock_instance
+            mock_instance.text.return_value = [
+                {"title": "Result 1", "href": "https://example.com/1", "body": "First result"},
+                {"title": "Result 2", "href": "https://example.com/2", "body": "Second result"},
+            ]
 
-        with patch("nanodeer.tools.web_search.urllib.request.urlopen") as mock_urlopen:
-            mock_urlopen.side_effect = urllib.error.HTTPError(
-                url="http://test",
-                code=404,
-                msg="Not Found",
-                hdrs={},
-                fp=None
-            )
+            result = web_search.invoke({"query": "test query", "num_results": 5})
+
+        assert "Result 1" in result
+        assert "https://example.com/1" in result
+        assert "First result" in result
+        assert "Result 2" in result
+        assert "test query" in result
+
+    def test_invoke_deduplicates_by_title(self):
+        """Duplicate titles are filtered out."""
+        with patch("nanodeer.tools.web_search.DDGS") as mock_ddgs:
+            mock_instance = MagicMock()
+            mock_ddgs.return_value.__enter__.return_value = mock_instance
+            mock_instance.text.return_value = [
+                {"title": "Dup", "href": "https://a", "body": "First"},
+                {"title": "Dup", "href": "https://b", "body": "Second"},
+                {"title": "Unique", "href": "https://c", "body": "Third"},
+            ]
 
             result = web_search.invoke({"query": "test"})
-            assert "HTTP error" in result
-            assert "404" in result
 
-    def test_invoke_url_error(self):
-        """URL error returns error message."""
-        import urllib.error
+        assert result.count("Dup") == 1
+        assert "Unique" in result
 
-        with patch("nanodeer.tools.web_search.urllib.request.urlopen") as mock_urlopen:
-            mock_urlopen.side_effect = urllib.error.URLError("Connection refused")
+    def test_invoke_import_error(self):
+        """Handles duckduckgo_search not installed."""
+        with patch("nanodeer.tools.web_search.DDGS", None):
+            result = web_search.invoke({"query": "test"})
+            assert "not installed" in result
+
+    def test_invoke_search_error(self):
+        """Handles search exception gracefully."""
+        with patch("nanodeer.tools.web_search.DDGS") as mock_ddgs:
+            mock_instance = MagicMock()
+            mock_ddgs.return_value.__enter__.return_value = mock_instance
+            mock_instance.text.side_effect = Exception("API error")
 
             result = web_search.invoke({"query": "test"})
-            assert "URL error" in result
+            assert "Search error" in result
 
     def test_schema_has_required_fields(self):
         """Tool has required query field."""
-        # Verify the tool can be called with required args
-        args = web_search.invoke({"query": "test query"})
-        # Just verify it doesn't raise about missing required arg
-        assert isinstance(args, str)
+        with patch("nanodeer.tools.web_search.DDGS") as mock_ddgs:
+            mock_instance = MagicMock()
+            mock_ddgs.return_value.__enter__.return_value = mock_instance
+            mock_instance.text.return_value = [{"title": "R", "href": "https://r", "body": "B"}]
+            result = web_search.invoke({"query": "test query"})
+            assert isinstance(result, str)
 
     def test_schema_has_optional_num_results(self):
         """Tool has optional num_results field."""
-        args = web_search.invoke({"query": "test", "num_results": 3})
-        assert isinstance(args, str)
+        with patch("nanodeer.tools.web_search.DDGS") as mock_ddgs:
+            mock_instance = MagicMock()
+            mock_ddgs.return_value.__enter__.return_value = mock_instance
+            mock_instance.text.return_value = [{"title": "R", "href": "https://r", "body": "B"}]
+            result = web_search.invoke({"query": "test", "num_results": 3})
+            assert isinstance(result, str)
