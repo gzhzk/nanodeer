@@ -77,7 +77,7 @@ class TestNanoEngineRun:
         mock_state.thread_id = "t1"
 
         mock_executor = AsyncMock()
-        mock_executor.run = AsyncMock(return_value=mock_state)
+        mock_executor.run = AsyncMock(return_value=(mock_state, []))
         mock_compression = MagicMock()
         mock_compression.compress = MagicMock(return_value=None)
 
@@ -102,7 +102,7 @@ class TestNanoEngineRun:
         mock_state.artifacts = []
 
         mock_executor = AsyncMock()
-        mock_executor.run = AsyncMock(return_value=mock_state)
+        mock_executor.run = AsyncMock(return_value=(mock_state, []))
         mock_compression = MagicMock()
         mock_compression.compress = MagicMock(return_value=None)
 
@@ -126,7 +126,7 @@ class TestNanoEngineRun:
         mock_state.artifacts = []
 
         mock_executor = AsyncMock()
-        mock_executor.run = AsyncMock(return_value=mock_state)
+        mock_executor.run = AsyncMock(return_value=(mock_state, []))
         mock_compression = MagicMock()
         mock_compression.compress = MagicMock(return_value=None)
 
@@ -149,7 +149,7 @@ class TestNanoEngineRun:
         mock_state.artifacts = []
 
         mock_executor = AsyncMock()
-        mock_executor.run = AsyncMock(return_value=mock_state)
+        mock_executor.run = AsyncMock(return_value=(mock_state, []))
         compressed = [MagicMock(content="Summarized")]
         mock_compression = MagicMock()
         mock_compression.compress = MagicMock(return_value=compressed)
@@ -173,7 +173,7 @@ class TestNanoEngineRun:
         mock_state.artifacts = []
 
         mock_executor = AsyncMock()
-        mock_executor.run = AsyncMock(return_value=mock_state)
+        mock_executor.run = AsyncMock(return_value=(mock_state, []))
 
         with patch("nanodeer.engine.create_nanodeer_agent") as mock_factory:
             mock_factory.return_value = (mock_executor, None)
@@ -194,7 +194,7 @@ class TestNanoEngineRun:
         mock_state.artifacts = []
 
         mock_executor = AsyncMock()
-        mock_executor.run = AsyncMock(return_value=mock_state)
+        mock_executor.run = AsyncMock(return_value=(mock_state, []))
         mock_compression = MagicMock()
         mock_compression.compress = MagicMock(return_value=None)
 
@@ -220,7 +220,8 @@ class TestNanoEngineRun:
         mock_state.next_action = NextAction.PROCESS
         mock_state.artifacts = []
 
-        mock_executor = AsyncMock(return_value=mock_state)
+        mock_executor = AsyncMock()
+        mock_executor.run = AsyncMock(return_value=(mock_state, []))
         mock_compression = MagicMock()
         mock_compression.compress = MagicMock(return_value=None)
 

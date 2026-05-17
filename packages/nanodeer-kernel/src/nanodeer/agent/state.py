@@ -24,26 +24,13 @@ class TurnSignals:
     """
     clarification_question: str | None = None
     memory_context: str | None = None
+    plan_context: str | None = None
     error: dict | None = None       # {"type": "...", "detail": "..."} set by Detection, handled by Handling
     skip_tool: bool = False          # If True, tools loop skips sandbox exec and uses skip_tool_result
     skip_tool_result: str | None = None  # Pre-computed result when skip_tool is True
     events: list = field(default_factory=list)  # JSON-serializable events for --json-events output
     uploaded_files_list: str | None = None  # Formatted file list from FileMiddleware, for prompt injection
-
-
-def _merge_by_id(existing, new, id_key="id"):
-    if not existing:
-        return new or []
-    if not new:
-        return existing
-    result = {item[id_key]: item for item in existing}
-    for item in new:
-        result[item[id_key]] = item
-    return list(result.values())
-
-
-def merge_todos(existing, new):
-    return _merge_by_id(existing, new, "id")
+    _uploaded_files: list[dict] | None = None  # Internal: raw uploads from app layer to FileMiddleware
 
 
 def merge_artifacts(existing, new):
@@ -66,9 +53,7 @@ class ThreadState(BaseModel):
     thread_id: str | None = None
     messages: list[BaseMessage] = Field(default_factory=list)
     next_action: NextAction = NextAction.PROCESS
-    todos: Annotated[list[dict], merge_todos] = Field(default_factory=list)
     artifacts: Annotated[list[str], merge_artifacts] = Field(default_factory=list)
     title: str | None = None
     sandbox: SandboxState | None = None
-    events: list = Field(default_factory=list)  # accumulated JSON events across turns
     system_prompt: str | None = None  # cached static system prompt (built once, reused every turn)

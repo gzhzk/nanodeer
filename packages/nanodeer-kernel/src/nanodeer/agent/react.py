@@ -29,10 +29,13 @@ Loop:
 """
 
 import json
+import logging
 import time
 from typing import AsyncGenerator
 
 from langchain_core.messages import HumanMessage as LCHumanMessage, AIMessage as LAIMessage
+
+logger = logging.getLogger(__name__)
 from langchain_core.messages import SystemMessage as LCSystemMessage
 
 from .messages import ToolMessage, HumanMessage, AIMessage, BaseMessage, ToolCall
@@ -69,26 +72,35 @@ class ReActExecutor:
         self,
         state: ThreadState,
         uploaded_files: list[dict] | None = None,
-    ) -> ThreadState:
-        """Run ReAct loop until terminal state. Returns final state."""
+    ) -> tuple[ThreadState, list[dict]]:
+        """Run ReAct loop until terminal state. Returns (final state, accumulated events)."""
         # Resume from checkpoint if thread has no messages yet
         if self._checkpointer and not state.messages and state.thread_id:
             saved = await self._checkpointer.load(state.thread_id)
             if saved:
                 state = saved
 
+        turn = 0
+        accumulated_events: list[dict] = []
         while True:
+            turn += 1
             # Reset routing signal each turn
             state.next_action = NextAction.PROCESS
             signals = TurnSignals()
+            signals._uploaded_files = uploaded_files
 
             # before_llm chain (streaming, consume all events)
             async for _ in self._chain.before_llm_streaming(state, signals):
                 pass
+            turn_start = time.monotonic()
+            logger.info("turn=%d before_llm messages=%d sandbox=%s next_action=%s",
+                        turn, len(state.messages),
+                        state.sandbox is not None,
+                        state.next_action.value)
             if state.next_action == NextAction.END:
                 break
             if state.next_action == NextAction.WAIT:
-                return state  # caller reads signals.clarification_question
+                return state, accumulated_events  # caller reads signals.clarification_question
 
             # LLM call
             tools_names = [t.name for t in self._tools]
@@ -102,6 +114,7 @@ class ReActExecutor:
                     lc_messages.append(LAIMessage(content=msg.content))
                 elif isinstance(msg, ToolMessage):
                     lc_messages.append(LCHumanMessage(content=f"[tool: {msg.name}] {msg.content}"))
+            llm_start = time.monotonic()
             resp = await self.llm.ainvoke(lc_messages)
             # Convert LangChain response to our custom type for state compatibility
             raw_tcs = getattr(resp, "tool_calls", None) or []
@@ -118,11 +131,18 @@ class ReActExecutor:
                 tool_calls=our_tcs or None,
             ))
 
+            tool_names = [tc["name"] for tc in raw_tcs]
+            content_preview = (str(resp.content)[:200] + "...") if resp.content and len(str(resp.content)) > 200 else str(resp.content) if resp.content else ""
+            logger.info("turn=%d after_llm duration=%.2fs tools=%d names=%s content=%s",
+                        turn, time.monotonic() - llm_start,
+                        len(raw_tcs), tool_names if raw_tcs else [],
+                        content_preview)
+
             # after_llm chain (streaming)
             async for _ in self._chain.after_llm_streaming(state, signals):
                 pass
             if state.next_action == NextAction.WAIT:
-                return state
+                return state, accumulated_events
             if state.next_action == NextAction.END:
                 break
 
@@ -132,7 +152,7 @@ class ReActExecutor:
                 async for _ in self._chain.after_tools_all_streaming(state, signals):
                     pass
                 if signals.events:
-                    state.events.extend(signals.events)
+                    accumulated_events.extend(signals.events)
                 break
 
             exec_id = state.thread_id or "default"
@@ -142,6 +162,9 @@ class ReActExecutor:
                 # before_tools chain (streaming)
                 async for _ in self._chain.before_tools_streaming(state, signals, tc["name"], tc.get("args", {})):
                     pass
+                logger.debug("turn=%d before_tool name=%s skip=%s args=%s",
+                             turn, tc["name"], signals.skip_tool,
+                             {k: str(v)[:200] for k, v in tc.get("args", {}).items()})
                 if state.next_action == NextAction.END:
                     break
 
@@ -170,9 +193,13 @@ class ReActExecutor:
             async for _ in self._chain.after_tools_all_streaming(state, signals):
                 pass
 
-            # Merge turn events into state events
+            logger.info("turn=%d after_tools_all next_action=%s turn_duration=%.2fs",
+                        turn, state.next_action.value,
+                        time.monotonic() - turn_start)
+
+            # Merge turn events into accumulated events
             if signals.events:
-                state.events.extend(signals.events)
+                accumulated_events.extend(signals.events)
 
             # Save checkpoint after each turn (before END or next iteration)
             if self._checkpointer and state.thread_id:
@@ -181,11 +208,11 @@ class ReActExecutor:
             if state.next_action == NextAction.END:
                 break
 
-        state.events.append({
+        accumulated_events.append({
             "type": "end",
             "next_action": state.next_action.value,
         })
-        return state
+        return state, accumulated_events
 
     async def run_streaming(
         self,
@@ -217,6 +244,7 @@ class ReActExecutor:
         while True:
             state.next_action = NextAction.PROCESS
             signals = TurnSignals()
+            signals._uploaded_files = uploaded_files
 
             # Yield start event for each turn
             yield {
@@ -328,8 +356,6 @@ class ReActExecutor:
                 yield {"event": "wait", "question": signals.clarification_question, "threadId": thread_id}
                 return
             if state.next_action == NextAction.END:
-                if signals.events:
-                    state.events.extend(signals.events)
                 yield {"event": "end", "next_action": "end", "threadId": thread_id, "durationMs": int(time.time() * 1000) - start_ms}
                 break
 
@@ -339,8 +365,6 @@ class ReActExecutor:
                     if ev is None:
                         continue
                     yield {**ev, "threadId": thread_id, "event": ev.get("type", ev.get("event", ""))}
-                if signals.events:
-                    state.events.extend(signals.events)
                 yield {"event": "end", "next_action": "end", "threadId": thread_id, "durationMs": int(time.time() * 1000) - start_ms}
                 break
 
@@ -399,9 +423,6 @@ class ReActExecutor:
                 if ev is None:
                     continue
                 yield {**ev, "threadId": thread_id, "event": ev.get("type", ev.get("event", ""))}
-
-            if signals.events:
-                state.events.extend(signals.events)
 
             # Checkpoint
             if self._checkpointer and state.thread_id:

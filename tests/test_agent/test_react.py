@@ -10,7 +10,11 @@ from nanodeer.agent.prompt import PromptConfig
 
 
 class MockLLM:
-    """LLM that returns a simple response without tool calls."""
+    """LLM that returns a simple response without tool calls.
+
+    If tool_calls is provided, it's returned only on the first ainvoke.
+    Subsequent calls return no tool_calls (to prevent infinite ReAct loop).
+    """
 
     def __init__(self, response_content="Done", tool_calls=None):
         self.response_content = response_content
@@ -24,7 +28,7 @@ class MockLLM:
         self.call_count += 1
         resp = MagicMock()
         resp.content = self.response_content
-        resp.tool_calls = self._tool_calls
+        resp.tool_calls = self._tool_calls if self.call_count == 1 else None
         return resp
 
 
@@ -40,7 +44,7 @@ class MockTool:
 
 
 class MockChain:
-    """Chain that does nothing by default."""
+    """Chain with _streaming hooks — all async generators, do nothing by default."""
 
     def __init__(self):
         self._before_llm_calls = []
@@ -48,17 +52,25 @@ class MockChain:
         self._before_tools_calls = []
         self._after_tools_all_calls = []
 
-    async def before_llm(self, state, signals):
+    async def before_llm_streaming(self, state, signals):
         self._before_llm_calls.append((state, signals))
+        return
+        yield
 
-    async def after_llm(self, state, signals):
+    async def after_llm_streaming(self, state, signals):
         self._after_llm_calls.append((state, signals))
+        return
+        yield
 
-    async def before_tools(self, state, signals, tool_name, tool_args):
+    async def before_tools_streaming(self, state, signals, tool_name, tool_args):
         self._before_tools_calls.append((state, signals, tool_name, tool_args))
+        return
+        yield
 
-    async def after_tools_all(self, state, signals):
+    async def after_tools_all_streaming(self, state, signals):
         self._after_tools_all_calls.append((state, signals))
+        return
+        yield
 
 
 class TestReActExecutorInit:
@@ -78,7 +90,7 @@ class TestReActExecutorInit:
         llm = MockLLM()
         executor = ReActExecutor(llm, [], MockChain())
         assert executor._prompt_config.memory is True
-        assert executor._prompt_config.todos is True
+        assert executor._prompt_config.plan is True
         assert executor._prompt_config.skills is True
         assert executor._prompt_config.subagent is True
 
@@ -93,7 +105,7 @@ class TestReActLoop:
         executor = ReActExecutor(llm, tools, chain)
 
         state = ThreadState(thread_id="t1", messages=[HumanMessage(content="Hi")])
-        final = await executor.run(state)
+        final, _events = await executor.run(state)
 
         assert final.next_action == NextAction.PROCESS
         assert len(final.messages) == 2  # HumanMessage + AIMessage
@@ -109,30 +121,33 @@ class TestReActLoop:
         executor = ReActExecutor(llm, tools, chain)
 
         state = ThreadState(thread_id="t1", messages=[HumanMessage(content="Hi")])
-        final = await executor.run(state)
+        final, _events = await executor.run(state)
 
-        # State has HumanMessage + AIMessage + ToolMessage
-        assert len(final.messages) == 3
-        tool_msg = final.messages[-1]
+        # After tool execution, LLM runs again: Human + AIMessage(tc) + ToolMessage + AIMessage(final)
+        assert len(final.messages) == 4
+        tool_msg = final.messages[-2]  # Second-to-last is the ToolMessage
         assert tool_msg.content == "tool result"
 
     @pytest.mark.asyncio
     async def test_next_action_end_from_before_llm(self):
         """Middleware can set next_action=END to stop loop."""
         chain = MockChain()
-        original_before_llm = chain.before_llm
+        original = chain.before_llm_streaming
 
         async def early_end(state, signals):
-            await original_before_llm(state, signals)
+            async for _ in original(state, signals):
+                pass
             state.next_action = NextAction.END
+            return
+            yield
 
-        chain.before_llm = early_end
+        chain.before_llm_streaming = early_end
 
         llm = MockLLM(response_content="Should not run")
         executor = ReActExecutor(llm, [], chain)
 
         state = ThreadState(thread_id="t1", messages=[HumanMessage(content="Hi")])
-        final = await executor.run(state)
+        final, _events = await executor.run(state)
 
         # LLM should not be called
         assert llm.call_count == 0
@@ -141,19 +156,22 @@ class TestReActLoop:
     async def test_next_action_wait_from_after_llm(self):
         """Clarification sets next_action=WAIT and returns."""
         chain = MockChain()
-        original_after_llm = chain.after_llm
+        original = chain.after_llm_streaming
 
         async def clarification_wait(state, signals):
-            await original_after_llm(state, signals)
+            async for _ in original(state, signals):
+                pass
             state.next_action = NextAction.WAIT
+            return
+            yield
 
-        chain.after_llm = clarification_wait
+        chain.after_llm_streaming = clarification_wait
 
         llm = MockLLM(response_content="Question?")
         executor = ReActExecutor(llm, [], chain)
 
         state = ThreadState(thread_id="t1", messages=[HumanMessage(content="Hi")])
-        final = await executor.run(state)
+        final, _events = await executor.run(state)
 
         assert final.next_action == NextAction.WAIT
         assert llm.call_count == 1  # One call before WAIT
@@ -162,13 +180,16 @@ class TestReActLoop:
     async def test_before_tools_can_interrupt(self):
         """before_tools middleware can set next_action=END to stop loop."""
         chain = MockChain()
-        original_before_tools = chain.before_tools
+        original = chain.before_tools_streaming
 
         async def block_tool(state, signals, tool_name, tool_args):
-            await original_before_tools(state, signals, tool_name, tool_args)
+            async for _ in original(state, signals, tool_name, tool_args):
+                pass
             state.next_action = NextAction.END
+            return
+            yield
 
-        chain.before_tools = block_tool
+        chain.before_tools_streaming = block_tool
 
         tc = {"name": "mock_tool", "args": {}, "id": "call-1"}
 
@@ -177,7 +198,7 @@ class TestReActLoop:
         executor = ReActExecutor(llm, tools, chain)
 
         state = ThreadState(thread_id="t1", messages=[HumanMessage(content="Hi")])
-        final = await executor.run(state)
+        final, _events = await executor.run(state)
 
         # Tool should not be executed
         assert len(final.messages) == 2  # No ToolMessage added
@@ -242,7 +263,8 @@ class TestReActExecutorToolNotFound:
         executor = ReActExecutor(llm, tools, chain)
 
         state = ThreadState(thread_id="t1", messages=[HumanMessage(content="Hi")])
-        final = await executor.run(state)
+        final, _events = await executor.run(state)
 
-        tool_msg = final.messages[-1]
+        # Error ToolMessage is second-to-last (followed by final LLM answer)
+        tool_msg = final.messages[-2]
         assert "not found" in tool_msg.content

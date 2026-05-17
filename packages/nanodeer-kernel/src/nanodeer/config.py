@@ -123,7 +123,8 @@ class ThreadConfig(Base):
     """Thread storage configuration."""
 
     storage_path: Path = Field(default=Path.home() / ".nanodeer" / "threads")
-    checkpointer_type: str = "file"
+    checkpointer_type: str = "sqlite"
+    db_path: Path = Field(default=Path.home() / ".nanodeer" / "threads")
 
 
 class SecurityConfig(Base):

@@ -106,7 +106,7 @@ class NanoEngine:
             model_name: Optional model override.
             features: Optional RuntimeFeatures for feature gating.
             tools: Optional custom tool list. None = use default tools.
-            checkpointer: Optional Checkpointer instance. Defaults to FileCheckpointer.
+            checkpointer: Optional Checkpointer instance. Defaults to SqliteCheckpointer.
         """
         self.config = config
         self._model_name = model_name
@@ -121,11 +121,9 @@ class NanoEngine:
         if self._executor is None:
             llm = _create_llm(self.config, self._model_name)
             if self._checkpointer is None:
-                cp_type = self.config.thread.checkpointer_type
-                if cp_type == "file":
-                    from nanodeer.agent.checkpoint import FileCheckpointer
-                    self._checkpointer = FileCheckpointer(self.config.thread.storage_path)
-                # else: None (no checkpoint)
+                if self.config.thread.checkpointer_type == "sqlite":
+                    from nanodeer.agent.checkpoint import SqliteCheckpointer
+                    self._checkpointer = SqliteCheckpointer(self.config.thread.db_path)
             display_name = self._model_name
             if display_name is None:
                 cfg = self.config.agents.defaults
@@ -165,7 +163,7 @@ class NanoEngine:
         )
 
         executor = self._get_executor()
-        final_state = await executor.run(state, uploaded_files=uploaded_files)
+        final_state, events = await executor.run(state, uploaded_files=uploaded_files)
 
         # App-layer compression after turn completes
         if self._compression_mw is not None:
@@ -174,12 +172,12 @@ class NanoEngine:
                 final_state.messages = compressed
 
         end_ms = int(time.time() * 1000)
-        return self._extract_result(final_state, thread_id, end_ms - start_ms)
+        return self._extract_result(final_state, events, thread_id, end_ms - start_ms)
 
-    def _extract_result(self, state: ThreadState, thread_id: str, duration_ms: int) -> RunResult:
-        """Extract RunResult from ThreadState."""
+    def _extract_result(self, state: ThreadState, events: list, thread_id: str, duration_ms: int) -> RunResult:
+        """Extract RunResult from ThreadState and accumulated events."""
         # Patch duration into the final end event
-        for ev in reversed(state.events):
+        for ev in reversed(events):
             if ev.get("type") == "end":
                 ev["duration_ms"] = duration_ms
                 break
@@ -211,7 +209,7 @@ class NanoEngine:
             artifacts=state.artifacts,
             tool_calls=tool_calls,
             duration_ms=duration_ms,
-            events=state.events,
+            events=events,
         )
 
     async def run_streaming(

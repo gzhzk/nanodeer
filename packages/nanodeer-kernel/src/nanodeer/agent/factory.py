@@ -24,7 +24,7 @@ class RuntimeFeatures:
     compression_keep_recent: int = 5
     # Prompt gates
     prompt_memory: bool = True
-    prompt_todos: bool = True
+    prompt_plan: bool = True
     prompt_skills: bool = True
     prompt_subagent: bool = True
 
@@ -94,8 +94,7 @@ class NanoDeerFactory:
         from .middlewares.file import FileMiddleware
         from .middlewares.memory import MemoryMiddleware
         from .middlewares.compression import CompressionMiddleware
-        from .middlewares.todo import TodoMiddleware
-        from .middlewares.title import TitleMiddleware
+        from .middlewares.plan import PlanMiddleware
         from .middlewares.clarification import ClarificationMiddleware
         from .middlewares.detection import DetectionMiddleware
         from .middlewares.handling import HandlingMiddleware
@@ -121,25 +120,25 @@ class NanoDeerFactory:
         # any future per-instance state (e.g., wiki search cache, recent writes buffer) is
         # shared between the two hooks, not silently split across two objects.
         memory_mw = MemoryMiddleware(memory_store=memory_store) if memory_store is not None else MemoryMiddleware()
+        plan_mw = PlanMiddleware()
 
         chain = MiddlewareChain(
             before_llm=self._chain(
                 (ThreadDataMiddleware, None, {}),
                 (FileMiddleware, "uploads", {}),
                 memory_mw,
-                (TodoMiddleware, None, {}),
+                plan_mw,
+                (DetectionMiddleware, None, {}),
                 (SandboxMiddleware, "sandbox", sp_kw),
                 extras=extra.get("before_llm"),
             ),
             after_llm=self._chain(
                 (ClarificationMiddleware, "clarification", {}),
-                (TitleMiddleware, None, {"llm": None}),
                 extras=extra.get("after_llm"),
             ),
             before_tools=self._chain(
                 # MemoryMiddleware must run BEFORE SandboxMiddleware to intercept save_memory
                 # before Sandbox's bash security audit (save_memory writes to host, not sandbox)
-                (DetectionMiddleware, None, {}),
                 (HandlingMiddleware, None, {}),
                 memory_mw,
                 (SandboxMiddleware, "sandbox", sp_kw),
@@ -153,14 +152,18 @@ class NanoDeerFactory:
 
         wrapped_tools = self._wrap_tools(tools, sandbox)
 
-        # Create SubagentExecutor if enabled
+        # Create SubagentCoordinator if enabled
         if subagent_runner is not False:  # None means create default, False means disable
-            from ..subagent import SubagentExecutor, set_executor
+            from ..subagent import SubagentCoordinator, set_executor
+            from ..config import get_config
             if subagent_runner is None:
-                subagent_runner = SubagentExecutor(
+                cfg = get_config()
+                subagent_runner = SubagentCoordinator(
                     llm=llm,
                     tools=wrapped_tools,
                     sandbox_provider=sandbox,
+                    max_concurrent=cfg.subagents.max_concurrent,
+                    timeout_seconds=cfg.subagents.timeout_seconds,
                 )
             set_executor(subagent_runner)
 
@@ -170,7 +173,7 @@ class NanoDeerFactory:
             chain=chain,
             prompt_config=PromptConfig(
                 memory=self.features.prompt_memory,
-                todos=self.features.prompt_todos,
+                plan=self.features.prompt_plan,
                 skills=self.features.prompt_skills,
                 subagent=self.features.prompt_subagent,
             ),
@@ -183,8 +186,6 @@ class NanoDeerFactory:
 
         if compression_mw:
             compression_mw.set_llm(llm)
-        if title_mw := next((m for m in chain._after_llm if isinstance(m, TitleMiddleware)), None):
-            title_mw.set_llm(llm)
 
         return executor, compression_mw
 

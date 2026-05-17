@@ -41,7 +41,7 @@ class TestRuntimeFeatures:
         assert f.sandbox is True
         assert f.clarification is True
         assert f.prompt_memory is True
-        assert f.prompt_todos is True
+        assert f.prompt_plan is True
         assert f.prompt_skills is True
         assert f.prompt_subagent is True
         assert f.context_window == 204800

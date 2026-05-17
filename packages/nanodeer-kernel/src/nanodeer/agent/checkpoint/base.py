@@ -20,6 +20,10 @@ class Checkpointer(ABC):
     @abstractmethod
     async def save(self, thread_id: str, state: "ThreadState") -> None:
         """Persist ThreadState for a thread."""
+
+    @abstractmethod
+    async def delete(self, thread_id: str) -> bool:
+        """Delete checkpoint for a thread. Returns True if deleted, False if not found."""
         ...
 
     @abstractmethod
