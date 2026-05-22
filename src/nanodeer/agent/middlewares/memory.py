@@ -13,7 +13,7 @@ before_tools_streaming:
 """
 
 from nanodeer.agent.memory.storage import MemoryStore
-from nanodeer.agent.messages import HumanMessage
+from nanodeer.agent.messages import AIMessage, HumanMessage
 from nanodeer.agent.state import ThreadState, TurnSignals
 
 from .base import Middleware
@@ -37,6 +37,32 @@ class MemoryMiddleware(Middleware):
                 return content if isinstance(content, str) else str(content or "")
         return ""
 
+    @staticmethod
+    def _format_turn_for_episodic(messages) -> str:
+        """Format the last exchange for episodic logging."""
+        user_msg = None
+        assistant_msg = None
+        tool_calls = []
+        for msg in reversed(messages):
+            if isinstance(msg, HumanMessage) and user_msg is None:
+                user_msg = str(msg.content or "")
+            elif isinstance(msg, AIMessage) and assistant_msg is None:
+                assistant_msg = str(msg.content or "")
+                if msg.tool_calls:
+                    tool_calls = msg.tool_calls
+        if user_msg is None:
+            return ""
+
+        parts = [f"## User\n\n{user_msg}\n\n## Assistant"]
+        if assistant_msg:
+            parts.append(assistant_msg)
+        if tool_calls:
+            tc_lines = "\n".join(
+                f'- {tc.name}({tc.args})' for tc in tool_calls
+            )
+            parts.append(f"\n**Tool calls:**\n{tc_lines}")
+        return "\n\n".join(parts)
+
     async def before_llm_streaming(self, state: ThreadState, signals: TurnSignals):
         if not self._memory_store:
             return
@@ -57,6 +83,16 @@ class MemoryMiddleware(Middleware):
                 "type": "memory_context",
                 "has_memory": False,
             })
+
+    async def after_tools_all_streaming(self, state: ThreadState, signals: TurnSignals):
+        """Log finished turn to episodic memory."""
+        if not self._memory_store or not state.messages:
+            return
+        yield
+
+        entry = self._format_turn_for_episodic(state.messages)
+        if entry:
+            self._memory_store.append_episodic(entry)
 
     async def before_tools_streaming(
         self, state: ThreadState, signals: TurnSignals, tool_name: str, tool_args: dict

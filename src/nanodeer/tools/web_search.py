@@ -8,13 +8,13 @@ from langchain_core.tools import tool
 logger = logging.getLogger(__name__)
 
 try:
-    from duckduckgo_search import DDGS
+    from ddgs import DDGS
 except ImportError:
     DDGS = None  # type: ignore[assignment]
 
 
 @tool
-def web_search(query: str, num_results: int = 5) -> str:
+def web_search(query: str = "", num_results: int = 5) -> str:
     """Search the web for information.
 
     Uses DuckDuckGo search via the duckduckgo_search library.
@@ -34,7 +34,7 @@ def web_search(query: str, num_results: int = 5) -> str:
     num_results = max(1, min(10, num_results))
 
     if DDGS is None:
-        return "Error: duckduckgo_search not installed. Run: pip install duckduckgo-search"
+        return "Error: ddgs not installed. Run: pip install ddgs"
 
     try:
         with DDGS() as ddgs:

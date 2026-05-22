@@ -66,3 +66,6 @@ threads/
 *.temp
 .tmp/
 tmp/
+
+# Next.js build output
+.next/

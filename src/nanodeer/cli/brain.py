@@ -26,9 +26,9 @@ from pathlib import Path
 from typing import AsyncGenerator
 
 # Load .env from project root if exists
-# __file__ = nanodeer-kernel/src/nanodeer/brain.py
-# parents: brain.py -> nanodeer -> nanodeer-kernel/src -> packages -> project root
-_env = Path(__file__).resolve().parents[4] / ".env"
+# __file__ = nanodeer/cli/brain.py
+# parents: brain.py -> cli -> nanodeer -> root
+_env = Path(__file__).resolve().parents[3] / ".env"
 if _env.exists():
     from dotenv import load_dotenv
     load_dotenv(_env)
@@ -40,8 +40,8 @@ class Brain:
     """NDJSON over stdio interface for NanoDeer Kernel."""
 
     def __init__(self):
-        from .config import get_config
-        from .engine import NanoEngine
+        from nanodeer.config import get_config
+        from nanodeer.engine import NanoEngine
 
         self.config = get_config()
         self.engine = NanoEngine(self.config)
@@ -95,8 +95,29 @@ async def handle_request(brain: Brain, request: dict) -> AsyncGenerator[dict, No
         prompt = request.get("prompt", "")
         thread_id = request.get("threadId")
 
-        async for event in brain.execute_stream(prompt, thread_id):
-            yield event
+        queue: asyncio.Queue[dict | None] = asyncio.Queue(maxsize=64)
+
+        async def producer():
+            try:
+                async for event in brain.execute_stream(prompt, thread_id):
+                    await queue.put(event)
+            finally:
+                await queue.put(None)
+
+        task = asyncio.create_task(producer())
+        if thread_id:
+            brain._running_tasks[thread_id] = task
+
+        try:
+            while True:
+                event = await queue.get()
+                if event is None:
+                    break
+                yield event
+        finally:
+            brain._running_tasks.pop(thread_id, None)
+            if not task.done():
+                task.cancel()
 
     elif req_type == "cancel":
         thread_id = request.get("threadId")

@@ -1,8 +1,9 @@
 """System prompt for NanoDeer lead agent.
 
-Static base (identity, tools, safety, working_dir, output) cached in
-ThreadState.system_prompt. Dynamic content (memory, todos, uploaded_files,
+Static base (identity, safety, working_dir, output) cached in
+ThreadState.system_prompt. Dynamic content (memory, plan, uploaded_files,
 date) injected fresh each turn via build_lead_agent_prompt().
+Tool schemas are provided natively via llm.bind_tools(), not as text.
 """
 
 from dataclasses import dataclass
@@ -20,26 +21,6 @@ class PromptConfig:
     skills: bool = True
     subagent: bool = True
 
-
-_TOOL_DESCRIPTIONS = {
-    "read_file": "Read file contents. Args: file_path (str)",
-    "write_file": "Write content to file. Args: file_path (str), content (str)",
-    "ls": "List directory contents. Args: file_path (str)",
-    "glob": "Find files matching pattern. Args: file_path (str), pattern (str)",
-    "grep": "Search for pattern in files. Args: file_path (str), pattern (str), recursive (bool)",
-    "bash": "Execute shell command. Args: command (str), timeout (int, optional)",
-    "git": "Git operations: status, diff, log, add, commit, push, pull, branch, checkout, clone",
-    "web_search": "Search the web via DuckDuckGo. Args: query (str), num_results (int, optional)",
-    "read_image": "Describe an image. Args: image_path (str), description_request (str, optional)",
-    "exec_python": "Execute Python code. Args: code (str), timeout (int, optional)",
-    "invoke_skill": "Load a skill workflow. Args: skill_name (str)",
-    "save_memory": 'Save to long-term memory. Args: target (str: "wiki/<category>/<name>"|"user"|"memory"), content (str), tags (list[str], optional), mode (str: "append"|"replace", optional). wiki/ entries are structured, tagged, searchable — preferred for all durable knowledge.',
-    "create_plan": "Create a plan with a goal and optional initial steps. Args: goal (str), title (str, optional), steps (list[str], optional)",
-    "add_step": "Add a step to an existing plan. Args: plan_id (str), content (str), dependencies (list[str], optional)",
-    "update_step": "Update a step status/result. Args: plan_id (str), step_id (str), status (str, optional), result (str, optional)",
-    "list_plans": "List plans and their steps. Args: plan_id (str, optional)",
-    "spawn_subagent": "Spawn a subagent and get results. Args: name (str), task (str), subagent_type (str, optional), thread_id (str, optional)",
-}
 
 _SAFETY_RULES = """**Path Security:**
 - ONLY access files under: /mnt/user-data/
@@ -107,14 +88,6 @@ You are NanoDeer, a lightweight AI super agent built with NanoDeer.{model_line}
 </identity_and_constraints>"""
 
 
-def _tools_section(tools: list[str]) -> str:
-    if not tools:
-        tools_text = "No tools available."
-    else:
-        tools_text = "\n".join(f"- {t}: {_TOOL_DESCRIPTIONS.get(t, f'{t} tool')}" for t in tools)
-    return f"<available_capabilities>\n<tools>\n{tools_text}\n</tools>\n</available_capabilities>"
-
-
 def _skills_section() -> str:
     return f"<skills>\n{_SKILLS_USAGE}\n</skills>"
 
@@ -143,10 +116,14 @@ def _output_section(response_style: str = _RESPONSE_STYLE, reminders: str = _CRI
 </output_requirements>"""
 
 
+def _memory_instructions_section() -> str:
+    return f"<memory_instructions>\n{_MEMORY_MAINTENANCE}\n</memory_instructions>"
+
+
 def _memory_section(memory_context: str) -> str:
     # memory_context already contains tagged sections from load_for_prompt():
     # <user_memory>, <wiki_entries>, <memory>, <episodic>
-    return f"<memory>\n{memory_context}\n\n---\n{_MEMORY_MAINTENANCE}\n</memory>"
+    return f"<memory>\n{memory_context}\n</memory>"
 
 
 def _plan_section(plan_context: str) -> str:
@@ -154,25 +131,27 @@ def _plan_section(plan_context: str) -> str:
 
 
 def build_base_system_prompt(
-    tools: list[str],
     config: PromptConfig | None = None,
     model_name: str = "",
 ) -> str:
-    """Build static base (identity + tools + safety + working_dir + output).
+    """Build static base (identity + safety + instructions + working_dir + output).
 
-    Cached in ThreadState.system_prompt after first turn.
+    Cached in ThreadState.system_prompt. Tool schemas are provided natively
+    via llm.bind_tools(). Memory/plan instructions are static guides that
+    don't change between turns — they belong in the base.
     """
     if config is None:
         config = PromptConfig()
 
     sections = [
         _identity_section(model_name),
-        _tools_section(tools),
     ]
-    if config.skills and "invoke_skill" in tools:
+    if config.skills:
         sections.append(_skills_section())
-    if config.subagent and "spawn_subagent" in tools:
+    if config.subagent:
         sections.append(_subagent_section())
+    if config.memory:
+        sections.append(_memory_instructions_section())
     sections.append(_working_directory_section())
     sections.append(_output_section())
 
@@ -181,15 +160,15 @@ def build_base_system_prompt(
 
 def build_lead_agent_prompt(
     state: "ThreadState",
-    tools: list[str],
     signals: "TurnSignals",
     config: PromptConfig | None = None,
     model_name: str = "",
 ) -> str:
     """Build full prompt: cached static base + fresh dynamic injection.
 
-    Static base (identity + tools + skills + subagent + working_dir + output)
-    built once and cached in state.system_prompt.
+    Static base (identity + skills + subagent + working_dir + output)
+    built once and cached in state.system_prompt. Tool schemas are
+    provided natively via llm.bind_tools().
 
     Dynamic content (plan + memory + uploaded_files + date) built fresh each turn.
     """
@@ -197,7 +176,7 @@ def build_lead_agent_prompt(
         config = PromptConfig()
 
     if state.system_prompt is None:
-        state.system_prompt = build_base_system_prompt(tools, config, model_name)
+        state.system_prompt = build_base_system_prompt(config, model_name)
 
     dynamic = []
     if config.plan and signals and signals.plan_context:

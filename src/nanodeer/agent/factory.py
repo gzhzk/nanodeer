@@ -145,6 +145,7 @@ class NanoDeerFactory:
                 extras=extra.get("before_tools"),
             ),
             after_tools_all=self._chain(
+                memory_mw,
                 (SandboxMiddleware, "sandbox", sp_kw),
                 extras=extra.get("after_tools_all"),
             ),

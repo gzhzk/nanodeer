@@ -168,7 +168,10 @@ class SandboxExecTool(SandboxToolWrapper):
 
         # path_vars: translate and substitute directly into template
         for var in self._path_vars:
-            phys = translate_and_validate(args.get(var, ""), exec_id)
+            val = args.get(var, "")
+            if not val:
+                return None  # fallback to original tool → Pydantic ValidationError → clean error
+            phys = translate_and_validate(val, exec_id)
             subs[f"{{{var}}}"] = phys
 
         # translate_vars: replace virtual paths inside the string, then b64-encode

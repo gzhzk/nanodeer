@@ -1,0 +1,181 @@
+"""NanoDeer HTTP API — FastAPI + SSE streaming.
+
+Replaces the stdio-based brain.py + TS SDK as the primary
+frontend-facing interface. Frontend (assistant-ui) connects
+here directly via SSE.
+
+Usage:
+    python -m nanodeer.cli.api     # start server
+    curl http://127.0.0.1:20266/health
+"""
+
+import asyncio
+import json
+import logging
+import uuid
+
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from sse_starlette.sse import EventSourceResponse
+
+from nanodeer.config import get_config
+from nanodeer.engine import NanoEngine
+
+logger = logging.getLogger(__name__)
+
+# Track running tasks per thread_id for cancellation
+_running_tasks: dict[str, asyncio.Task] = {}
+
+app = FastAPI(title="NanoDeer API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _make_checkpointer():
+    """Create SqliteCheckpointer from config."""
+    from nanodeer.agent.checkpoint.sqlite import SqliteCheckpointer
+    return SqliteCheckpointer(str(get_config().thread.db_path.expanduser().resolve()))
+
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/info")
+async def api_info():
+    """Return runtime info including model details."""
+    cfg = get_config()
+    return {
+        "provider": cfg.agents.defaults.provider,
+        "model": cfg.agents.defaults.model,
+    }
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
+@app.post("/api/chat")
+async def chat(request: Request):
+    """Streaming chat endpoint.
+
+    Request (JSON)::
+        {"prompt": "...", "thread_id": "..."}
+
+    Response: SSE stream of events matching ``NanoEngine.run_streaming()``::
+
+        event: message
+        data: {"event":"llm_token","text":"Hello","threadId":"..."}
+        event: message
+        data: {"event":"tool_call","name":"bash","args":{...},"threadId":"..."}
+        event: cancelled
+        data: {"event":"cancelled","threadId":"..."}
+    """
+    body = await request.json()
+    prompt = body.get("prompt", "").strip()
+    thread_id = body.get("thread_id", "") or uuid.uuid4().hex
+
+    if not prompt:
+        return JSONResponse({"error": "prompt is required"}, status_code=400)
+
+    engine = NanoEngine(get_config())
+
+    async def event_generator():
+        task = asyncio.current_task()
+        _running_tasks[thread_id] = task
+        try:
+            async for event in engine.run_streaming(prompt=prompt, thread_id=thread_id):
+                yield {"event": "message", "data": json.dumps(event)}
+        except asyncio.CancelledError:
+            yield {"event": "cancelled", "data": json.dumps({"event": "cancelled", "threadId": thread_id})}
+        finally:
+            _running_tasks.pop(thread_id, None)
+
+    return EventSourceResponse(event_generator())
+
+
+@app.post("/api/chat/cancel")
+async def cancel_chat(request: Request):
+    """Cancel a running chat by thread_id.
+
+    Request (JSON)::
+        {"thread_id": "..."}
+    """
+    body = await request.json()
+    thread_id = body.get("thread_id")
+    if not thread_id:
+        return JSONResponse({"ok": False, "error": "thread_id is required"}, status_code=400)
+
+    task = _running_tasks.get(thread_id)
+    if task and not task.done():
+        task.cancel()
+        return {"ok": True, "thread_id": thread_id}
+    return {"ok": False, "error": "no running task found", "thread_id": thread_id}
+
+
+@app.get("/api/conversations")
+async def list_conversations():
+    """List all saved conversations (metadata + message count)."""
+    cp = _make_checkpointer()
+    thread_ids = await cp.list_threads()
+    conversations = []
+    for tid in thread_ids:
+        state = await cp.load(tid)
+        if state:
+            conversations.append({
+                "thread_id": tid,
+                "title": state.title or "",
+                "created_at": "",
+                "updated_at": "",
+                "message_count": len(state.messages),
+            })
+    return {"conversations": conversations}
+
+
+@app.get("/api/conversations/{thread_id}")
+async def get_conversation(thread_id: str):
+    """Get a full conversation by thread_id."""
+    cp = _make_checkpointer()
+    state = await cp.load(thread_id)
+    if not state:
+        return JSONResponse({"error": "conversation not found"}, status_code=404)
+    return {
+        "thread_id": thread_id,
+        "title": state.title or "",
+        "messages": [msg.to_dict() for msg in state.messages],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+
+def main():
+    import uvicorn
+    cfg = get_config()
+    host = "0.0.0.0"
+    port = 20266
+    logging.basicConfig(
+        level=logging.INFO,
+        format="[NanoDeer] %(levelname)s: %(message)s",
+    )
+    logger.info("NanoDeer API starting on http://%s:%s", host, port)
+    uvicorn.run(app, host=host, port=port, log_level="info")
+
+
+if __name__ == "__main__":
+    main()

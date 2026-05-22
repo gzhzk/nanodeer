@@ -14,10 +14,9 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Load .env file for development
-# Search upward from this file's location for .env
+# Load .env file from project root
 from pathlib import Path as _P
-_env = _P(__file__).resolve().parents[4] / ".env"
+_env = _P(__file__).resolve().parents[2] / ".env"
 load_dotenv(_env)
 
 

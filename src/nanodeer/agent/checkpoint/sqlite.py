@@ -85,7 +85,7 @@ class SqliteCheckpointer(Checkpointer):
     def _get_conn(self) -> sqlite3.Connection:
         if self._conn is None:
             db_file = self.db_path / "threads.db"
-            self._conn = sqlite3.connect(str(db_file))
+            self._conn = sqlite3.connect(str(db_file), check_same_thread=False)
             self._conn.row_factory = sqlite3.Row
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA foreign_keys=ON")

@@ -62,9 +62,9 @@ def _create_llm(config: HarnessConfig, model_name: str | None = None):
         raise ValueError(f"Provider '{provider}' not found in config.yaml.")
 
     if provider in _OPENAI_COMPATIBLE:
-        from langchain_openai import ChatOpenAI
+        from .agent.llm import ReasoningChatOpenAI
 
-        return ChatOpenAI(
+        return ReasoningChatOpenAI(
             model=name,
             api_key=pcfg.api_key,
             base_url=pcfg.api_base,
@@ -157,12 +157,23 @@ class NanoEngine:
         thread_id = thread_id or uuid.uuid4().hex
         start_ms = int(time.time() * 1000)
 
-        state = ThreadState(
-            thread_id=thread_id,
-            messages=[HumanMessage(content=prompt)],
-        )
-
         executor = self._get_executor()
+
+        # Resume from checkpoint if thread_id provided and checkpoint exists
+        state = None
+        if thread_id and executor._checkpointer:
+            saved = await executor._checkpointer.load(thread_id)
+            if saved:
+                state = saved
+
+        if state is None:
+            state = ThreadState(
+                thread_id=thread_id,
+                messages=[HumanMessage(content=prompt)],
+            )
+        else:
+            state.messages.append(HumanMessage(content=prompt))
+
         final_state, events = await executor.run(state, uploaded_files=uploaded_files)
 
         # App-layer compression after turn completes
@@ -232,12 +243,22 @@ class NanoEngine:
         thread_id = thread_id or uuid.uuid4().hex
         start_ms = int(time.time() * 1000)
 
-        state = ThreadState(
-            thread_id=thread_id,
-            messages=[HumanMessage(content=prompt)],
-        )
-
         executor = self._get_executor()
+
+        # Resume from checkpoint if thread_id provided and checkpoint exists
+        state = None
+        if thread_id and executor._checkpointer:
+            saved = await executor._checkpointer.load(thread_id)
+            if saved:
+                state = saved
+
+        if state is None:
+            state = ThreadState(
+                thread_id=thread_id,
+                messages=[HumanMessage(content=prompt)],
+            )
+        else:
+            state.messages.append(HumanMessage(content=prompt))
 
         async for event in executor.run_streaming(state, uploaded_files=uploaded_files):
             yield {**event, "threadId": thread_id}

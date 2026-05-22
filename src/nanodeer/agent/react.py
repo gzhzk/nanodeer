@@ -33,6 +33,7 @@ import logging
 import time
 from typing import AsyncGenerator
 
+from pydantic import ValidationError
 from langchain_core.messages import HumanMessage as LCHumanMessage, AIMessage as LAIMessage
 
 logger = logging.getLogger(__name__)
@@ -102,9 +103,8 @@ class ReActExecutor:
             if state.next_action == NextAction.WAIT:
                 return state, accumulated_events  # caller reads signals.clarification_question
 
-            # LLM call
-            tools_names = [t.name for t in self._tools]
-            prompt = build_lead_agent_prompt(state, tools_names, signals, self._prompt_config, self._model_name)
+            # LLM call — tool schemas provided natively via llm.bind_tools()
+            prompt = build_lead_agent_prompt(state, signals, self._prompt_config, self._model_name)
             # Convert custom messages to LangChain types for LLM compatibility
             lc_messages = [LCSystemMessage(content=prompt)]
             for msg in state.messages:
@@ -153,6 +153,9 @@ class ReActExecutor:
                     pass
                 if signals.events:
                     accumulated_events.extend(signals.events)
+                # Save checkpoint before breaking
+                if self._checkpointer and state.thread_id:
+                    await self._checkpointer.save(state.thread_id, state)
                 break
 
             exec_id = state.thread_id or "default"
@@ -173,7 +176,18 @@ class ReActExecutor:
                     signals.skip_tool = False
                     signals.skip_tool_result = None
                 else:
-                    content = await tool.ainvoke(tc.get("args", {}), exec_id=exec_id) if tool else f"Tool {tc['name']} not found"
+                    try:
+                        content = await tool.ainvoke(tc.get("args", {}), exec_id=exec_id) if tool else f"Tool {tc['name']} not found"
+                    except ValidationError as e:
+                        field_names = []
+                        for err in e.errors():
+                            loc = err.get("loc", [])
+                            field_names.append(str(loc[0]) if loc else "?")
+                        content = f"Tool '{tc['name']}' requires parameters: {', '.join(field_names)}. Please provide all required parameters."
+                        logger.warning("turn=%d tool=%s validation_error fields=%s", turn, tc["name"], field_names)
+                    except Exception as e:
+                        content = f"Error executing {tc['name']}: {e}"
+                        logger.warning("turn=%d tool=%s error=%s", turn, tc["name"], e)
 
                 signals.events.append({
                     "type": "tool_result",
@@ -249,6 +263,7 @@ class ReActExecutor:
             # Yield start event for each turn
             yield {
                 "event": "turn_start",
+                "model": self._model_name,
                 "threadId": thread_id,
                 "turnMs": int(time.time() * 1000) - start_ms,
             }
@@ -268,9 +283,8 @@ class ReActExecutor:
                 yield {"event": "wait", "question": signals.clarification_question, "threadId": thread_id}
                 return
 
-            # Build LLM messages
-            tools_names = [t.name for t in self._tools]
-            prompt = build_lead_agent_prompt(state, tools_names, signals, self._prompt_config, self._model_name)
+            # Build LLM messages — tool schemas provided natively via llm.bind_tools()
+            prompt = build_lead_agent_prompt(state, signals, self._prompt_config, self._model_name)
             lc_messages = [LCSystemMessage(content=prompt)]
             for msg in state.messages:
                 if isinstance(msg, HumanMessage):
@@ -283,9 +297,20 @@ class ReActExecutor:
             # LLM streaming — yield tokens as they arrive
             raw_tcs_by_index: dict[int, dict] = {}
             collected_content = ""
+            collected_reasoning = ""
 
             # Use astream for incremental token & tool_call delivery
             async for chunk in self.llm.astream(lc_messages):
+                # Yield reasoning tokens (thinking models) before content
+                reasoning = chunk.additional_kwargs.get("reasoning_content", "")
+                if reasoning:
+                    collected_reasoning += reasoning
+                    yield {
+                        "event": "reasoning_token",
+                        "text": reasoning,
+                        "threadId": thread_id,
+                    }
+
                 # Accumulate text content + yield token events
                 if isinstance(chunk.content, str):
                     if chunk.content:
@@ -365,6 +390,9 @@ class ReActExecutor:
                     if ev is None:
                         continue
                     yield {**ev, "threadId": thread_id, "event": ev.get("type", ev.get("event", ""))}
+                # Save checkpoint before ending
+                if self._checkpointer and state.thread_id:
+                    await self._checkpointer.save(state.thread_id, state)
                 yield {"event": "end", "next_action": "end", "threadId": thread_id, "durationMs": int(time.time() * 1000) - start_ms}
                 break
 
@@ -393,7 +421,18 @@ class ReActExecutor:
                     signals.skip_tool = False
                     signals.skip_tool_result = None
                 else:
-                    content = await tool.ainvoke(tc["args"], exec_id=exec_id) if tool else f"Tool {tc['name']} not found"
+                    try:
+                        content = await tool.ainvoke(tc["args"], exec_id=exec_id) if tool else f"Tool {tc['name']} not found"
+                    except ValidationError as e:
+                        field_names = []
+                        for err in e.errors():
+                            loc = err.get("loc", [])
+                            field_names.append(str(loc[0]) if loc else "?")
+                        content = f"Tool '{tc['name']}' requires parameters: {', '.join(field_names)}. Please provide all required parameters."
+                        logger.warning("tool=%s validation_error fields=%s", tc["name"], field_names)
+                    except Exception as e:
+                        content = f"Error executing {tc['name']}: {e}"
+                        logger.warning("tool=%s error=%s", tc["name"], e)
 
                 result_str = str(content)[:500]
                 signals.events.append({
