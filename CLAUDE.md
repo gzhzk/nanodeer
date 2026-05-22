@@ -2,90 +2,78 @@
 
 ## Project Overview
 
-NanoDeer is a lightweight AI Agent framework with a **Python kernel** and a **TypeScript shell**. It provides a native async ReAct executor with middleware interception, pluggable sandbox isolation (Docker/local), and built-in tools/memory/todo/subagent capabilities.
+NanoDeer is a lightweight AI Agent framework with a **Python kernel** and **HTTP SSE API** for frontend consumption. It provides a native async ReAct executor with middleware interception, pluggable sandbox isolation (Docker/local), and built-in tools/memory/todo/subagent capabilities.
 
-**Key differentiators**: no LangGraph dependency, 4-hook middleware chain, sandbox tool routing, TypeScript CLI shell.
+**Key differentiators**: no LangGraph dependency, 4-hook middleware chain, sandbox tool routing, FastAPI SSE streaming.
 
 ---
 
-## Architecture: 6 Layers
+## Architecture: 4 Layers
 
 ```
-Layer 6: TypeScript SDK / CLI
-  nanodeer-sdk/src/
-    cli.ts          — Terminal UI (readline + chalk)
-    brain-client.ts — Process management + NDJSON stdio protocol
-    events.ts       — TypeScript type definitions
+Layer 4: HTTP API — FastAPI + SSE
+  src/nanodeer/cli/api.py
+    POST /api/chat          → SSE stream of events
+    POST /api/chat/cancel   → cancel running task
+    GET  /api/conversations → list conversations
+    GET  /api/conversations/{id} → get conversation messages
 
-Layer 5: Python Brain — Protocol Adapter (NDJSON stdio)
-  nanodeer-kernel/src/nanodeer/brain.py
-    receive: {type:"execute"|"cancel"|"ping", ...}
-    yield:   StreamEvent NDJSON lines on stdout
-
-Layer 4: NanoEngine — Application Entry Point
-  nanodeer-kernel/src/nanodeer/engine.py
+Layer 3: NanoEngine — Application Entry Point
+  src/nanodeer/engine.py
     NanoEngine.run(prompt) → RunResult
     NanoEngine.run_streaming() → AsyncGenerator[StreamEvent]
 
-Layer 3: Orchestration
-  nanodeer-kernel/src/nanodeer/agent/
+Layer 2: Orchestration
+  src/nanodeer/agent/
     react.py       — Native async ReAct loop, 4 hooks
     factory.py     — NanoDeerFactory assembles MiddlewareChain
     state.py       — ThreadState, TurnSignals, NextAction
     messages.py    — HumanMessage, AIMessage, ToolMessage, ToolCall
 
-Layer 2: Tools + Sandbox
-  nanodeer-kernel/src/nanodeer/tools/      — 16 built-in tools
-  nanodeer-kernel/src/nanodeer/sandbox/    — Sandbox providers
-  nanodeer-kernel/src/nanodeer/subagent/   — SubagentExecutor
-
-Layer 1: Data
-  nanodeer-kernel/src/nanodeer/agent/memory/    — MemoryStore
-  nanodeer-kernel/src/nanodeer/agent/checkpoint/ — FileCheckpointer
-  nanodeer-kernel/src/nanodeer/agent/prompt.py  — Prompt assembly
+Layer 1: Tools + Sandbox + Data
+  src/nanodeer/tools/      — 16 built-in tools
+  src/nanodeer/sandbox/    — Sandbox providers
+  src/nanodeer/subagent/   — SubagentExecutor
+  src/nanodeer/agent/memory/    — MemoryStore
+  src/nanodeer/agent/checkpoint/ — SqliteCheckpointer
+  src/nanodeer/agent/prompt.py  — Prompt assembly
 ```
 
-**Entry flow**: TypeScript CLI → Brain (stdio) → NanoEngine.run_streaming() → ReActExecutor.run() → Tools → Sandbox
+**Entry flow**: Browser/HTTP → api.py (SSE) → NanoEngine.run_streaming() → ReActExecutor.run() → Tools → Sandbox
+
+**Debug entry**: `python -m nanodeer.cli.repl` — simple async CLI REPL
 
 ---
 
-## Protocol: Brain (Layer 5 ↔ Layer 6)
+## API Protocol (Layer 4)
 
-**STDIO Protocol** — all messages are NDJSON lines.
+**Base URL**: `http://127.0.0.1:20266`
 
-**stdin** (requests from TypeScript to Python):
-```json
-{"type": "execute", "prompt": "...", "threadId": "..."}
-{"type": "resume", "threadId": "...", "prompt": "..."}
-{"type": "cancel", "threadId": "..."}
-{"type": "ping"}
-```
+### Endpoints
 
-**stdout** (events from Python to TypeScript):
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/health` | Health check |
+| POST | `/api/chat` | Start streaming chat (returns SSE) |
+| POST | `/api/chat/cancel` | Cancel running chat by thread_id |
+| GET | `/api/conversations` | List saved conversations |
+| GET | `/api/conversations/{thread_id}` | Get full conversation |
+
+### SSE Event Format
+
+Each SSE event has `event: message` and `data: {...}` where the JSON matches:
+
 ```json
 {"event": "turn_start", "threadId": "...", "turnMs": 0}
-{"event": "llm_token", "text": "Hi", "threadId": "..."}
+{"event": "llm_token", "text": "Hello", "threadId": "..."}
+{"event": "assistant_response", "text": "...", "has_tools": false, "threadId": "..."}
 {"event": "tool_call", "name": "bash", "args": {...}, "threadId": "..."}
 {"event": "tool_result", "name": "bash", "result": "...", "success": true, "threadId": "..."}
 {"event": "wait", "question": "Did you mean X or Y?", "threadId": "..."}
 {"event": "end", "next_action": "end", "durationMs": 1234, "threadId": "..."}
 {"event": "error", "code": "...", "message": "...", "threadId": "..."}
 {"event": "cancelled", "threadId": "..."}
-{"event": "pong"}
 ```
-
-**stderr**: Python logs (plain text, not NDJSON)
-
-**Python side**:
-```
-python -m nanodeer.brain --stdio
-```
-
-**Node side** (`brain-client.ts`):
-- Spawns Python process with `spawn(python, ["-u", "-m", "nanodeer.brain", "--stdio"])`
-- Sets `PYTHONPATH` to `packages/nanodeer-kernel/src`
-- Auto-detects `.venv/bin/python` or falls back to `python3`
-- Supports `NANODEER_PYTHON` env var override
 
 ---
 
@@ -158,42 +146,36 @@ while True:
 - Loaded into `signals.memory_context` by `MemoryMiddleware` before each LLM call
 
 ### Checkpoint (injected dependency, not a separate layer)
-- `FileCheckpointer` saves `ThreadState` to `{storage_path}/{thread_id}/checkpoint.json`
-- Same class as `memory_store` / `subagent_runner` — injected into ReActExecutor
+- `SqliteCheckpointer` saves ThreadState to SQLite DB
 - Loaded at `run()` start if `thread_id` has checkpoint and messages are empty
 - Saved after each `after_tools_all()`, before next turn or END
-- Config: `thread.checkpointer_type` = "file" (default) or "memory" (future)
+- Config: `thread.checkpointer_type` = "sqlite"
 
 ---
 
 ## Module Map
 
-### TypeScript SDK (Layer 6)
+### API (Layer 4)
 | File | Role |
 |------|------|
-| `packages/nanodeer-sdk/src/cli.ts` | Terminal UI — readline prompt, chalk rendering, event loop |
-| `packages/nanodeer-sdk/src/brain-client.ts` | Brain process spawn/manage, line-based NDJSON read/write |
-| `packages/nanodeer-sdk/src/events.ts` | `StreamEvent` type union, `BrainRequest` union, `ExecuteRequest`, etc. |
+| `src/nanodeer/cli/api.py` | `app` (FastAPI) + `main()` — SSE streaming, conversations, cancellation |
 
-### Brain — Protocol Adapter (Layer 5)
+### NanoEngine (Layer 3)
 | File | Role |
 |------|------|
-| `packages/nanodeer-kernel/src/nanodeer/brain.py` | `Brain` class + `main()` — NDJSON stdin reader, event streamer |
+| `src/nanodeer/engine.py` | `NanoEngine` — lazy-loads executor, `run()` / `run_streaming()`, `RunResult` |
+| `src/nanodeer/cli/brain.py` | Brain — NDJSON stdio adapter (legacy, for testing) |
+| `src/nanodeer/cli/repl.py` | REPL — async CLI debug interface |
 
-### NanoEngine (Layer 4)
+### Core Loop (Layer 2)
 | File | Role |
 |------|------|
-| `packages/nanodeer-kernel/src/nanodeer/engine.py` | `NanoEngine` — lazy-loads executor, `run()` / `run_streaming()`, `RunResult` |
-
-### Core Loop (Layer 3)
-| File | Role |
-|------|------|
-| `packages/nanodeer-kernel/src/nanodeer/agent/react.py` | `ReActExecutor` — native async ReAct loop, 4 hooks |
-| `packages/nanodeer-kernel/src/nanodeer/agent/factory.py` | `NanoDeerFactory` — assembles chain, wraps tools, `RuntimeFeatures` |
-| `packages/nanodeer-kernel/src/nanodeer/agent/state.py` | `ThreadState`, `SandboxState`, `TurnSignals`, `NextAction` |
-| `packages/nanodeer-kernel/src/nanodeer/agent/messages.py` | `HumanMessage`, `AIMessage`, `ToolMessage`, `SystemMessage`, `ToolCall` |
-| `packages/nanodeer-kernel/src/nanodeer/agent/prompt.py` | `build_lead_agent_prompt`, `PromptConfig` |
-| `packages/nanodeer-kernel/src/nanodeer/config.py` | `HarnessConfig`, `get_config()` |
+| `src/nanodeer/agent/react.py` | `ReActExecutor` — native async ReAct loop, 4 hooks |
+| `src/nanodeer/agent/factory.py` | `NanoDeerFactory` — assembles chain, wraps tools, `RuntimeFeatures` |
+| `src/nanodeer/agent/state.py` | `ThreadState`, `SandboxState`, `TurnSignals`, `NextAction` |
+| `src/nanodeer/agent/messages.py` | `HumanMessage`, `AIMessage`, `ToolMessage`, `SystemMessage`, `ToolCall` |
+| `src/nanodeer/agent/prompt.py` | `build_lead_agent_prompt`, `PromptConfig` |
+| `src/nanodeer/config.py` | `HarnessConfig`, `get_config()` |
 
 ### Middlewares
 | File | Hook | Role | Status |
@@ -252,24 +234,21 @@ Subagent: `spawn_subagent`, `get_subagent_results`
 |------|------|
 | `agent/memory/__init__.py` | `MemoryStore` — file-based (USER.md/MEMORY.md/episodic/) |
 | `agent/memory/storage.py` | `FileMemoryStore` implementation |
-| `agent/checkpoint/__init__.py` | `Checkpointer` ABC + `FileCheckpointer` |
+| `agent/checkpoint/__init__.py` | `Checkpointer` ABC + `SqliteCheckpointer` |
 | `agent/checkpoint/base.py` | `Checkpointer` abstract base |
-| `agent/checkpoint/file.py` | `FileCheckpointer` implementation |
+| `agent/checkpoint/sqlite.py` | `SqliteCheckpointer` implementation |
 
-### App Layer
-| File | Role |
-|------|------|
-| `app/config.py` | `AppConfig` — HTTP host/port/storage paths (independent from HarnessConfig) |
+| `src/nanodeer/cli/config.py` | `AppConfig` — HTTP host/port/storage paths (independent from HarnessConfig) |
 
 ---
 
 ## Important Design Decisions
 
-1. **Package import path**: Use `from nanodeer.` (package lives at `packages/nanodeer-kernel/src/nanodeer/`)
+1. **Package import path**: Use `from nanodeer.` (package lives at `src/nanodeer/`)
 
 2. **No LangGraph**: Native async ReAct loop in `react.py`. `langchain_core` used only for `BaseChatModel` and `BaseTool` interfaces.
 
-3. **Python/TypeScript boundary**: TypeScript is the shell, Python is the kernel. They communicate via NDJSON over stdio. The Brain is a pure protocol adapter with no business logic.
+3. **HTTP SSE over stdio**: `api.py` replaces the old brain.py + TS SDK stdio protocol. Frontend (assistant-ui) connects via SSE directly. No intermediate TypeScript layer.
 
 4. **Middleware idempotency**: `before_llm` SandboxMiddleware checks `_sandbox_context` before acquiring; `_release_if_needed` checks `status == "released"`.
 
@@ -281,7 +260,7 @@ Subagent: `spawn_subagent`, `get_subagent_results`
 
 8. **Virtual path isolation**: All file access inside container via `/mnt/user-data/...` which maps to host path with `{exec_id}` isolation.
 
-9. **Clarification = WAIT**: `ClarificationMiddleware` sets `WAIT` and returns `signals.clarification_question`. Caller (App layer via Brain → TypeScript) handles prompting user.
+9. **Clarification = WAIT**: `ClarificationMiddleware` sets `WAIT` and returns `signals.clarification_question`. Caller (api.py) yields wait event; frontend prompts user.
 
 10. **skip_tool mechanism**: `MemoryMiddleware.before_tools()` intercepts `save_memory`, writes to host MemoryStore, sets `signals.skip_tool=True`. `react.py` tool loop reads skip flag and uses `signals.skip_tool_result` instead of calling `tool.ainvoke()`.
 
@@ -304,7 +283,7 @@ Subagent: `spawn_subagent`, `get_subagent_results`
 ### WAIT / Clarification flow
 ```
 LLM → ClarificationMiddleware sets WAIT → executor.run() returns state
-Brain yields wait event → TypeScript prompts user → calls run() again
+api.py yields wait event → frontend prompts user → calls /api/chat again
 ```
 
 ### save_memory append/replace mode
@@ -325,18 +304,19 @@ get_subagent_results(sub_id) → polls executor._results
 
 ## Config
 
-**Harness Config** (`packages/nanodeer-kernel/src/nanodeer/config.py`):
+**Harness Config** (`src/nanodeer/config.py`):
 `config.yaml` — `HarnessConfig` loaded via `get_config()`. Controls:
 - `thread.storage_path`: base for `{thread_id}/user-data/`
-- `thread.checkpointer_type`: "file" (default) or "memory"
+- `thread.checkpointer_type`: "sqlite" (default)
+- `thread.db_path`: path to SQLite database directory
 - `sandbox.image`, `container_prefix`, `network_mode`
 - `agents.defaults`: provider, model, max_tokens, temperature
 
-**App Config** (`app/config.py`):
+**App Config** (`src/nanodeer/cli/config.py`):
 `AppConfig` — HTTP host/port/storage paths, independent from HarnessConfig.
 - `NANODEER_APP_HOST`, `NANODEER_APP_PORT`, `NANODEER_APP_UPLOAD_DIR`, etc.
 
-**Import path**: `from nanodeer.` (package lives at `packages/nanodeer-kernel/src/nanodeer/`)
+**Import path**: `from nanodeer.` (package lives at `src/nanodeer/`)
 
 ---
 
