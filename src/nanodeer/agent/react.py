@@ -1,14 +1,14 @@
 """NanoDeer native ReAct executor — minimal, no middleware chain.
 
 Loop:
-  ① ContextManager.load()    — parallel: mkdir + memory + plan + files
-  ② SandboxManager.acquire() — idempotent, reuses across turns
-  ③ LLM.ainvoke()            — with retry on 429/5xx/timeout
-  ④ [CLARIFICATION] check    — inline, no middleware
-  ⑤ for tc in tool_calls:    — bash audit inline, then tool.ainvoke()
-  ⑥ Checkpointer.save()      — per-turn checkpoint
-  ⑦ END → SandboxManager.release() + break
-     PROCESS → ① next turn
+  1. ContextManager.load()    — parallel: mkdir + memory + plan + files
+  2. SandboxManager.acquire() — idempotent, reuses across turns
+  3. LLM.ainvoke()            — with retry on 429/5xx/timeout
+  4. [CLARIFICATION] check    — inline, no middleware
+  5. for tc in tool_calls:    — bash audit inline, then tool.ainvoke()
+  6. Checkpointer.save()      — per-turn checkpoint
+  7. END → SandboxManager.release() + break
+     PROCESS → next turn
      WAIT    → return to caller
 """
 
@@ -171,13 +171,13 @@ class ReActExecutor:
     """Native ReAct loop — no middleware chain.
 
     Lifecycle per turn:
-      ① ContextManager.load()   — parallel disk I/O for memory/plan/files
-      ② SandboxManager.acquire() — idempotent container lifecycle
-      ③ Sandbox health check     — detection (inline)
-      ④ LLM call                 — with retry
-      ⑤ Clarification check      — inline
-      ⑥ Tool loop                — bash audit inline, then tool.ainvoke()
-      ⑦ Checkpoint.save()        — persist state
+      1. ContextManager.load()   — parallel disk I/O for memory/plan/files
+      2. SandboxManager.acquire() — idempotent container lifecycle
+      3. Sandbox health check     — detection (inline)
+      4. LLM call                 — with retry
+      5. Clarification check      — inline
+      6. Tool loop                — bash audit inline, then tool.ainvoke()
+      7. Checkpoint.save()        — persist state
     """
 
     def __init__(
@@ -258,22 +258,22 @@ class ReActExecutor:
             signals = TurnSignals()
             signals._uploaded_files = uploaded_files
 
-            # ① Context loading
+            # 1. Context loading
             await self._context.load(state, signals)
             turn_start = time.monotonic()
             logger.info("turn=%d context_loaded messages=%d sandbox=%s",
                         turn, len(state.messages),
                         state.sandbox is not None)
 
-            # ② Sandbox acquire (if available)
+            # 2. Sandbox acquire (if available)
             if self._sandbox:
                 await self._sandbox.acquire(state)
 
-            # ③ Health check
+            # 3. Health check
             if state.sandbox and state.sandbox.status == "released":
                 break
 
-            # ④ LLM call
+            # 4. LLM call
             prompt = build_lead_agent_prompt(state, signals, self._prompt_config, self._model_name)
             lc_messages = self._to_lc_messages(state, prompt)
             llm_start = time.monotonic()
@@ -288,15 +288,20 @@ class ReActExecutor:
                         turn, time.monotonic() - llm_start,
                         len(raw_tcs), tool_names if raw_tcs else [], content_preview)
 
-            # ⑤ Clarification check
+            # 5. Clarification check
             if self._check_clarification(str(resp.content or ""), signals):
+                state.next_action = NextAction.WAIT
+                if self._checkpointer and state.thread_id:
+                    await self._checkpointer.save(state.thread_id, state)
                 return state, accumulated_events
 
-            # ⑥ Tool loop
+            # 6. Tool loop
             if not raw_tcs:
                 # LLM ended without tool calls → final answer
                 if self._checkpointer and state.thread_id:
                     await self._checkpointer.save(state.thread_id, state)
+                if self._context:
+                    await self._context.absorb(state)
                 break
 
             exec_id = state.thread_id or "default"
@@ -331,9 +336,11 @@ class ReActExecutor:
                     content=str(content),
                 ))
 
-            # ⑦ Checkpoint
+            # 7. Checkpoint
             if self._checkpointer and state.thread_id:
                 await self._checkpointer.save(state.thread_id, state)
+            if self._context:
+                await self._context.absorb(state)
 
             logger.info("turn=%d after_tools next_action=%s turn_duration=%.2fs",
                         turn, state.next_action.value, time.monotonic() - turn_start)
@@ -344,7 +351,7 @@ class ReActExecutor:
             if state.next_action == NextAction.END:
                 break
 
-        # ⑧ Release sandbox on END
+        # 8. Release sandbox on END
         if self._sandbox:
             await self._sandbox.release(state)
 
@@ -374,30 +381,31 @@ class ReActExecutor:
             yield {"event": "turn_start", "model": self._model_name, "threadId": thread_id,
                    "turnMs": int(time.time() * 1000) - start_ms}
 
-            # ① Context loading
+            # 1. Context loading
             await self._context.load(state, signals)
             if signals.memory_context:
                 yield {"event": "memory_context", "has_memory": True, "threadId": thread_id}
             if signals.plan_context:
                 yield {"event": "plan_context", "threadId": thread_id}
 
-            # ② Sandbox acquire
+            # 2. Sandbox acquire
             if self._sandbox:
                 await self._sandbox.acquire(state)
                 if state.sandbox and state.sandbox.container_id:
                     yield {"event": "sandbox_acquired", "exec_id": state.sandbox.exec_id, "threadId": thread_id}
 
-            # ③ Health check
+            # 3. Health check
             if state.sandbox and state.sandbox.status == "released":
                 yield {"event": "end", "next_action": "end", "threadId": thread_id,
                        "durationMs": int(time.time() * 1000) - start_ms}
                 break
 
-            # ④ LLM streaming call
+            # 4. LLM streaming call
             prompt = build_lead_agent_prompt(state, signals, self._prompt_config, self._model_name)
             lc_messages = self._to_lc_messages(state, prompt)
 
             raw_tcs_by_index: dict[int, dict] = {}
+            raw_args_buf: dict[int, str] = {}
             collected_content = ""
             collected_reasoning = ""
 
@@ -428,11 +436,18 @@ class ReActExecutor:
                     if tcc.get("id"):
                         raw_tcs_by_index[idx]["id"] = tcc["id"]
                     if tcc.get("args"):
-                        try:
-                            parsed = json.loads(tcc["args"]) if isinstance(tcc["args"], str) else tcc["args"]
-                            raw_tcs_by_index[idx]["args"].update(parsed)
-                        except (json.JSONDecodeError, TypeError):
-                            pass
+                        raw_args_buf[idx] = raw_args_buf.get(idx, "") + tcc["args"]
+
+            # Parse accumulated JSON args after streaming
+            for idx in raw_tcs_by_index:
+                raw_str = raw_args_buf.get(idx, "")
+                if raw_str:
+                    try:
+                        parsed = json.loads(raw_str)
+                        if isinstance(parsed, dict):
+                            raw_tcs_by_index[idx]["args"] = parsed
+                    except (json.JSONDecodeError, TypeError):
+                        pass
 
             raw_tcs = [tc for tc in raw_tcs_by_index.values() if tc["name"]]
             our_tcs = [ToolCall(name=tc["name"], args=tc["args"], id=tc.get("id")) for tc in raw_tcs]
@@ -440,15 +455,20 @@ class ReActExecutor:
 
             yield {"event": "assistant_response", "text": collected_content, "has_tools": bool(raw_tcs), "threadId": thread_id}
 
-            # ⑤ Clarification check
+            # 5. Clarification check
             if self._check_clarification(collected_content, signals):
+                state.next_action = NextAction.WAIT
+                if self._checkpointer and state.thread_id:
+                    await self._checkpointer.save(state.thread_id, state)
                 yield {"event": "wait", "question": signals.clarification_question, "threadId": thread_id}
                 return
 
-            # ⑥ Tool loop
+            # 6. Tool loop
             if not raw_tcs:
                 if self._checkpointer and state.thread_id:
                     await self._checkpointer.save(state.thread_id, state)
+                if self._context:
+                    await self._context.absorb(state)
                 yield {"event": "end", "next_action": "end", "threadId": thread_id,
                        "durationMs": int(time.time() * 1000) - start_ms}
                 break
@@ -483,9 +503,11 @@ class ReActExecutor:
                     content=str(content),
                 ))
 
-            # ⑦ Checkpoint
+            # 7. Checkpoint
             if self._checkpointer and state.thread_id:
                 await self._checkpointer.save(state.thread_id, state)
+            if self._context:
+                await self._context.absorb(state)
 
             if state.next_action == NextAction.END:
                 await self._sandbox.release(state) if self._sandbox else None
