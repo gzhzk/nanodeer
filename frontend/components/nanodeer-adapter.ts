@@ -3,14 +3,32 @@ import { createChatStream, cancelChat } from "@/lib/api";
 import { parseSSEStream } from "@/lib/stream-utils";
 import type { NanoDeerEvent } from "@/lib/types";
 
-let currentThreadId: string | null = null;
+const STORAGE_KEY = "nanodeer_thread_id";
 
-export function setThreadId(id: string | null) {
-  currentThreadId = id;
+// Module-level current threadId for in-session use (not persisted)
+// Set during React render phase so history adapter's load() gets the correct thread
+let _currentThreadId: string | null = null;
+
+export function getCurrentThreadId(): string | null {
+  return _currentThreadId;
 }
 
-export function getThreadId(): string | null {
-  return currentThreadId;
+export function setCurrentThreadId(id: string | null) {
+  _currentThreadId = id;
+}
+
+export function getSavedThreadId(): string | null {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem(STORAGE_KEY);
+}
+
+export function saveThreadId(id: string | null) {
+  if (typeof window === "undefined") return;
+  if (id) {
+    localStorage.setItem(STORAGE_KEY, id);
+  } else {
+    localStorage.removeItem(STORAGE_KEY);
+  }
 }
 
 type ContentPart =
@@ -45,8 +63,8 @@ export const nanodeerAdapter: ChatModelAdapter = {
         ? lastMessage.content
         : lastMessage.content.map((c: any) => c.text ?? "").join("");
 
-    const threadId = currentThreadId || crypto.randomUUID();
-    if (!currentThreadId) currentThreadId = threadId;
+    const threadId = getSavedThreadId() || crypto.randomUUID();
+    if (!getSavedThreadId()) saveThreadId(threadId);
 
     const response = await createChatStream(prompt, threadId, abortSignal);
     const reader = response.body!.getReader();
