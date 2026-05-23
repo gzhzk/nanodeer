@@ -128,20 +128,9 @@ async def cancel_chat(request: Request):
 
 @app.get("/api/conversations")
 async def list_conversations():
-    """List all saved conversations (metadata + message count)."""
+    """List all saved conversations (metadata only, no messages)."""
     cp = _make_checkpointer()
-    thread_ids = await cp.list_threads()
-    conversations = []
-    for tid in thread_ids:
-        state = await cp.load(tid)
-        if state:
-            conversations.append({
-                "thread_id": tid,
-                "title": state.title or "",
-                "created_at": "",
-                "updated_at": "",
-                "message_count": len(state.messages),
-            })
+    conversations = await cp.list_conversations()
     return {"conversations": conversations}
 
 
@@ -155,8 +144,63 @@ async def get_conversation(thread_id: str):
     return {
         "thread_id": thread_id,
         "title": state.title or "",
+        "status": state.status if hasattr(state, "status") else "regular",
         "messages": [msg.to_dict() for msg in state.messages],
     }
+
+
+@app.get("/api/conversations/{thread_id}/meta")
+async def get_conversation_meta(thread_id: str):
+    """Get a conversation's metadata (no messages)."""
+    cp = _make_checkpointer()
+    meta = await cp.load_meta(thread_id)
+    if not meta:
+        return JSONResponse({"error": "conversation not found"}, status_code=404)
+    return meta
+
+
+@app.delete("/api/conversations/{thread_id}")
+async def delete_conversation(thread_id: str):
+    """Delete a conversation by thread_id."""
+    cp = _make_checkpointer()
+    deleted = await cp.delete(thread_id)
+    if not deleted:
+        return JSONResponse({"error": "conversation not found"}, status_code=404)
+    return {"ok": True, "thread_id": thread_id}
+
+
+@app.patch("/api/conversations/{thread_id}/rename")
+async def rename_conversation(thread_id: str, request: Request):
+    """Rename a conversation."""
+    body = await request.json()
+    title = body.get("title", "").strip()
+    if not title:
+        return JSONResponse({"error": "title is required"}, status_code=400)
+    cp = _make_checkpointer()
+    ok = await cp.update_title(thread_id, title)
+    if not ok:
+        return JSONResponse({"error": "conversation not found"}, status_code=404)
+    return {"ok": True, "title": title}
+
+
+@app.patch("/api/conversations/{thread_id}/archive")
+async def archive_conversation(thread_id: str):
+    """Archive a conversation."""
+    cp = _make_checkpointer()
+    ok = await cp.update_status(thread_id, "archived")
+    if not ok:
+        return JSONResponse({"error": "conversation not found"}, status_code=404)
+    return {"ok": True, "thread_id": thread_id}
+
+
+@app.patch("/api/conversations/{thread_id}/unarchive")
+async def unarchive_conversation(thread_id: str):
+    """Unarchive a conversation."""
+    cp = _make_checkpointer()
+    ok = await cp.update_status(thread_id, "regular")
+    if not ok:
+        return JSONResponse({"error": "conversation not found"}, status_code=404)
+    return {"ok": True, "thread_id": thread_id}
 
 
 # ---------------------------------------------------------------------------
