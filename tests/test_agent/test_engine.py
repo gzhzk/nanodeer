@@ -13,21 +13,18 @@ class TestRunResult:
             thread_id="t1",
             message="Hello",
             next_action=NextAction.PROCESS,
-            artifacts=["/a.txt"],
             tool_calls=[{"name": "read_file", "args": {}}],
             duration_ms=150,
         )
         assert r.thread_id == "t1"
         assert r.message == "Hello"
         assert r.next_action == NextAction.PROCESS
-        assert r.artifacts == ["/a.txt"]
         assert r.tool_calls == [{"name": "read_file", "args": {}}]
         assert r.duration_ms == 150
 
     def test_defaults(self):
         r = RunResult(thread_id="t1", message="Hi")
         assert r.next_action == NextAction.PROCESS
-        assert r.artifacts == []
         assert r.tool_calls == []
         assert r.duration_ms == 0
 
@@ -73,7 +70,6 @@ class TestNanoEngineRun:
         mock_state = MagicMock()
         mock_state.messages = [MagicMock(content="Hi")]
         mock_state.next_action = NextAction.PROCESS
-        mock_state.artifacts = []
         mock_state.thread_id = "t1"
 
         mock_executor = AsyncMock()
@@ -99,7 +95,6 @@ class TestNanoEngineRun:
         mock_state = MagicMock()
         mock_state.messages = [MagicMock(content="Done")]
         mock_state.next_action = NextAction.PROCESS
-        mock_state.artifacts = []
 
         mock_executor = AsyncMock()
         mock_executor.run = AsyncMock(return_value=(mock_state, []))
@@ -123,7 +118,6 @@ class TestNanoEngineRun:
         mock_state = MagicMock()
         mock_state.messages = [MagicMock(content="Hi")]
         mock_state.next_action = NextAction.PROCESS
-        mock_state.artifacts = []
 
         mock_executor = AsyncMock()
         mock_executor.run = AsyncMock(return_value=(mock_state, []))
@@ -146,7 +140,6 @@ class TestNanoEngineRun:
         mock_state = MagicMock()
         mock_state.messages = [MagicMock(content="Hi")]
         mock_state.next_action = NextAction.PROCESS
-        mock_state.artifacts = []
 
         mock_executor = AsyncMock()
         mock_executor.run = AsyncMock(return_value=(mock_state, []))
@@ -170,7 +163,6 @@ class TestNanoEngineRun:
         mock_state = MagicMock()
         mock_state.messages = [MagicMock(content="Hi")]
         mock_state.next_action = NextAction.PROCESS
-        mock_state.artifacts = []
 
         mock_executor = AsyncMock()
         mock_executor.run = AsyncMock(return_value=(mock_state, []))
@@ -191,7 +183,6 @@ class TestNanoEngineRun:
         mock_state = MagicMock()
         mock_state.messages = [MagicMock(content="Hi")]
         mock_state.next_action = NextAction.PROCESS
-        mock_state.artifacts = []
 
         mock_executor = AsyncMock()
         mock_executor.run = AsyncMock(return_value=(mock_state, []))
@@ -218,7 +209,6 @@ class TestNanoEngineRun:
         mock_state = MagicMock()
         mock_state.messages = [MagicMock(content="Hi")]
         mock_state.next_action = NextAction.PROCESS
-        mock_state.artifacts = []
 
         mock_executor = AsyncMock()
         mock_executor.run = AsyncMock(return_value=(mock_state, []))

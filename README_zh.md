@@ -29,10 +29,8 @@
 - [架构](#架构)
   - [4 层架构总览](#4-层架构总览)
   - [执行流程](#执行流程)
-  - [设计决策详解](#设计决策详解)
   - [存储路径](#存储路径)
   - [信号与状态设计](#信号与状态设计)
-- [核心模式](#核心模式)
 - [设计原则](#设计原则)
 - [工具](#工具)
 - [项目状态与路线图](#项目状态与路线图)
@@ -162,7 +160,7 @@ ContextManager.load() → SandboxManager.acquire() → LLM.ainvoke()
 
 | 机制 | 实现方式 |
 |------|---------|
-| `skip_tool` | 无需拦截——`save_memory` 不在 `SANDBOX_TOOL_CONFIGS` 中，自然在宿主机直接运行，执行器零感知 |
+| 宿主工具直通 | `save_memory`/`create_plan` 不在 `SANDBOX_TOOL_CONFIGS` 中，自然在宿主机直接运行，无需拦截 |
 | `WAIT` | `_check_clarification()` 内联检查 `[CLARIFICATION]` 标签，设置 `next_action = WAIT` |
 | 上下文加载 | `ContextManager.load()` 并行执行：建目录、加载记忆/计划、处理上传 |
 | 沙箱管理 | `SandboxManager.acquire()/release()` 幂等管理容器生命周期 |
@@ -223,7 +221,7 @@ NanoDeer 提供 FastAPI 服务器，使用 Server-Sent Events 实现实时流式
                              ▼
     ┌────────────────────────────────────────────────────────────────────────────────────┐
     │ Layer 2: ReActExecutor + ContextManager + SandboxManager                           │
-    │   react.py            — 原生 async ReAct 循环 + 内联 bash 审计 + clarification     │
+    │   react.py            — 原生 async ReAct 循环 + 内联 bash 审计 + clarification      │
     │   context.py          — ContextManager 并行加载上下文                                │
     │   sandbox_manager.py  — SandboxManager 幂等获取/释放沙箱                            │
     │   factory.py          — NanoDeerFactory 组装 executor                               │
@@ -246,7 +244,7 @@ NanoDeer 提供 FastAPI 服务器，使用 Server-Sent Events 实现实时流式
 ```
 用户输入（CLI / Web UI）
   ↓
-brain.py 接收请求，转发给 NanoEngine
+api.py 接收请求，转发给 NanoEngine
   ↓
 NanoEngine.run_streaming() → ReActExecutor.run()
   ↓
@@ -273,40 +271,6 @@ checkpoint 保存 → 下一轮或 END
 - **沙箱释放只在 END**——`PROCESS` 时容器保持存活供下一轮复用
 - **ContextManager 并行加载**——目录/记忆/计划/上传由 `asyncio.create_task` 并行执行
 - **SandboxManager 幂等**——先检查 state → `_sandbox_context` → provider，最后才 acquire
-
-### 设计决策详解
-
-#### 为什么不用 LangGraph？
-
-LangGraph 的图模型增加了间接性：定义节点、边、路由函数、编译图。要理解一条执行路径需要追踪 4-5 层间接引用。NanoDeer 的 ReAct 循环就是 [react.py](src/nanodeer/agent/react.py) 里一个 `while True` 块——整个控制流从上到下可读。代价：NanoDeer 不原生支持分支图或并行节点执行。但对于线性 ReAct 循环（LLM → 工具 → LLM → 工具 → ...），图编译没有收益。
-
-#### 为什么用 NDJSON over stdio 而不是 HTTP？
-
-- 零网络配置——stdin/stdout 在 SSH、Docker、tmux、systemd 下都能工作
-- 进程隔离——内核崩溃不会拖垮外层 shell
-- 可管道调试——`echo '{"type":"ping"}' | python -m nanodeer.brain --stdio`
-- 没有 HTTP 服务、没有端口、没有防火墙规则
-- 代价：没有原生请求多路复用（每进程串行处理）。通过每个会话一个 kernel 进程解决。
-
-#### 为什么 save_memory 不需要特殊处理？
-
-`save_memory` 和 `save_user_memory` 不在 `SANDBOX_TOOL_CONFIGS` 中，因此在工厂组装时不会被 `SandboxExecTool` 包装。它们自然在宿主机直接运行，无需 `skip_tool` 机制。这是**按设计**的：只有需要文件系统隔离的工具（bash、文件操作等）才需要进入沙箱。
-
-#### 为什么用文件持久化（不用数据库）？
-
-NanoDeer 的每个持久化路径——checkpointer、MemoryStore、PlanStore、会话历史——都使用纯文件（JSON、Markdown）。这是刻意的：
-- 零基础设施：不需要 PostgreSQL、SQLite、Redis 或任何守护进程
-- 可检查：`cat ~/.nanodeer/memory/USER.md` 知道 agent 记住了什么
-- 可审计：每次写入就是一个文件创建——备份就是 `cp -r ~/.nanodeer`
-- 代价：没有查询语言，没有文件名模式之外的索引。对单人/小团队可接受。
-
-#### 为什么在 App 层做压缩？
-
-压缩（把旧消息总结以保持在上下文窗口内）在 `NanoEngine.run()` 中 `executor.run()` 返回后执行——而不是作为 middleware hook 在循环内部。这意味着：
-- 压缩不影响 executor 的控制流
-- Executor 在整个 turn 中始终使用原始消息
-- 压缩时机由应用层控制，而非框架
-- 替换压缩策略不需要修改 middleware
 
 ### 存储路径
 
@@ -363,8 +327,8 @@ NanoDeer 使用两个生命周期不同的数据载体：
 |------|------|
 | `messages` | 完整对话历史（Human/AI/Tool） |
 | `next_action` | `PROCESS` → 继续循环；`WAIT` → 返回调用方；`END` → 终止 |
-| `artifacts` | 工具生成的文件路径 |
-| `sandbox` | 容器状态（container_id、status） |
+| `title` | 会话标题（前端列表展示） |
+| `sandbox` | 容器状态（container_id、status，runtime only，不持久化） |
 
 ---
 
@@ -377,22 +341,10 @@ NanoDeer 使用两个生命周期不同的数据载体：
 5. **Prompt 按需渲染**：只在数据存在且功能开关打开时渲染对应 section。
 6. **Sandbox + Host 双路径**：敏感操作走容器，`save_memory`/`create_plan`/`add_step` 直连宿主机。
 7. **原生 ReAct 循环**：无 LangGraph 依赖。300 行 `while True` 代替图编译器。
-8. **全文件持久化**：无数据库依赖。可检查、可审计、备份就是 `cp -r`。
+8. **混合持久化**：memory/plan 使用文件（可检查、可审计），checkpoint 使用 SQLite（高效查询）。
 
 ---
 
-## 核心模式
-
-| 模式 | 说明 | 实现 |
-|------|------|------|
-| **内联编排** | 无 middleware 链。ContextManager + SandboxManager + 内联函数覆盖所有横切关注点。 | [react.py](src/nanodeer/agent/react.py) |
-| **信号/状态分离** | TurnSignals 承载临时单 turn 数据。ThreadState 承载持久跨 turn 数据。 | [state.py](src/nanodeer/agent/state.py) |
-| **WAIT / Clarification** | LLM 的 `[CLARIFICATION]` 标签触发内联检测设置 `WAIT`，中断循环。 | [react.py](src/nanodeer/agent/react.py) |
-| **沙箱工具包装** | 工具在工厂组装时被包装。Executor 透明调用 `SandboxExecTool.ainvoke()`。 | [sandbox/tools.py](src/nanodeer/sandbox/tools.py) |
-| **路径翻译** | 虚拟容器路径映射到物理宿主机路径，exec_id 隔离，防路径穿越。 | [sandbox/path.py](src/nanodeer/sandbox/path.py) |
-| **记忆层级** | L1: 消息（上下文）· L2: 会话日志 · L3: USER.md/MEMORY.md · L4: wiki 条目（带标签、可检索） | [memory/](src/nanodeer/agent/memory/) |
-
----
 
 ## 工具
 
