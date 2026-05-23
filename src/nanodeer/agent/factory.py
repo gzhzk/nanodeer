@@ -47,23 +47,6 @@ class NanoDeerFactory:
     def __init__(self, features: RuntimeFeatures):
         self.features = features
 
-    def _create_sandbox_provider(self):
-        from ..sandbox.docker import DockerSandboxProvider
-        from ..sandbox.local import LocalSandboxProvider
-        from ..config import get_config
-        cfg = get_config()
-        try:
-            import docker
-            docker.client.from_env().ping()
-            return DockerSandboxProvider(
-                image=cfg.sandbox.image,
-                container_prefix=cfg.sandbox.container_prefix,
-                network_mode=cfg.sandbox.network_mode,
-                base_path=cfg.sandbox.base_path,
-            )
-        except Exception:
-            return LocalSandboxProvider()
-
     def _wrap_tools(self, tools, sandbox):
         """Wrap sandbox-aware tools with SandboxExecTool. Others pass through."""
         if not sandbox:
@@ -95,7 +78,8 @@ class NanoDeerFactory:
         sandbox_provider = None
         if self.features.sandbox:
             from .sandbox_manager import SandboxManager
-            sandbox_provider = self._create_sandbox_provider()
+            from ..sandbox import create_sandbox_provider
+            sandbox_provider = create_sandbox_provider()
             sandbox_mgr = SandboxManager(provider=sandbox_provider)
 
         # Context manager (always, handles memory + plan + files)

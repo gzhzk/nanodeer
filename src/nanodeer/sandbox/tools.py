@@ -16,11 +16,15 @@ import inspect
 
 from . import SandboxCommand, get_sandbox
 
-# Base64 shebang: decode argv[1] and exec it. Avoids shell escaping issues.
-_B64 = 'python3 -c "import base64,sys; exec(base64.b64decode(sys.argv[1]).decode())"'
+# Base64 shebang variants:
+#   _B64_SHELL  — for shell commands (bash, git): decode argv[1] and run via os.system
+#   _B64_PYTHON — for Python code (exec_python): decode argv[1] and exec()
+# Avoids shell escaping issues while preserving correct execution model.
+_B64_SHELL = 'python3 -c "import base64,os,sys; os.system(base64.b64decode(sys.argv[1]).decode())"'
+_B64_PYTHON = 'python3 -c "import base64,sys; exec(base64.b64decode(sys.argv[1]).decode())"'
 
 # Registry of sandbox-aware tools.
-# bash/git/exec_python: _B64 shebang + one base64-encoded argument.
+# bash/git: _B64_SHELL + one b64-encoded shell command. exec_python: _B64_PYTHON + b64 Python code.
 # read_file/ls: direct path substitution.
 # write_file: both path and content as base64 argv.
 # glob/grep: path direct + pattern base64.
@@ -46,7 +50,7 @@ SANDBOX_TOOL_CONFIGS: dict[str, dict] = {
         "timeout": 60,
     },
     "ls": {
-        "template": 'python3 -c "import os; [print(f) for f in os.listdir(sys.argv[1])]" {file_path}',
+        "template": 'python3 -c "import os,sys; [print(f) for f in os.listdir(sys.argv[1])]" {file_path}',
         "path_vars": ["file_path"],
         "b64_vars": [],
         "timeout": 10,
@@ -85,7 +89,7 @@ SANDBOX_TOOL_CONFIGS: dict[str, dict] = {
         "timeout": 30,
     },
     "bash": {
-        "template": f"{_B64} {{b64_command}}",
+        "template": f"{_B64_SHELL} {{b64_command}}",
         "path_vars": [],
         "b64_vars": ["command"],
         "timeout": 30,
@@ -94,14 +98,14 @@ SANDBOX_TOOL_CONFIGS: dict[str, dict] = {
         # git.py assembles the full command string with virtual paths embedded.
         # translate_vars extracts /mnt/user-data/... from that string, replaces with
         # the physical path using the real thread_id, then base64-encodes the result.
-        "template": f"{_B64} {{b64_command}}",
+        "template": f"{_B64_SHELL} {{b64_command}}",
         "path_vars": [],
         "b64_vars": [],
         "translate_vars": ["command"],
         "timeout": 60,
     },
     "exec_python": {
-        "template": f"{_B64} {{b64_code}}",
+        "template": f"{_B64_PYTHON} {{b64_code}}",
         "path_vars": [],
         "b64_vars": ["code"],
         "timeout": 30,

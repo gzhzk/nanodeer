@@ -10,10 +10,7 @@ Used by ReActExecutor directly, not as middleware.
 import logging
 
 from nanodeer.agent.state import SandboxState, ThreadState
-from nanodeer.config import get_config
-from nanodeer.sandbox import SandboxProvider, get_sandbox, set_sandbox, clear_sandbox
-from nanodeer.sandbox.docker import DockerSandboxProvider
-from nanodeer.sandbox.local import LocalSandboxProvider
+from nanodeer.sandbox import SandboxProvider, create_sandbox_provider, get_sandbox, set_sandbox, clear_sandbox
 
 logger = logging.getLogger(__name__)
 
@@ -22,23 +19,7 @@ class SandboxManager:
     """Container lifecycle: acquire (idempotent), release (idempotent)."""
 
     def __init__(self, provider: SandboxProvider | None = None):
-        self._provider = provider or self._create_provider()
-
-    @staticmethod
-    def _create_provider() -> SandboxProvider:
-        cfg = get_config()
-        try:
-            import docker
-            docker.client.from_env().ping()
-            return DockerSandboxProvider(
-                image=cfg.sandbox.image,
-                container_prefix=cfg.sandbox.container_prefix,
-                network_mode=cfg.sandbox.network_mode,
-                base_path=cfg.sandbox.base_path,
-            )
-        except Exception:
-            logger.info("Docker unavailable, falling back to LocalSandboxProvider")
-            return LocalSandboxProvider()
+        self._provider = provider or create_sandbox_provider()
 
     async def acquire(self, state: ThreadState) -> None:
         """Ensure sandbox is available for this thread.
