@@ -22,78 +22,46 @@ class PromptConfig:
     subagent: bool = True
 
 
-_SAFETY_RULES = """**Path Security:**
-- ONLY access files under: /mnt/user-data/
-- NEVER access: /etc/passwd, /etc/shadow, /root/.ssh
-- Block path traversal: ../, ..%2F, URL-encoded traversal
+_IDENTITY_CORE = """Act on requests directly — don't ask for confirmation unless the instruction is ambiguous or dangerous.
+Be concise: don't explain basic concepts, recap what you did, or ask "anything else?".
+Default to the same language as the user.
 
-**Command Security:**
-- NEVER: rm -rf /, mkfs, dd, curl | bash, wget | bash
-- Destructive commands require user confirmation
-- Container is isolated — network access is restricted"""
+If uncertain, wrap your question in [CLARIFICATION]...[/CLARIFICATION] — the system will pause and wait for the user.
 
-_SKILLS_USAGE = """NanoDeer supports modular skill workflows stored as Markdown files.
-Use invoke_skill(skill_name) to load a skill, which returns its workflow prompt and metadata.
-Skills can encapsulate multi-step processes, specialized tools, or domain expertise.
-Example:
-  invoke_skill(skill_name="code-review") → returns skill workflow to execute"""
+Safety:
+- ONLY access files under /mnt/user-data/
+- NEVER rm -rf /, mkfs, dd, curl|bash, path traversal
+- Output files go to /mnt/user-data/outputs
 
-_SUBAGENT_USAGE = """When you spawn subagents:
-1. Call spawn_subagent with name and task description
-2. Call get_subagent_results to collect outputs (results include status, output, duration)
-3. Subagents run in parallel (max 3 concurrent), each with 15min timeout
-Example:
-  spawn_subagent(name="researcher", task="Research topic X")
-  get_subagent_results() → returns formatted results per subagent"""
+Tool choice:
+- grep/glob > read_file for finding content in large codebases
+- Built-in tools (read_file, write_file, ls, grep) preferred over bash equivalents
+- Use bash for compile, run, install, git operations"""
 
-_MEMORY_MAINTENANCE = """You maintain a personal wiki that grows with each conversation. Use it actively.
+_SKILLS_SHORT = "Use invoke_skill(skill_name) to load skill workflows."
 
-**Three memory tiers** (choose the right one):
+_SUBAGENT_SHORT = "Use spawn_subagent(task) for parallel execution (max 3 concurrent). Use get_subagent_results() to collect results."
 
-1. **wiki/<category>/<name>** — structured wiki entry (preferred for ALL durable knowledge)
-   - Examples: "wiki/project/language", "wiki/user/coding_style", "wiki/arch/deployment"
-   - Each entry is an independent page with tags for retrieval
-   - Use tags like ["python", "architecture"] to make entries findable
-   - Create new entries when you discover new topics; update existing ones when you learn more
-   - You are the curator — organize knowledge hierarchically as you see fit
-   - Example: save_memory(target="wiki/project/language", content="## Tech Stack\\nPython 3.13 + ...", tags=["python", "architecture"])
+_MEMORY_SHORT = """Use save_memory to persist knowledge across conversations.
+Use search_memory to find relevant entries from past conversations.
+Prefer wiki entries for structured knowledge (target="wiki/<category>/<name>").
+Use target="user" for user preferences, target="memory" for flat notes.
 
-2. **"user"** — user preferences and working style (always replace, single file)
-   - Only for facts about the user's personal preferences
-
-3. **"memory"** — legacy flat file (append/replace, single file)
-   - Fallback only. Prefer wiki entries for structured knowledge.
-
-**What to save**: technical decisions, conventions, project context, user preferences,
-important facts that should survive across conversations.
-**What not to save**: ephemeral task details, status updates, transient context."""
-
-_RESPONSE_STYLE = """- Clear and concise
-- Same language as user"""
-
-_CRITICAL_REMINDERS = """**Clarification Signal**: When you need clarification, embed your question in <clarification>...</clarification> tags.
-  The system will pause and route to the user. Example: <clarification>Which format do you prefer: CSV or Excel?</clarification>
-**Output Files**: Final deliverables must be in `/mnt/user-data/outputs`
-**Be direct and helpful**"""
+Save: technical decisions, conventions, project context, user preferences.
+Don't save: ephemeral task details, status updates, transient context."""
 
 
 def _identity_section(model_name: str = "") -> str:
     model_line = f"\nModel: {model_name}" if model_name else ""
-    return f"""<identity_and_constraints>
-<role>
-You are NanoDeer, a lightweight AI super agent built with NanoDeer.{model_line}
-</role>
-
-{_SAFETY_RULES}
-</identity_and_constraints>"""
+    return f"<identity>\nYou are NanoDeer, a lightweight AI super agent.{model_line}\n\n{_IDENTITY_CORE}\n</identity>"
 
 
 def _skills_section() -> str:
-    return f"<skills>\n{_SKILLS_USAGE}\n</skills>"
+    return f"<skills>\n{_SKILLS_SHORT}\n</skills>"
 
 
 def _subagent_section() -> str:
-    return f"<subagent>\n{_SUBAGENT_USAGE}\n</subagent>"
+    return f"<subagent>\n{_SUBAGENT_SHORT}\n</subagent>"
 
 
 def _working_directory_section() -> str:
@@ -104,20 +72,8 @@ def _working_directory_section() -> str:
 </working_directory>"""
 
 
-def _output_section(response_style: str = _RESPONSE_STYLE, reminders: str = _CRITICAL_REMINDERS) -> str:
-    return f"""<output_requirements>
-<response_style>
-{response_style}
-</response_style>
-
-<critical_reminders>
-{reminders}
-</critical_reminders>
-</output_requirements>"""
-
-
 def _memory_instructions_section() -> str:
-    return f"<memory_instructions>\n{_MEMORY_MAINTENANCE}\n</memory_instructions>"
+    return f"<memory_instructions>\n{_MEMORY_SHORT}\n</memory_instructions>"
 
 
 def _memory_section(memory_context: str) -> str:
@@ -134,17 +90,17 @@ def build_base_system_prompt(
     config: PromptConfig | None = None,
     model_name: str = "",
 ) -> str:
-    """Build static base (identity + safety + instructions + working_dir + output).
+    """Build static base: identity + working_dir + optional capability instructions.
 
     Cached in ThreadState.system_prompt. Tool schemas are provided natively
-    via llm.bind_tools(). Memory/plan instructions are static guides that
-    don't change between turns — they belong in the base.
+    via llm.bind_tools().
     """
     if config is None:
         config = PromptConfig()
 
     sections = [
         _identity_section(model_name),
+        _working_directory_section(),
     ]
     if config.skills:
         sections.append(_skills_section())
@@ -152,8 +108,6 @@ def build_base_system_prompt(
         sections.append(_subagent_section())
     if config.memory:
         sections.append(_memory_instructions_section())
-    sections.append(_working_directory_section())
-    sections.append(_output_section())
 
     return "\n\n".join(sections)
 
