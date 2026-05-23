@@ -484,6 +484,8 @@ To my mentor — for opening the door to Agent and Harness Engineering, and enco
 
 [NanoClaw](https://github.com/qwibitai/nanoclaw) — for the Docker sandbox isolation pattern.
 
+[assistant-ui](https://github.com/assistant-ui/assistant-ui) — for the beautiful and extensible React chat UI that powers the frontend.
+
 [DeepSeek](https://deepseek.com/) — for providing the deepseek-v4-flash model with exceptional inference efficiency.
 
 [MiniMax](https://www.minimaxi.com/) — for providing the MiniMax-M2.7 model service that powers this project.

@@ -264,7 +264,6 @@ NanoEngine.run_streaming() → ReActExecutor.run()
 │ END → SandboxManager.release()        │ PROCESS → 继续下一轮          │
 │ WAIT → 返回调用方，等待用户响应                                        │
 └──────────────────────────────────────────────────────────────────────┘
-```
   ↓
 checkpoint 保存 → 下一轮或 END
 ```
@@ -464,6 +463,8 @@ NanoDeer 使用两个生命周期不同的数据载体：
 [OpenClaw](https://github.com/openclaw/openclaw) —— 分层记忆和 IM 渠道的灵感来源。
 
 [NanoClaw](https://github.com/qwibitai/nanoclaw) —— Docker 沙箱隔离模式的启发。
+
+[assistant-ui](https://github.com/assistant-ui/assistant-ui) —— 提供美观且可扩展的 React 聊天界面，驱动本项目的前端。
 
 [DeepSeek](https://deepseek.com/) —— 提供 deepseek-v4-flash 模型，推理效率极高。
 
