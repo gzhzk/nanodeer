@@ -9,14 +9,17 @@ Usage::
     result = await engine.run("Analyze this file")
 """
 
+import asyncio
 import logging
 import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator
 
+from langchain_core.messages import SystemMessage, HumanMessage as LCHumanMessage
+
 from .agent.state import NextAction, ThreadState
-from .agent.messages import HumanMessage
+from .agent.messages import HumanMessage, AIMessage
 from .config import HarnessConfig
 from .agent.factory import create_nanodeer_agent, RuntimeFeatures
 
@@ -31,7 +34,6 @@ class RunResult:
     thread_id: str
     message: str
     next_action: NextAction = NextAction.PROCESS
-    artifacts: list[str] = field(default_factory=list)
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     duration_ms: int = 0
     events: list = field(default_factory=list)  # JSON events from --json-events mode
@@ -152,7 +154,7 @@ class NanoEngine:
             uploaded_files: Optional list of {name, content, mime_type} dicts.
 
         Returns:
-            RunResult with thread_id, message, next_action, artifacts, tool_calls, duration_ms.
+            RunResult with thread_id, message, next_action, tool_calls, duration_ms.
         """
         thread_id = thread_id or uuid.uuid4().hex
         start_ms = int(time.time() * 1000)
@@ -166,15 +168,22 @@ class NanoEngine:
             if saved:
                 state = saved
 
+        is_new = False
         if state is None:
             state = ThreadState(
                 thread_id=thread_id,
                 messages=[HumanMessage(content=prompt)],
+                title=None,
             )
+            is_new = True
         else:
             state.messages.append(HumanMessage(content=prompt))
 
         final_state, events = await executor.run(state, uploaded_files=uploaded_files)
+
+        # Fire-and-forget title generation for new or untitled conversations
+        if final_state.thread_id and (is_new or not final_state.title):
+            asyncio.create_task(self._generate_and_save_title(final_state))
 
         # App-layer compression after turn completes
         if self._compression_mw is not None:
@@ -217,11 +226,42 @@ class NanoEngine:
             thread_id=thread_id,
             message=final_message,
             next_action=state.next_action,
-            artifacts=state.artifacts,
             tool_calls=tool_calls,
             duration_ms=duration_ms,
             events=events,
         )
+
+    async def _generate_and_save_title(self, state: ThreadState) -> None:
+        """Fire-and-forget: generate a short title from the first turn and persist."""
+        try:
+            llm = _create_llm(self.config, self._model_name)
+
+            # Extract first meaningful exchange
+            first_user = ""
+            first_assistant = ""
+            for msg in state.messages:
+                if isinstance(msg, HumanMessage) and not first_user:
+                    first_user = str(msg.content)[:500]
+                elif isinstance(msg, AIMessage) and not first_assistant and msg.content:
+                    first_assistant = str(msg.content)[:500]
+
+            text = f"User: {first_user}"
+            if first_assistant:
+                text += f"\nAssistant: {first_assistant}"
+
+            resp = await llm.ainvoke([
+                SystemMessage(content="You generate concise conversation titles. Return ONLY the title, no punctuation, no quotes, no explanation."),
+                LCHumanMessage(content=f"Generate a short title (≤6 words) for this conversation:\n\n{text[:1500]}"),
+            ])
+
+            title = str(resp.content).strip().strip('"\'.,;:!?').strip()
+            if title:
+                state.title = title[:100]
+                if self._checkpointer:
+                    await self._checkpointer.save(state.thread_id, state)
+                logger.info("Generated title: %s", title)
+        except Exception as e:
+            logger.warning("Title generation failed: %s", e)
 
     async def run_streaming(
         self,
@@ -241,7 +281,6 @@ class NanoEngine:
             StreamEvent dicts with "event" field indicating type.
         """
         thread_id = thread_id or uuid.uuid4().hex
-        start_ms = int(time.time() * 1000)
 
         executor = self._get_executor()
 
@@ -252,13 +291,20 @@ class NanoEngine:
             if saved:
                 state = saved
 
+        is_new = False
         if state is None:
             state = ThreadState(
                 thread_id=thread_id,
                 messages=[HumanMessage(content=prompt)],
+                title=None,
             )
+            is_new = True
         else:
             state.messages.append(HumanMessage(content=prompt))
 
-        async for event in executor.run_streaming(state, uploaded_files=uploaded_files):
-            yield {**event, "threadId": thread_id}
+        try:
+            async for event in executor.run_streaming(state, uploaded_files=uploaded_files):
+                yield {**event, "threadId": thread_id}
+        finally:
+            if state.thread_id and (is_new or not state.title):
+                asyncio.create_task(self._generate_and_save_title(state))
