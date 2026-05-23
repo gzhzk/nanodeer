@@ -10,6 +10,7 @@ from .read_image import read_image
 from .exec_python import exec_python
 from .invoke_skill import invoke_skill
 from .save_memory import save_memory
+from .search_memory import search_memory
 from .create_plan import create_plan
 from .plan_step import add_step, update_step
 from .list_plans import list_plans
@@ -31,6 +32,7 @@ def default_tools() -> list:
         exec_python,
         invoke_skill,
         save_memory,
+        search_memory,
         create_plan,
         add_step,
         update_step,
@@ -62,6 +64,7 @@ __all__ = [
     "invoke_skill",
     # memory
     "save_memory",
+    "search_memory",
     # plan
     "create_plan",
     "add_step",
