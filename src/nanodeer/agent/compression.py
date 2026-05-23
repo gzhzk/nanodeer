@@ -1,44 +1,26 @@
-"""CompressionMiddleware - summarizes long conversation history.
+"""CompressionMiddleware — summarizes long conversation history.
 
-Prevents context overflow by compressing old messages when total tokens
-reach ~70% of the model's context window. Uses the LLM's built-in
-get_num_tokens_from_messages() for accurate token counting.
+Managed by NanoEngine (app layer), not part of the middleware chain.
+Called after each turn to optionally compress messages before the next turn.
 """
+
 from langchain_core.language_models import BaseChatModel
 
 from nanodeer.agent.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
 
-from .base import Middleware
 
+class CompressionMiddleware:
+    """Compresses conversation history via summarization when context is near limit."""
 
-class CompressionMiddleware(Middleware):
-    """Compresses conversation history via summarization when context is near limit.
-
-    Uses token-based triggering — triggers when total tokens reach
-    `context_window * compression_ratio`. Always keeps the last N messages
-    intact and summarizes everything before that.
-
-    Call compress() from App layer after each turn to trigger.
-    """
-
-    # Fallback: how many messages to keep when token counting is unavailable
     KEEP_RECENT = 5
 
     def __init__(
         self,
         llm: BaseChatModel | None = None,
-        context_window: int = 204800,       # minimax-m2.7 context window, adjust accordingly for other models
+        context_window: int = 204800,
         compression_ratio: float = 0.7,
         keep_recent: int | None = None,
     ):
-        """Initialize compression middleware.
-
-        Args:
-            llm: LLM to use for summarization. Can be None (lazy init).
-            context_window: Model context window in tokens (default 204800 = MiniMax-M2.7).
-            compression_ratio: Trigger compression at this fraction of context (default 0.7).
-            keep_recent: Always keep last N messages. Default 5.
-        """
         self._llm = llm
         self.context_window = context_window
         self.compression_ratio = compression_ratio
@@ -47,22 +29,15 @@ class CompressionMiddleware(Middleware):
 
     @property
     def llm(self) -> BaseChatModel:
-        """Lazy LLM access."""
         if self._llm is None:
             raise RuntimeError("CompressionMiddleware.llm not set: pass llm to __init__ or set_llm()")
         return self._llm
 
     def set_llm(self, llm: BaseChatModel) -> None:
-        """Set the LLM after middleware construction."""
         self._llm = llm
 
     def compress(self, messages: list[BaseMessage]) -> list[BaseMessage] | None:
-        """Compress messages if token count exceeds threshold.
-
-        Returns None if compression not needed or failed.
-        Returns a new compressed message list otherwise.
-        """
-        # Count tokens using the LLM's built-in method
+        """Compress messages if token count exceeds threshold. Returns None if no compression needed."""
         try:
             total_tokens = self.llm.get_num_tokens_from_messages(list(messages))
         except Exception:
@@ -77,8 +52,7 @@ class CompressionMiddleware(Middleware):
             return None
 
         conversation = "\n".join(
-            f"{type(msg).__name__}: {msg.content}"
-            for msg in to_summarize
+            f"{type(msg).__name__}: {msg.content}" for msg in to_summarize
         )
 
         summarize_prompt = (

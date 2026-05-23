@@ -1,4 +1,8 @@
-"""NanoDeerFactory — assembles ReActExecutor with feature-gated MiddlewareChain."""
+"""NanoDeerFactory — assembles ReActExecutor with SandboxManager and ContextManager.
+
+No middleware chain. Concept count: ContextManager (context loading) + SandboxManager
+(sandbox lifecycle) + ReActExecutor (loop). Everything else is inline.
+"""
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -13,11 +17,8 @@ __all__ = ["RuntimeFeatures", "NanoDeerFactory", "create_nanodeer_agent"]
 @dataclass
 class RuntimeFeatures:
     """Feature gates for NanoDeer agent assembly."""
-    # Middleware gates
-    uploads: bool = True
-    compression: bool = True
     sandbox: bool = True
-    clarification: bool = True
+    compression: bool = True
     # Compression config
     context_window: int = 204800
     compression_ratio: float = 0.7
@@ -29,8 +30,19 @@ class RuntimeFeatures:
     prompt_subagent: bool = True
 
 
+# Safe tool subset for subagents — read-only only.
+_SUBAGENT_SAFE_TOOLS = frozenset({
+    "web_search",
+    "read_file",
+    "ls",
+    "glob",
+    "grep",
+    "read_image",
+})
+
+
 class NanoDeerFactory:
-    """Assembles NanoDeer agent with MiddlewareChain."""
+    """Assembles ReActExecutor with ContextManager and SandboxManager."""
 
     def __init__(self, features: RuntimeFeatures):
         self.features = features
@@ -57,26 +69,7 @@ class NanoDeerFactory:
         if not sandbox:
             return tools
         from ..sandbox.tools import wrap_tool_for_sandbox
-        return [
-            wrap_tool_for_sandbox(t, sandbox) or t
-            for t in tools
-        ]
-
-    def _chain(self, *specs, extras=None):
-        """Build chain from specs: (cls, feature_flag, kwargs) or pre-instantiated object."""
-        result = []
-        for spec in specs:
-            if isinstance(spec, tuple) and len(spec) == 3:
-                cls, feature, kw = spec
-                if feature and not getattr(self.features, feature):
-                    continue
-                result.append(cls(**kw) if kw else cls())
-            else:
-                # Pre-instantiated object — use directly
-                result.append(spec)
-        if extras:
-            result.extend(extras)
-        return result
+        return [wrap_tool_for_sandbox(t, sandbox) or t for t in tools]
 
     def build(
         self,
@@ -85,84 +78,46 @@ class NanoDeerFactory:
         *,
         memory_store=None,
         subagent_runner=None,
-        extra_middlewares: dict[str, list] | None = None,
         checkpointer=None,
         model_name: str = "",
     ):
-        from .middlewares import MiddlewareChain
-        from .middlewares.thread_data import ThreadDataMiddleware
-        from .middlewares.file import FileMiddleware
-        from .middlewares.memory import MemoryMiddleware
-        from .middlewares.compression import CompressionMiddleware
-        from .middlewares.plan import PlanMiddleware
-        from .middlewares.clarification import ClarificationMiddleware
-        from .middlewares.detection import DetectionMiddleware
-        from .middlewares.handling import HandlingMiddleware
-        from .middlewares.sandbox import SandboxMiddleware
         from .react import ReActExecutor
+        from .context import ContextManager
         from .prompt import PromptConfig
+        from ..plan.storage import PlanStore
+        from ..agent.memory.storage import MemoryStore
 
-        extra = extra_middlewares or {}
-        sandbox = self._create_sandbox_provider() if self.features.sandbox else None
-        sp_kw = {"provider": sandbox} if sandbox else {}
+        effective_memory_store = memory_store or MemoryStore()
+        plan_store = PlanStore()
 
-        # CompressionMiddleware is managed by App layer (NanoEngine), not in chain
-        compression_mw = CompressionMiddleware(
-            llm=llm,
-            context_window=self.features.context_window,
-            compression_ratio=self.features.compression_ratio,
-            keep_recent=self.features.compression_keep_recent,
-        ) if self.features.compression else None
+        # Sandbox manager (None if disabled)
+        sandbox_mgr = None
+        sandbox_provider = None
+        if self.features.sandbox:
+            from .sandbox_manager import SandboxManager
+            sandbox_provider = self._create_sandbox_provider()
+            sandbox_mgr = SandboxManager(provider=sandbox_provider)
 
-        # Single MemoryMiddleware instance shared across before_llm and before_tools hooks.
-        # Both hooks operate on the same memory_store — before_llm loads context from disk,
-        # before_tools intercepts save_memory and writes to disk. A single instance ensures
-        # any future per-instance state (e.g., wiki search cache, recent writes buffer) is
-        # shared between the two hooks, not silently split across two objects.
-        memory_mw = MemoryMiddleware(memory_store=memory_store) if memory_store is not None else MemoryMiddleware()
-        plan_mw = PlanMiddleware()
-
-        chain = MiddlewareChain(
-            before_llm=self._chain(
-                (ThreadDataMiddleware, None, {}),
-                (FileMiddleware, "uploads", {}),
-                memory_mw,
-                plan_mw,
-                (DetectionMiddleware, None, {}),
-                (SandboxMiddleware, "sandbox", sp_kw),
-                extras=extra.get("before_llm"),
-            ),
-            after_llm=self._chain(
-                (ClarificationMiddleware, "clarification", {}),
-                extras=extra.get("after_llm"),
-            ),
-            before_tools=self._chain(
-                # MemoryMiddleware must run BEFORE SandboxMiddleware to intercept save_memory
-                # before Sandbox's bash security audit (save_memory writes to host, not sandbox)
-                (HandlingMiddleware, None, {}),
-                memory_mw,
-                (SandboxMiddleware, "sandbox", sp_kw),
-                extras=extra.get("before_tools"),
-            ),
-            after_tools_all=self._chain(
-                memory_mw,
-                (SandboxMiddleware, "sandbox", sp_kw),
-                extras=extra.get("after_tools_all"),
-            ),
+        # Context manager (always, handles memory + plan + files)
+        from .context import ContextManager
+        context_mgr = ContextManager(
+            memory_store=effective_memory_store,
+            plan_store=plan_store,
         )
 
-        wrapped_tools = self._wrap_tools(tools, sandbox)
+        wrapped_tools = self._wrap_tools(tools, sandbox_provider)
 
-        # Create SubagentCoordinator if enabled
-        if subagent_runner is not False:  # None means create default, False means disable
+        # Create SubagentCoordinator with read-only safe tools
+        if subagent_runner is not False:
             from ..subagent import SubagentCoordinator, set_executor
             from ..config import get_config
             if subagent_runner is None:
                 cfg = get_config()
+                subagent_tools = [t for t in (wrapped_tools or []) if t.name in _SUBAGENT_SAFE_TOOLS]
                 subagent_runner = SubagentCoordinator(
                     llm=llm,
-                    tools=wrapped_tools,
-                    sandbox_provider=sandbox,
+                    tools=subagent_tools,
+                    sandbox_provider=sandbox_provider,
                     max_concurrent=cfg.subagents.max_concurrent,
                     timeout_seconds=cfg.subagents.timeout_seconds,
                 )
@@ -171,7 +126,6 @@ class NanoDeerFactory:
         executor = ReActExecutor(
             llm=llm,
             tools=tools,  # original tools for llm.bind_tools()
-            chain=chain,
             prompt_config=PromptConfig(
                 memory=self.features.prompt_memory,
                 plan=self.features.prompt_plan,
@@ -180,15 +134,24 @@ class NanoDeerFactory:
             ),
             checkpointer=checkpointer,
             model_name=model_name,
+            context_manager=context_mgr,
+            sandbox_manager=sandbox_mgr,
         )
         # Replace with wrapped tools for actual execution (sandbox routing)
         executor._tools = wrapped_tools
         executor._tool_map = {t.name: t for t in wrapped_tools}
 
-        if compression_mw:
-            compression_mw.set_llm(llm)
+        return executor
 
-        return executor, compression_mw
+    def build_compression(self, llm):
+        """Build CompressionMiddleware separately — app layer manages it."""
+        from .compression import CompressionMiddleware
+        return CompressionMiddleware(
+            llm=llm,
+            context_window=self.features.context_window,
+            compression_ratio=self.features.compression_ratio,
+            keep_recent=self.features.compression_keep_recent,
+        ) if self.features.compression else None
 
 
 def create_nanodeer_agent(
@@ -198,21 +161,22 @@ def create_nanodeer_agent(
     features: RuntimeFeatures | None = None,
     memory_store: Any = None,
     subagent_runner: Any = None,
-    extra_middlewares: dict[str, list] | None = None,
     checkpointer=None,
     model_name: str = "",
 ):
-    """Create ReActExecutor (was: CompiledStateGraph)."""
+    """Create ReActExecutor (no middleware chain)."""
     from ..tools import default_tools
 
     feat = features or RuntimeFeatures()
     effective_tools = tools or default_tools()
-    return NanoDeerFactory(feat).build(
+    factory = NanoDeerFactory(feat)
+    executor = factory.build(
         model,
         effective_tools,
         memory_store=memory_store,
         subagent_runner=subagent_runner,
-        extra_middlewares=extra_middlewares,
         checkpointer=checkpointer,
         model_name=model_name,
-    )  # returns (executor, compression_mw)
+    )
+    compression_mw = factory.build_compression(model)
+    return executor, compression_mw

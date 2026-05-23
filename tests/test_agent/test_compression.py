@@ -2,7 +2,7 @@
 import pytest
 from unittest.mock import MagicMock
 
-from nanodeer.agent.middlewares.compression import CompressionMiddleware
+from nanodeer.agent.compression import CompressionMiddleware
 from nanodeer.agent.messages import AIMessage, HumanMessage, SystemMessage
 
 
