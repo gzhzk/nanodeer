@@ -10,7 +10,7 @@
 [![Docker](https://img.shields.io/badge/Docker-required-2496ED?style=flat-square&logo=docker&logoColor=white)](https://docker.com)
 [![Version 0.1.0](https://img.shields.io/badge/Version-0.1.0-orange?style=flat-square)](https://github.com/gzhzk/nanodeer)
 
-Native ReAct · Middleware Pipeline · Sandbox Isolation · HTTP SSE API
+Native ReAct · ContextManager · Sandbox Isolation · HTTP SSE API
 
 *Architecture is what you build. Engineering is how you build it.*
 
