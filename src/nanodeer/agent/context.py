@@ -1,19 +1,18 @@
 """ContextManager — parallel loader of all LLM prompt context.
 
-Replaces ThreadDataMiddleware + FileMiddleware + PlanMiddleware + MemoryMiddleware.before_llm.
 Single async load() call that:
-  1. Creates thread user-data directories (for sandbox volume mounts)
+  1. Loads memory (USER.md / MEMORY.md) and plan context (parallel)
   2. Writes uploaded files to disk
-  3. Loads memory (USER.md / MEMORY.md) and plan context
-  4. Injects all into TurnSignals for prompt assembly
+  3. Injects all into TurnSignals for prompt assembly
 
-All file I/O runs in parallel via asyncio.gather.
+Sandbox directories are created lazily by the sandbox provider, not here.
 """
 
 import asyncio
 import logging
 from pathlib import Path
 
+from nanodeer.agent.memory.layers import MemoryLayers
 from nanodeer.agent.memory.storage import MemoryStore
 from nanodeer.agent.messages import HumanMessage
 from nanodeer.agent.state import ThreadState, TurnSignals
@@ -35,10 +34,11 @@ _TEXT_MIME_PREFIXES = ("text/", "application/json", "application/javascript",
 class ContextManager:
     """Loads everything the LLM prompt needs — in parallel where possible."""
 
-    def __init__(self, memory_store=None, plan_store=None):
+    def __init__(self, memory_store=None, plan_store=None, memory_layers=None):
         from nanodeer.plan.storage import PlanStore
         self._memory_store = memory_store or MemoryStore()
         self._plan_store = plan_store or PlanStore()
+        self._layers = memory_layers or MemoryLayers(self._memory_store)
         self._cfg = get_config()
 
     # ------------------------------------------------------------------
@@ -48,19 +48,14 @@ class ContextManager:
     async def load(self, state: ThreadState, signals: TurnSignals) -> None:
         """Load all contexts in parallel, writing results into signals.
 
-        Phase 1 — parallel: dirs + memory + plan
-        Phase 2 — sequential after dirs: write uploads + scan (fast, no benefit from more parallelism)
+        Phase 1 — parallel: memory + plan
+        Phase 2 — sequential: write uploads + scan (fast, no benefit from more parallelism)
         """
         if not state.thread_id:
             return
 
-        dirs_task = asyncio.create_task(self._ensure_dirs(state))
         memory_task = asyncio.create_task(self._load_memory(state, signals))
         plan_task = asyncio.create_task(self._load_plan(signals))
-
-        # Dirs must be ready before uploads (uploads/ must exist —
-        # but mkdir(exist_ok=True) makes this safe even without waiting)
-        await dirs_task
 
         if signals._uploaded_files:
             await self._process_uploads(state, signals)
@@ -73,13 +68,6 @@ class ContextManager:
     # Internal — each is an independent async task
     # ------------------------------------------------------------------
 
-    async def _ensure_dirs(self, state: ThreadState) -> None:
-        """Create thread user-data directories for sandbox volume mounts."""
-        root = self._cfg.thread.storage_path / state.thread_id / "user-data"
-        (root / "workspace").mkdir(parents=True, exist_ok=True)
-        (root / "uploads").mkdir(parents=True, exist_ok=True)
-        (root / "outputs").mkdir(parents=True, exist_ok=True)
-
     def _get_last_user_message(self, state: ThreadState) -> str:
         """Extract last user message for wiki memory retrieval."""
         for msg in reversed(state.messages):
@@ -89,17 +77,20 @@ class ContextManager:
         return ""
 
     async def _load_memory(self, state: ThreadState, signals: TurnSignals) -> None:
-        """Load USER.md / MEMORY.md context into signals."""
-        if not self._memory_store:
+        """Assemble L1-L4 memory layers into signals via MemoryLayers."""
+        if not self._layers:
             return
         context_hint = self._get_last_user_message(state) or None
-        memory_context = self._memory_store.load_for_prompt(context_hint=context_hint)
-        if memory_context:
-            signals.memory_context = memory_context
+        self._layers.inject(signals, context_hint=context_hint)
         signals.events.append({
             "type": "memory_context",
-            "has_memory": bool(memory_context),
+            "has_memory": bool(signals.memory_context),
         })
+
+    async def absorb(self, state: ThreadState) -> None:
+        """Post-turn: auto-log current turn to episodic storage."""
+        if self._layers:
+            self._layers.absorb(state)
 
     async def _load_plan(self, signals: TurnSignals) -> None:
         """Load plan context into signals."""
