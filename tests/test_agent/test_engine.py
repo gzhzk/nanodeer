@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
 
-from nanodeer.engine import NanoEngine, RunResult
+from nanodeer.engine import NanoEngine, RunResult, _OPENAI_COMPATIBLE
 from nanodeer.agent.state import NextAction
 
 
@@ -60,6 +60,28 @@ class TestNanoEngineInit:
         assert engine._compression_mw is None
 
 
+class TestProviderRouting:
+    def test_openai_compatible_provider_set_covers_config_examples(self):
+        """Providers documented as OpenAI-compatible should route to ChatOpenAI."""
+        expected = {
+            "openai",
+            "openrouter",
+            "deepseek",
+            "moonshot",
+            "zhipu",
+            "dashscope",
+            "siliconflow",
+            "gemini",
+            "groq",
+            "ollama",
+        }
+        assert expected <= _OPENAI_COMPATIBLE
+
+    def test_minimax_stays_anthropic_compatible(self):
+        """MiniMax config uses an Anthropic-compatible endpoint."""
+        assert "minimax" not in _OPENAI_COMPATIBLE
+
+
 class TestNanoEngineRun:
     @pytest.mark.asyncio
     async def test_returns_run_result(self):
@@ -73,6 +95,7 @@ class TestNanoEngineRun:
         mock_state.thread_id = "t1"
 
         mock_executor = AsyncMock()
+        mock_executor._checkpointer = None
         mock_executor.run = AsyncMock(return_value=(mock_state, []))
         mock_compression = MagicMock()
         mock_compression.compress = MagicMock(return_value=None)
@@ -97,6 +120,7 @@ class TestNanoEngineRun:
         mock_state.next_action = NextAction.PROCESS
 
         mock_executor = AsyncMock()
+        mock_executor._checkpointer = None
         mock_executor.run = AsyncMock(return_value=(mock_state, []))
         mock_compression = MagicMock()
         mock_compression.compress = MagicMock(return_value=None)
@@ -120,6 +144,7 @@ class TestNanoEngineRun:
         mock_state.next_action = NextAction.PROCESS
 
         mock_executor = AsyncMock()
+        mock_executor._checkpointer = None
         mock_executor.run = AsyncMock(return_value=(mock_state, []))
         mock_compression = MagicMock()
         mock_compression.compress = MagicMock(return_value=None)
@@ -142,6 +167,7 @@ class TestNanoEngineRun:
         mock_state.next_action = NextAction.PROCESS
 
         mock_executor = AsyncMock()
+        mock_executor._checkpointer = None
         mock_executor.run = AsyncMock(return_value=(mock_state, []))
         compressed = [MagicMock(content="Summarized")]
         mock_compression = MagicMock()
@@ -165,6 +191,7 @@ class TestNanoEngineRun:
         mock_state.next_action = NextAction.PROCESS
 
         mock_executor = AsyncMock()
+        mock_executor._checkpointer = None
         mock_executor.run = AsyncMock(return_value=(mock_state, []))
 
         with patch("nanodeer.engine.create_nanodeer_agent") as mock_factory:
@@ -185,6 +212,7 @@ class TestNanoEngineRun:
         mock_state.next_action = NextAction.PROCESS
 
         mock_executor = AsyncMock()
+        mock_executor._checkpointer = None
         mock_executor.run = AsyncMock(return_value=(mock_state, []))
         mock_compression = MagicMock()
         mock_compression.compress = MagicMock(return_value=None)
@@ -211,6 +239,7 @@ class TestNanoEngineRun:
         mock_state.next_action = NextAction.PROCESS
 
         mock_executor = AsyncMock()
+        mock_executor._checkpointer = None
         mock_executor.run = AsyncMock(return_value=(mock_state, []))
         mock_compression = MagicMock()
         mock_compression.compress = MagicMock(return_value=None)

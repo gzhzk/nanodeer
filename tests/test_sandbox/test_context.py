@@ -1,7 +1,8 @@
 """Unit tests for sandbox context — thread-safety of get/set/clear."""
 import pytest
 import threading
-from nanodeer.sandbox import set_sandbox, get_sandbox, clear_sandbox, Sandbox
+from nanodeer.sandbox import set_sandbox, get_sandbox, clear_sandbox, create_sandbox_provider, Sandbox
+from nanodeer.sandbox.local import LocalSandboxProvider
 
 
 @pytest.fixture(autouse=True)
@@ -132,3 +133,23 @@ class TestSandboxContextThreadSafety:
             t.join()
 
         assert not errors, f"Mixed read/write errors: {errors}"
+
+
+class TestSandboxProviderFactory:
+    def test_falls_back_to_local_when_docker_unavailable(self, monkeypatch):
+        """Factory should not require the optional docker extra to be installed."""
+        try:
+            import docker
+        except Exception:
+            provider = create_sandbox_provider()
+            assert isinstance(provider, LocalSandboxProvider)
+            return
+
+        class UnavailableDockerClient:
+            def ping(self):
+                raise RuntimeError("docker unavailable")
+
+        monkeypatch.setattr(docker.client, "from_env", lambda: UnavailableDockerClient())
+
+        provider = create_sandbox_provider()
+        assert isinstance(provider, LocalSandboxProvider)

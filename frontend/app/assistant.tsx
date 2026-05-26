@@ -15,17 +15,18 @@ import { nanodeerThreadListAdapter } from "@/lib/thread-list-adapter";
 import { createHistoryAdapter } from "@/lib/history-adapter";
 import { useEffect } from "react";
 
+function useNanoDeerRuntime() {
+  // Capture current threadId during render so history.load() gets the active thread.
+  const remoteId = useAuiState((s) => s.threadListItem?.remoteId ?? null);
+  if (remoteId) setCurrentThreadId(remoteId);
+  return useLocalRuntime(nanodeerAdapter, {
+    adapters: { history: createHistoryAdapter() },
+  });
+}
+
 export const Assistant = () => {
   const runtime = useRemoteThreadListRuntime({
-    runtimeHook: () => {
-      // Capture current threadId during RENDER phase — before effects run
-      // This ensures history.load() gets the correct threadId
-      const remoteId = useAuiState((s) => s.threadListItem?.remoteId ?? null);
-      if (remoteId) setCurrentThreadId(remoteId);
-      return useLocalRuntime(nanodeerAdapter, {
-        adapters: { history: createHistoryAdapter() },
-      });
-    },
+    runtimeHook: useNanoDeerRuntime,
     adapter: nanodeerThreadListAdapter,
     threadId: getSavedThreadId() ?? undefined,
   });

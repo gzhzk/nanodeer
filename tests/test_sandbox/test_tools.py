@@ -16,8 +16,9 @@ from nanodeer.sandbox.tools import (
 from nanodeer.sandbox import SandboxCommand
 
 
-# ---- _B64 shared constant (referenced by bash/git/exec_python) ----
-_B64 = 'python3 -c "import base64,sys; exec(base64.b64decode(sys.argv[1]).decode())"'
+# ---- b64 transport shebangs -------------------------------------------------
+_B64_SHELL = 'python3 -c "import base64,os,sys; os.system(base64.b64decode(sys.argv[1]).decode())"'
+_B64_PYTHON = 'python3 -c "import base64,sys; exec(base64.b64decode(sys.argv[1]).decode())"'
 
 
 class TestToolConfigCompleteness:
@@ -46,13 +47,17 @@ class TestToolConfigCompleteness:
             f"{tool_name} uses both path_vars and translate_vars (mutually exclusive)"
 
 
-class TestB64ShebangReuse:
-    """bash, git, exec_python all share the same _B64 shebang template."""
+class TestB64Shebangs:
+    """Shell tools and Python execution use the correct b64 transport."""
 
-    @pytest.mark.parametrize("tool_name", ["bash", "git", "exec_python"])
-    def test_b64_shebang_in_template(self, tool_name):
+    @pytest.mark.parametrize("tool_name", ["bash", "git"])
+    def test_shell_tools_use_os_system_shebang(self, tool_name):
         cfg = SANDBOX_TOOL_CONFIGS[tool_name]
-        assert _B64 in cfg["template"], f"{tool_name} should use shared _B64 shebang"
+        assert _B64_SHELL in cfg["template"]
+
+    def test_exec_python_uses_exec_shebang(self):
+        cfg = SANDBOX_TOOL_CONFIGS["exec_python"]
+        assert _B64_PYTHON in cfg["template"]
 
 
 def _mock_tool(name: str):
@@ -162,5 +167,5 @@ class TestGitToolConfig:
 
     def test_git_template_uses_b64_shebang(self):
         cfg = SANDBOX_TOOL_CONFIGS["git"]
-        assert _B64 in cfg["template"]
+        assert _B64_SHELL in cfg["template"]
         assert "{b64_command}" in cfg["template"]

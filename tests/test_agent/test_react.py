@@ -43,6 +43,55 @@ class MockTool:
         return self._result
 
 
+class MockStreamChunk:
+    """Minimal LangChain-like streaming chunk."""
+
+    def __init__(self, content: str = "", tool_call_chunks=None, reasoning: str = ""):
+        self.content = content
+        self.tool_call_chunks = tool_call_chunks or []
+        self.additional_kwargs = {}
+        if reasoning:
+            self.additional_kwargs["reasoning_content"] = reasoning
+
+
+class MockStreamingLLM:
+    """LLM with astream support for run_streaming() tests."""
+
+    def __init__(self, chunks):
+        self._chunks = chunks
+
+    def bind_tools(self, tools):
+        return self
+
+    async def astream(self, messages):
+        for chunk in self._chunks:
+            yield chunk
+
+
+class MockContext:
+    def __init__(self):
+        self.load_count = 0
+        self.absorb_count = 0
+
+    async def load(self, state, signals):
+        self.load_count += 1
+
+    async def absorb(self, state):
+        self.absorb_count += 1
+
+
+class MockSandboxManager:
+    def __init__(self):
+        self.acquire_count = 0
+        self.release_count = 0
+
+    async def acquire(self, state):
+        self.acquire_count += 1
+
+    async def release(self, state):
+        self.release_count += 1
+
+
 class TestReActExecutorInit:
     def test_binds_tools_to_llm(self):
         """Tools are bound to LLM at init."""
@@ -69,12 +118,13 @@ class TestReActLoop:
         """Loop ends when LLM returns no tool calls."""
         llm = MockLLM(response_content="Final answer")
         tools = [MockTool()]
-        executor = ReActExecutor(llm, tools)
+        executor = ReActExecutor(llm, tools, context_manager=MockContext())
 
         state = ThreadState(thread_id="t1", messages=[HumanMessage(content="Hi")])
         final, _events = await executor.run(state)
 
         assert len(final.messages) == 2  # HumanMessage + AIMessage
+        assert final.next_action == NextAction.END
 
     @pytest.mark.asyncio
     async def test_executes_tool_calls(self):
@@ -83,7 +133,7 @@ class TestReActLoop:
 
         llm = MockLLM(response_content="Thinking...", tool_calls=[tc])
         tools = [MockTool(name="mock_tool", result="tool result")]
-        executor = ReActExecutor(llm, tools)
+        executor = ReActExecutor(llm, tools, context_manager=MockContext())
 
         state = ThreadState(thread_id="t1", messages=[HumanMessage(content="Hi")])
         final, _events = await executor.run(state)
@@ -107,7 +157,7 @@ class TestReActLoop:
         tc = {"name": "mock", "args": {}, "id": "call-1"}
 
         llm = MockLLM(response_content="Thinking", tool_calls=[tc])
-        executor = ReActExecutor(llm, [TrackingTool()])
+        executor = ReActExecutor(llm, [TrackingTool()], context_manager=MockContext())
 
         state = ThreadState(thread_id="thread-abc", messages=[HumanMessage(content="Hi")])
         await executor.run(state)
@@ -128,12 +178,36 @@ class TestReActLoop:
         tc = {"name": "mock", "args": {}, "id": "call-1"}
 
         llm = MockLLM(response_content="Thinking", tool_calls=[tc])
-        executor = ReActExecutor(llm, [TrackingTool()])
+        executor = ReActExecutor(llm, [TrackingTool()], context_manager=MockContext())
 
         state = ThreadState(thread_id=None, messages=[HumanMessage(content="Hi")])
         await executor.run(state)
 
         assert exec_ids_seen == ["default"]
+
+
+class TestReActStreamingLoop:
+    @pytest.mark.asyncio
+    async def test_no_tool_calls_emits_single_end_and_releases_sandbox(self):
+        """Streaming final-answer path should emit one end event and release resources."""
+        llm = MockStreamingLLM([MockStreamChunk(content="Final answer")])
+        context = MockContext()
+        sandbox = MockSandboxManager()
+        executor = ReActExecutor(
+            llm,
+            [],
+            context_manager=context,
+            sandbox_manager=sandbox,
+        )
+
+        state = ThreadState(thread_id="t-stream", messages=[HumanMessage(content="Hi")])
+        events = [event async for event in executor.run_streaming(state)]
+
+        assert [event["event"] for event in events].count("end") == 1
+        assert events[-1]["event"] == "end"
+        assert sandbox.acquire_count == 1
+        assert sandbox.release_count == 1
+        assert context.absorb_count == 1
 
 
 class TestReActExecutorToolNotFound:
@@ -144,7 +218,7 @@ class TestReActExecutorToolNotFound:
 
         llm = MockLLM(response_content="Calling tool", tool_calls=[tc])
         tools = [MockTool(name="some_other_tool")]
-        executor = ReActExecutor(llm, tools)
+        executor = ReActExecutor(llm, tools, context_manager=MockContext())
 
         state = ThreadState(thread_id="t1", messages=[HumanMessage(content="Hi")])
         final, _events = await executor.run(state)
