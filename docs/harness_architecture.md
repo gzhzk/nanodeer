@@ -1,938 +1,787 @@
 # NanoDeer Harness Architecture
 
-## 目录
+## 这份文档是讲什么的
 
-- [1. 总览](#1-总览)
-- [2. 状态机（State Machine）](#2-状态机state-machine)
-  - [2.1 ThreadState](#21-threadstate)
-  - [2.2 TurnSignals](#22-turnsignals)
-  - [2.3 NextAction 与状态流转](#23-nextaction-与状态流转)
-- [3. 中间件链（MiddlewareChain + Hooks）](#3-中间件链middlewarechain--hooks)
-  - [3.1 四个 Hook 点](#31-四个-hook-点)
-  - [3.2 中间件总览](#32-中间件总览)
-  - [3.3 执行顺序详解](#33-执行顺序详解)
-  - [3.4 中间件列表](#34-中间件列表)
-  - [3.5 跨 Hook 中间件特例](#35-跨-hook-中间件特例)
-  - [3.6 接入指南](#36-接入指南)
-- [4. 提示词注入（Prompt Injection）](#4-提示词注入prompt-injection)
-  - [4.1 分层构建](#41-分层构建)
-  - [4.2 静态层（Base System Prompt）](#42-静态层base-system-prompt)
-  - [4.3 动态层（Dynamic Sections）](#43-动态层dynamic-sections)
-  - [4.4 注入链路](#44-注入链路)
-- [5. 工厂装配（Factory Assembly）](#5-工厂装配factory-assembly)
-  - [5.1 NanoDeerFactory.build() 流程](#51-nanodeerfactorybuild-流程)
-  - [5.2 RuntimeFeatures 功能门](#52-runtimefeatures-功能门)
-  - [5.3 Tool Wrapping 机制](#53-tool-wrapping-机制)
-  - [5.4 SubagentCoordinator 创建](#54-subagentcoordinator-创建)
-  - [5.5 CompressionMiddleware（App 层）](#55-compressionmiddlewareapp-层)
-  - [5.6 Checkpointer 注入](#56-checkpointer-注入)
-  - [5.7 注入点汇总](#57-注入点汇总)
-- [6. 完整执行流](#6-完整执行流)
+这是一份面向当前代码实现的架构说明，不是早期设想，也不是中间态草图。
+
+如果只想先抓住一句话，可以这样理解：
+
+**NanoDeer 是一个把“会话状态、上下文加载、沙箱隔离、工具调用、长期记忆、计划管理”组织在一起的 Agent Harness。它不靠图编排，也不靠中间件链，核心就是一条可读、可调试的原生 ReAct 循环。**
 
 ---
 
-## 1. 总览
+## 1. 什么叫 Harness
 
-NanoDeer Harness 是一个 **状态机驱动的 Agent 执行框架**。核心设计：
+“模型”只负责生成下一步动作，但真正能让 Agent 稳定工作的，不只是模型。
 
-- **ReAct 循环**：LLM 决策 → 工具执行 → 观察结果 → 再决策，直到结束
-- **中间件链**：4 个 hook 点拦截循环各阶段，处理横切关注点
-- **Signal/State 分离**：TurnSignals（per-turn）负责跨中间件通信，ThreadState（跨-turn）负责持久化
-- **工厂装配**：NanoDeerFactory 根据 RuntimeFeatures 按需组装中间件链和工具
+一个可用的 Agent 系统，通常还需要这些东西：
 
-```
-6 层架构（从外到内）：
+- 怎么保存会话状态
+- 怎么恢复上一次中断的位置
+- 怎么把文件、记忆、计划这些上下文喂给模型
+- 怎么让模型调用工具
+- 怎么把危险操作隔离在沙箱里
+- 怎么让一次请求既能流式返回，又能在后台持久化
 
-Layer 6: TypeScript SDK / CLI  ─── 终端 UI, NDJSON stdio 协议
-Layer 5: Python Brain           ─── stdio 协议适配, NanoEngine 入口
-Layer 4: NanoEngine             ─── 应用层, 创建 ThreadState, 调用 executor
-Layer 3: ReActExecutor          ─── 核心循环 + MiddlewareChain
-Layer 2: Tools + Sandbox        ─── 16 个内置工具 + Docker 沙箱
-Layer 1: Data                   ─── messages, memory, checkpoint, plan
-```
+把这些“围着模型的一整圈工程设施”组织起来的那层，就是 harness。
 
----
+通俗一点说：
 
-## 2. 状态机（State Machine）
-
-### 2.1 ThreadState
-
-`ThreadState` 是**跨 turn 持久化的状态**，每次循环迭代都在同一个 state 上操作。Pydantic BaseModel，支持序列化/反序列化。
-
-```python
-class ThreadState(BaseModel):
-    thread_id: str | None                          # 线程标识
-    messages: list[BaseMessage]                    # 对话历史（HumanMessage / AIMessage / ToolMessage）
-    next_action: NextAction = NextAction.PROCESS   # 当前循环路由信号
-    artifacts: Annotated[list[str], merge_artifacts]  # 产物路径（去重追加）
-    title: str | None                              # 会话标题
-    sandbox: SandboxState | None                   # 容器状态
-    system_prompt: str | None                      # 缓存后的静态 system prompt（首次构建后复用）
-```
-
-| 字段 | 写入方 | 读取方 | 作用 |
-|------|--------|--------|------|
-| `thread_id` | NanoEngine | ReActExecutor + 各中间件 | 线程标识，对应 sandbox 容器和工作目录 |
-| `messages` | ReActExecutor（LLM 响应 + tool 结果） | Prompt 构建 | 对话历史上下文 |
-| `next_action` | 各中间件设置 END/WAIT；每次循环开头重置为 PROCESS | ReActExecutor | 路由控制：PROCESS→继续, WAIT→暂停, END→结束 |
-| `artifacts` | 工具执行结果 | NanoEngine（RunResult） | 追踪产物路径 |
-| `title` | TitleMiddleware（首轮 after_llm 自动生成） | 显示用 | 会话标题 |
-| `sandbox` | SandboxMiddleware（before_llm 获取） | DetectionMiddleware（before_llm 检测释放状态） | 容器状态（container_id, status, working_dir） |
-| `system_prompt` | build_lead_agent_prompt（首次 lazy init） | 后续 LLM 调用 | 静态 prompt 缓存，避免每轮重复构建 |
-
-**ThreadState 不包含的字段**：
-- **todos** → 已统一为 Plan 系统，通过 `PlanStore` 读写，prompt 注入走 `signals.plan_context`
-- **events** → 已移除，执行日志在 `react.py run()` 中以局部变量 `accumulated_events` 收集，最终返回给 `engine.RunResult`，不参与 checkpoint
-
-### 2.2 TurnSignals
-
-`TurnSignals` 是**单 turn 临时数据载体**，每次 ReAct 循环开始创建新实例，结束时丢弃。用于中间件之间传递数据，不跨 turn 持久化。
-
-```python
-@dataclass
-class TurnSignals:
-    clarification_question: str | None = None      # ClarificationMiddleware 写入 → App 层读取
-    memory_context: str | None = None              # MemoryMiddleware 写入 → Prompt 构建读取
-    plan_context: str | None = None                # PlanMiddleware 写入 → Prompt 构建读取
-    error: dict | None = None                      # DetectionMiddleware 写入 → HandlingMiddleware 读取
-    skip_tool: bool = False                        # MemoryMiddleware 写入（拦截 save_memory）
-    skip_tool_result: str | None = None            # MemoryMiddleware 写入（预计算结果）
-    events: list = field(default_factory=list)     # JSON 事件（各中间件追加，由 ReActExecutor 收集）
-    uploaded_files_list: str | None = None         # FileMiddleware 写入 → Prompt 构建读取
-    _uploaded_files: list[dict] | None = None      # App 层传入的原始文件数据 → FileMiddleware
-```
-
-| 信号 | 写入中间件 | 读取方 | 效果 |
-|------|-----------|--------|------|
-| `clarification_question` | ClarificationMiddleware（after_llm） | App 层（Brain → CLI） | 展示给用户，设置 WAIT 暂停循环 |
-| `memory_context` | MemoryMiddleware（before_llm） | `build_lead_agent_prompt()` | 注入 `<memory>` 段到 system prompt |
-| `plan_context` | PlanMiddleware（before_llm） | `build_lead_agent_prompt()` | 注入 `<plan>` 段到 system prompt |
-| `error` | DetectionMiddleware（before_llm） | HandlingMiddleware（before_tools） | 根据错误类型决定 END 或继续 |
-| `skip_tool` | MemoryMiddleware（before_tools） | ReActExecutor（tool loop） | 跳过 `tool.ainvoke()`，用 `skip_tool_result` 替代 |
-| `skip_tool_result` | MemoryMiddleware（before_tools） | ReActExecutor（tool loop） | 预计算的结果，避免沙箱调用 |
-| `uploaded_files_list` | FileMiddleware（before_llm） | `build_lead_agent_prompt()` | 注入 `<uploaded_files>` 段 |
-
-**核心原则**：`TurnSignals` 传数据，`ThreadState.next_action` 做路由。中间件先写 signals 供上下游读取，再设置 next_action 控制循环走向。
-
-### 2.3 NextAction 与状态流转
-
-```python
-class NextAction(str, Enum):
-    PROCESS = "process"   # 继续循环 → 走 tool loop 或下一轮 LLM
-    WAIT = "wait"         # 暂停循环 → 等待用户输入（保留容器）
-    END = "end"           # 终止循环 → 释放资源
-```
-
-完整状态机：
-
-```
-┌───────────────────────────────────────────────────────────────────┐
-│                                                                   │
-│  ReAct Loop (ReActExecutor.run())                                 │
-│                                                                   │
-│  ┌──────────────┐                                                 │
-│  │ turn start   │  state.next_action = PROCESS (每次重置)          │
-│  │ signals =    │  TurnSignals() (新实例, 全空)                    │
-│  └──────┬───────┘                                                 │
-│         │                                                         │
-│         ▼                                                         │
-│  ┌──────────────┐                                                 │
-│  │ before_llm   │  ThreadData→File→Memory→Plan→Detection→Sandbox  │
-│  └──────┬───────┘                                                 │
-│      ┌──┼──┐                                                      │
-│      │  │  │                                                      │
-│      │  │  └── next_action=END? ──────────→ 跳出循环               │
-│      │  └──── next_action=WAIT? ─────────→ 返回 state (保留容器)   │
-│      ▼  (PROCESS)                                                 │
-│  ┌──────────────┐                                                 │
-│  │ LLM.invoke   │  build_lead_agent_prompt() → SystemMessage       │
-│  │              │  → LLM.ainvoke() → AIMessage                     │
-│  └──────┬───────┘                                                 │
-│         │                                                         │
-│         ▼                                                         │
-│  ┌──────────────┐                                                 │
-│  │ after_llm    │  Clarification → Title                          │
-│  └──────┬───────┘                                                 │
-│      ┌──┼──┐                                                      │
-│      │  │  │                                                      │
-│      │  │  └── next_action=END? ──────────→ 跳出循环               │
-│      │  └──── next_action=WAIT? ─────────→ 返回 state              │
-│      ▼  (PROCESS)                                                 │
-│                                                                   │
-│  [如果 LLM 没有返回 tool_calls]                                    │
-│    → after_tools_all → 跳出循环 (LLM 直接回复了)                   │
-│                                                                   │
-│  ┌──────────────────────────────┐                                 │
-│  │ 工具循环 (每个 tool_call)      │                                 │
-│  │ ┌──────────────┐             │                                 │
-│  │ │ before_tools │ Handling→Memory→Sandbox                       │
-│  │ └──────┬───────┘             │                                 │
-│  │     ┌──┼──┐                 │                                 │
-│  │     │  │  │                 │                                 │
-│  │     │  │  └── END? ──→ 跳出  │                                 │
-│  │     ▼  (继续)               │                                 │
-│  │ ┌──────────────┐             │                                 │
-│  │ │ skip_tool?   │──yes──→ 用 skip_tool_result 代替执行          │
-│  │ └──────┬───────┘             │                                 │
-│  │     no ▼                    │                                 │
-│  │ ┌──────────────┐             │                                 │
-│  │ │ tool.ainvoke │ SandboxExecTool → Docker 沙箱                  │
-│  │ └──────┬───────┘             │                                 │
-│  │        ▼                     │                                 │
-│  │ ┌──────────────┐             │                                 │
-│  │ │ ToolMessage  │ 追加到 state.messages                         │
-│  │ └──────────────┘             │                                 │
-│  └──────────────────────────────┘                                 │
-│         │                                                         │
-│         ▼                                                         │
-│  ┌──────────────┐                                                 │
-│  │ after_       │  Sandbox                                        │
-│  │ tools_all    │  释放容器 (仅 END 时)                            │
-│  └──────┬───────┘                                                 │
-│         │                                                         │
-│      ┌──┼──┐                                                      │
-│      │  │  │                                                      │
-│      │  │  │  next_action=END? ──────────→ 跳出循环                │
-│      │  │  │                                                      │
-│      │  │  └── PROCESS? ─────────────────→ 下一轮 (回到 turn start)│
-│      │  │                                                         │
-│      │  ▼                                                         │
-│      │  checkpoint save                                            │
-│      ▼  continue                                                  │
-│                                                                   │
-└───────────────────────────────────────────────────────────────────┘
-```
-
-**四个路由点**：
-
-| 路由点 | 发生时机 | 可能的 NextAction | 谁设置 |
-|--------|----------|-------------------|--------|
-| A | before_llm 后 | PROCESS→继续, WAIT→暂停, END→跳出 | DetectionMiddleware（容器已释放→END），SandboxMiddleware（获取失败→END） |
-| B | after_llm 后 | PROCESS→继续, WAIT→暂停, END→跳出 | ClarificationMiddleware（检测到 `<clarification>` 标签→WAIT），TitleMiddleware |
-| C | before_tools 后 | PROCESS→继续, END→跳出 | HandlingMiddleware（error 不可恢复→END） |
-| D | after_tools_all 后 | PROCESS→继续下一轮, END→跳出 | SandboxMiddleware（容器释放） |
+- **LLM 是大脑**
+- **tools 是手**
+- **sandbox 是防护服**
+- **memory/plan 是工作笔记**
+- **harness 是把这些东西接上线的神经系统和操作台**
 
 ---
 
-## 3. 中间件链（MiddlewareChain + Hooks）
+## 2. NanoDeer 的核心思想
 
-### 3.1 四个 Hook 点
+NanoDeer 当前版本的设计取向很明确：
 
-MiddlewareChain 暴露 4 个 hook，对应 ReAct 循环的不同阶段。每个 hook 按注册顺序依次执行中间件。
+1. **不用图 DSL**
+   不走 LangGraph 节点图，也不走复杂工作流编排。
 
-```python
-class MiddlewareChain:
-    def __init__(self, before_llm, after_llm, before_tools, after_tools_all)
-        self._before_llm = before_llm      # list[Middleware]
-        self._after_llm = after_llm        # list[Middleware]
-        self._before_tools = before_tools  # list[Middleware]
-        self._after_tools_all = after_tools_all  # list[Middleware]
+2. **不用 middleware chain**
+   没有一串 before/after hook 到处拦截。横切逻辑尽量放进独立 Manager 或 executor 内联逻辑。
 
-    async def before_llm_streaming(state, signals)
-    async def after_llm_streaming(state, signals)
-    async def before_tools_streaming(state, signals, tool_name, tool_args)
-    async def after_tools_all_streaming(state, signals)
-```
+3. **一条原生 ReAct 主链路**
+   所有关键执行步骤都能在 [react.py](/home/kai/workspace/nanodeer/src/nanodeer/agent/react.py:170) 里顺着读下来。
 
-| Hook | 执行时机 | 执行次数/轮 | 接收参数 | 典型用途 |
-|------|----------|-------------|----------|----------|
-| `before_llm` | LLM 调用前 | 1 次 | `state`, `signals` | 创建资源、加载上下文、启动服务 |
-| `after_llm` | LLM 调用后 | 1 次 | `state`, `signals` | 检查响应、生成标题、检测信号 |
-| `before_tools` | 每个工具调用前 | N 次（每个 tool_call 1 次） | `state`, `signals`, `tool_name`, `tool_args` | 审计、拦截、参数检查 |
-| `after_tools_all` | 本轮所有工具执行完后 | 1 次 | `state`, `signals` | 清理、释放资源 |
+4. **状态和执行职责分开**
+   会话状态、单轮临时信号、上下文加载、沙箱生命周期、工具执行，各自有清楚边界。
 
-### 3.2 中间件总览
-
-当前实现 9 个中间件 + 1 个 App 层中间件：
-
-| 分组 | 名称 | Hook | 职责 | feature 门 |
-|------|------|------|------|-----------|
-| **Context** | ThreadDataMiddleware | before_llm | 创建 `{thread_id}/user-data/` 子目录 | 无（始终启用） |
-| | FileMiddleware | before_llm | 将上传文件写入 user-data/ 目录 | `uploads` |
-| | MemoryMiddleware(wiki) | before_llm | 加载记忆上下文 → `signals.memory_context` | 无 |
-| | PlanMiddleware | before_llm | 加载 Plan 上下文 → `signals.plan_context` | 无 |
-| **Safety** | DetectionMiddleware | before_llm | 检测容器是否已释放 → END | 无 |
-| | SandboxMiddleware | before_llm | 获取/复用容器 | `sandbox` |
-| | | before_tools | bash 安全审计 | |
-| | | after_tools_all | 释放容器 (仅 END) | |
-| | HandlingMiddleware | before_tools | 根据 `signals.error` 决定继续/END | 无 |
-| **Intercept** | MemoryMiddleware | before_tools | 拦截 save_memory，Host 直接写 | 无 |
-| **Signal** | ClarificationMiddleware | after_llm | 检测 `<clarification>` 标签 → WAIT | `clarification` |
-| | TitleMiddleware | after_llm | 首轮对话自动生成标题 → `state.title` | 无 |
-| **App 层** | CompressionMiddleware | 由 NanoEngine 调用 | 消息压缩（不在 chain 中） | `compression` |
-
-### 3.3 执行顺序详解
-
-#### before_llm 链（注册顺序 = 执行顺序）
-
-```
-ThreadData → File → Memory → Plan → Detection → Sandbox
-    │          │       │       │        │          │
-    │          │       │       │        │          └── 获取/复用 Docker 容器
-    │          │       │       │        │              → state.sandbox
-    │          │       │       │        │
-    │          │       │       │        └── 检查 state.sandbox.status
-    │          │       │       │            如果已释放 → next_action = END
-    │          │       │       │
-    │          │       │       └── PlanStore.list() → signals.plan_context
-    │          │       │
-    │          │       └── memory_store.load_for_prompt()
-    │          │           → signals.memory_context
-    │          │
-    │          └── 写入 uploaded_files → signals.uploaded_files_list
-    │
-    └── mkdir -p {thread_id}/user-data/{workspace,uploads,outputs}
-```
-
-**DetectionMiddleware 在 SandboxMiddleware 之前的理由**：如果上一轮容器已释放（`state.sandbox.status == "released"`），应该直接 END，不需要再尝试获取新容器。
-
-#### after_llm 链
-
-```
-Clarification → Title
-    │              │
-    │              └── 首轮自动生成标题（LLM 非流式调用一次）→ state.title
-    │
-    └── 检测 AIMessage.content 是否包含 <clarification> 标签
-        → 设置 signals.clarification_question
-        → 设置 state.next_action = WAIT
-```
-
-#### before_tools 链（每个 tool_call 执行一次）
-
-```
-Handling → Memory → Sandbox
-    │        │         │
-    │        │         └── bash 安全审计
-    │        │             检查命令是否在黑名单中
-    │        │
-    │        └── 如果 tool_name == "save_memory":
-    │             → 直接写入 MemoryStore（Host）
-    │             → skip_tool = True
-    │             → 跳过后续 Sandbox 审计
-    │
-    └── 读取 signals.error
-        如果 error 不可恢复 → next_action = END
-```
-
-**关键约束**：
-- Memory 必须在 Sandbox 之前：`save_memory` 是 Host 操作，不需要进沙箱。如果先走 Sandbox 审计，会产生不必要的沙箱调用
-- Detection 不在 before_tools 中：Detection 只检测 sandbox 释放状态，这个发生在 before_llm 阶段（此时 sandbox 刚获取或已存在）。before_tools 阶段不需要重复检测
-
-#### after_tools_all 链
-
-```
-Sandbox
-  └── 如果 next_action == END → provider.release(container)
-      如果 next_action == PROCESS → 保持容器存活
-```
-
-### 3.4 中间件列表
-
-#### ThreadDataMiddleware
-
-| 项目 | 说明 |
-|------|------|
-| Hook | before_llm |
-| Feature gate | 无（始终启用） |
-| 职责 | 创建线程工作目录 |
-| 数据流 | 无（纯副作用） |
-| 幂等性 | 是（mkdir -p 自然幂等） |
-| 实现 | `Path(storage_path / thread_id / "user-data" / sub).mkdir(parents=True, exist_ok=True)` |
-
-创建 `{storage_path}/{thread_id}/user-data/` 下的三个子目录：
-- `workspace/` — 用户工作区
-- `uploads/` — 上传文件
-- `outputs/` — 产物输出
-
-#### FileMiddleware
-
-| 项目 | 说明 |
-|------|------|
-| Hook | before_llm |
-| Feature gate | `uploads` |
-| 职责 | 将上传文件写入磁盘 |
-| 数据流 | 文件 → `signals.uploaded_files_list`（文件名列表） |
-| 幂等性 | 是（同名文件直接覆盖） |
-
-如果 `uploaded_files` 参数中有文件数据，将它们写入 `uploads/` 目录，并在 `signals.uploaded_files_list` 中记录文件名列表供 prompt 注入。
-
-#### MemoryMiddleware
-
-| 项目 | 说明 |
-|------|------|
-| Hooks | before_llm + before_tools |
-| Feature gate | 无 |
-| 职责 | before_llm：加载记忆；before_tools：拦截 save_memory |
-| 数据流 | before_llm: MemoryStore → `signals.memory_context` |
-| | before_tools: tool_args → MemoryStore（副作用）→ `signals.skip_tool = True` |
-| 共享实例 | 是（两个 hook 使用同一个 MemoryMiddleware 实例） |
-
-详情见 [Memory 设计文档](memory_design.md)。
-
-#### PlanMiddleware
-
-| 项目 | 说明 |
-|------|------|
-| Hook | before_llm |
-| Feature gate | 无 |
-| 职责 | 加载 Plan 上下文 |
-| 数据流 | PlanStore → `signals.plan_context` |
-| 实现 | `_compute_plan_context(PlanStore)` → 格式化为 `<plan>` XML 块 |
-
-```python
-def _compute_plan_context(plan_store: PlanStore) -> str:
-    plans = plan_store.list()
-    # 输出格式:
-    # <plan id="plan-abc123">
-    #   <goal>...</goal>
-    #   <progress>1/3 steps completed (33%)</progress>
-    #   [x] Design  (id=step-001)
-    #   [*] Backend  (id=step-002)  assigned: sub-a1b2
-    # </plan>
-```
-
-PlanMiddleware 不在 before_tools 中注册，因为 Plan 信息只需要在 LLM 调用前注入 prompt，不涉及工具执行拦截。
-
-#### DetectionMiddleware
-
-| 项目 | 说明 |
-|------|------|
-| Hook | before_llm |
-| Feature gate | 无 |
-| 职责 | 检测异常状态并设置 END |
-| 数据流 | `state.sandbox.status` → `state.next_action = END` |
-| 当前实现 | 如果 `state.sandbox.status == "released"` → 直接 END（容器已在上一轮释放，本轮无需继续） |
-
-**为什么在 before_llm 而不是 before_tools？** Detection 的 `before_llm_streaming` 方法检查 sandbox 状态。把它放在 before_llm 链、SandboxMiddleware 之前，能在 LLM 调用前就发现 sandbox 已释放，避免无意义的 LLM 调用。它本来就不属于 before_tools 阶段——before_tools 阶段检测的是 tool_call 级别的异常（如循环检测、权限检查），sandbox 释放是跨轮状态，应当在每轮开始时检测。
-
-#### HandlingMiddleware
-
-| 项目 | 说明 |
-|------|------|
-| Hook | before_tools |
-| Feature gate | 无 |
-| 职责 | 读取 `signals.error` 并决定后续行为 |
-| 数据流 | `signals.error` → `state.next_action` |
-| 当前实现 | 如果存在 error 且不可恢复 → END（placeholder, 可扩展） |
-
-**Detection/Handling 分离的原因**：Detection 只负责"检测和报告"，不决定怎么处理；Handling 负责"根据错误决策"。但注意 Detection 当前注册在 before_llm（写入 `signals.error`），Handling 注册在 before_tools（读取 `signals.error`）——这两个 hook 不在同一轮触发的场景下。如果是 before_llm 检测到的错误，当前 Detection 直接设置 `next_action = END` 而不经过 Handling。Handling 主要处理 before_tools 阶段的异常（如未来可能由 Sandbox 审计写入的 error）。
-
-#### SandboxMiddleware
-
-| 项目 | 说明 |
-|------|------|
-| Hooks | before_llm, before_tools, after_tools_all |
-| Feature gate | `sandbox` |
-| 职责 | before_llm：获取/复用容器；before_tools：bash 审计；after_tools_all：释放容器 |
-
-多 hook 职责：
-
-| Hook | 行为 | 条件 |
-|------|------|------|
-| before_llm | `sandbox_provider.acquire()` → `state.sandbox` | `_sandbox_context` 中无此 thread 的容器 |
-| before_tools | bash 命令黑名单检查 | `tool_name == "bash"`，且 `skip_tool != True` |
-| after_tools_all | `provider.release(sandbox)` | `state.next_action == END`（PROCESS 时不释放） |
-
-**Idempotent acquire**：`before_llm` 检查模块级 `_sandbox_context[thread_id]`，如果已存在容器则直接复用，不创建新容器。
-
-**Idempotent release**：`_release_if_needed()` 检查 `state.sandbox.status == "released"` 后跳过。
-
-#### ClarificationMiddleware
-
-| 项目 | 说明 |
-|------|------|
-| Hook | after_llm |
-| Feature gate | `clarification` |
-| 职责 | 检测 LLM 回复中的 `<clarification>` 标签 |
-| 数据流 | `AIMessage.content` → 正则提取标签内容 → `signals.clarification_question` + `state.next_action=WAIT` |
-| 实现 | `re.search(r'<clarification>(.*?)</clarification>', content, re.DOTALL)` |
-
-LLM 可以在回复中嵌入 `<clarification>你希望我怎么做？</clarification>` 来主动向用户提问。ClarificationMiddleware 检测到后：
-1. 提取标签中的问题内容到 `signals.clarification_question`
-2. 设置 `state.next_action = WAIT`
-3. 循环返回，App 层展示给用户
-
-#### TitleMiddleware
-
-| 项目 | 说明 |
-|------|------|
-| Hook | after_llm |
-| Feature gate | 无 |
-| 职责 | 首轮对话自动生成标题 |
-| 数据流 | LLM 调用（标题生成）→ `state.title` |
-| 幂等性 | 是（只在 `state.title is None` 时执行） |
-
-首轮（`state.title is None` 且 `len(state.messages) >= 2`）时，用 LLM 从对话内容生成一个简短的标题。只有第一轮触发。
-
-### 3.5 跨 Hook 中间件特例
-
-三个中间件注册了多个 hook：
-
-| 中间件 | 注册的 hook | 各 hook 的职责差异 |
-|--------|------------|-------------------|
-| MemoryMiddleware | before_llm + before_tools | before_llm: 加载记忆，只读；before_tools: 拦截 save_memory，写入 |
-| SandboxMiddleware | before_llm + before_tools + after_tools_all | before_llm: 获取；before_tools: 审计；after_tools_all: 释放 |
-
-**MemoryMiddleware 单实例**：两个 hook 使用同一个 MemoryMiddleware 实例（由 factory 在装配时创建）。共享实例确保：
-- 单实例持有的 memory_store 引用一致
-- 未来如果添加 per-instance 状态（如 wiki 检索缓存），两个 hook 共享同一份缓存
-
-**SandboxMiddleware 单实例**：三个 hook 使用同一个 SandboxMiddleware 实例，共享模块级 `_sandbox_context` 容器池。
-
-### 3.6 接入指南
-
-添加一个新的中间件：
-
-```python
-# 1. 继承 Middleware
-class MyMiddleware(Middleware):
-    """我的自定义中间件。"""
-
-    def __init__(self, ...):
-        ...
-
-    async def before_llm_streaming(self, state, signals):
-        yield
-        # 读/写 state 或 signals
-
-# 2. 在 factory.py 中注册对应的 hook
-chain = MiddlewareChain(
-    before_llm=self._chain(
-        ...
-        (MyMiddleware, None, kwargs),  # feature=None 表示始终启用
-        ...
-    ),
-)
-
-# 3. （可选）在 RuntimeFeatures 中添加 feature gate
-@dataclass
-class RuntimeFeatures:
-    my_feature: bool = True
-    ...
-
-# 注册时带上 feature 名称
-(MyMiddleware, "my_feature", {})
-```
+5. **优先追求“可解释、可调试、可替换”**
+   这也是它比很多“功能很多但路径很绕”的 Agent 框架更轻的原因。
 
 ---
 
-## 4. 提示词注入（Prompt Injection）
+## 3. 总体分层
 
-> 在 NanoDeer 的语境中，"Prompt Injection" 指**将运行时数据注入 LLM system prompt 的过程**，即 Middleware 和 Builder 向 prompt 填充运行时上下文（记忆、Plan、文件列表等）。不是安全意义上的 Prompt Injection 攻击。
+从外到内，可以把 NanoDeer 看成 5 层：
 
-### 4.1 分层构建
+### Layer 5: UI / API Interface
 
-System prompt 分两层构建：
+- Web UI: Next.js + assistant-ui
+- API: FastAPI + SSE
+- CLI: REPL / legacy brain
 
-```
-build_lead_agent_prompt()
-  │
-  ├── 静态层（base）
-  │   state.system_prompt 已缓存? ──yes──→ 复用
-  │   no
-  │   build_base_system_prompt()
-  │   ├── <identity_and_constraints>   角色定义 + 安全规则
-  │   ├── <available_capabilities>     工具描述列表
-  │   ├── <skills>                     skill 系统说明（条件渲染）
-  │   ├── <subagent>                   子 Agent 说明（条件渲染）
-  │   ├── <working_directory>          工作目录路径
-  │   └── <output_requirements>        输出风格 + 关键提醒
-  │
-  └── 动态层（dynamic）
-      每轮重新构建
-      ├── <memory>                     记忆上下文（条件：signals.memory_context 非空）
-      ├── <uploaded_files>             上传文件列表（条件：signals.uploaded_files_list 非空）
-      ├── <plan>                       Plan 上下文（条件：signals.plan_context 非空）
-      └── <current_date>               当前日期（始终渲染）
-```
+职责：
+- 接受用户输入
+- 以流式事件的形式把执行过程返回给前端
+- 提供 conversation CRUD 能力
 
-### 4.2 静态层（Base System Prompt）
+核心文件：
+- [frontend/app/assistant.tsx](/home/kai/workspace/nanodeer/frontend/app/assistant.tsx:1)
+- [frontend/components/nanodeer-adapter.ts](/home/kai/workspace/nanodeer/frontend/components/nanodeer-adapter.ts:1)
+- [src/nanodeer/cli/api.py](/home/kai/workspace/nanodeer/src/nanodeer/cli/api.py:1)
 
-`build_base_system_prompt()` 构建的静态部分只做一次，缓存在 `state.system_prompt` 中。
+### Layer 4: Application Entry
 
-| Section | 函数 | 内容来源 | 条件 |
-|---------|------|----------|------|
-| `<identity_and_constraints>` | `_identity_section()` | 硬编码 + `_SAFETY_RULES` | 始终 |
-| `<available_capabilities>` | `_tools_section(tools)` | `_TOOL_DESCRIPTIONS`（硬编码 16 个工具） | 始终 |
-| `<skills>` | `_skills_section()` | `_SKILLS_USAGE`（硬编码） | `config.skills=True` 且 `invoke_skill` 在工具列表中 |
-| `<subagent>` | `_subagent_section()` | `_SUBAGENT_USAGE`（硬编码） | `config.subagent=True` 且 `spawn_subagent` 在工具列表中 |
-| `<working_directory>` | `_working_directory_section()` | 硬编码 | 始终 |
-| `<output_requirements>` | `_output_section()` | 硬编码 | 始终 |
+- `NanoEngine`
 
-静态缓存的工作原理：
+职责：
+- 根据配置创建 LLM
+- 恢复或创建 `ThreadState`
+- 调用 executor
+- 在回合结束后做压缩和标题生成
+- 为外层返回 `RunResult` 或 streaming events
 
-```python
-def build_lead_agent_prompt(state, tools, signals, config, model_name):
-    # 首次调用时构建并缓存
-    if state.system_prompt is None:
-        state.system_prompt = build_base_system_prompt(tools, config, model_name)
-    # 后续每次组装动态层
-    dynamic = []
-    if config.memory and signals.memory_context:
-        dynamic.append(_memory_section(signals.memory_context))
-    if signals.uploaded_files_list:
-        dynamic.append(f"<uploaded_files>{signals.uploaded_files_list}</uploaded_files>")
-    if config.plan and signals.plan_context:
-        dynamic.append(f"<plan>\n{signals.plan_context}\n</plan>")
-    dynamic.append(f"<current_date>{date.today().isoformat()}</current_date>")
-    return state.system_prompt + "\n\n" + "\n\n".join(dynamic)
-```
+核心文件：
+- [src/nanodeer/engine.py](/home/kai/workspace/nanodeer/src/nanodeer/engine.py:1)
 
-**缓存作用域**：`ThreadState.system_prompt` 只在单个 Thread 的生命周期内有效。同一个 thread 的多轮对话复用缓存，不同的 thread 各自独立缓存。
+### Layer 3: Execution Core
 
-### 4.3 动态层（Dynamic Sections）
+- `ReActExecutor`
+- `ContextManager`
+- `SandboxManager`
 
-| Section | 数据来源 | 写入信号的中间件 | 渲染条件 |
-|---------|----------|-----------------|----------|
-| `<memory>` | MemoryStore（文件） | MemoryMiddleware（before_llm）→ `signals.memory_context` | `config.memory=True` 且 `signals.memory_context` 非空 |
-| `<uploaded_files>` | 上传文件数据 | FileMiddleware（before_llm）→ `signals.uploaded_files_list` | `signals.uploaded_files_list` 非空 |
-| `<plan>` | PlanStore（文件） | PlanMiddleware（before_llm）→ `signals.plan_context` | `config.plan=True` 且 `signals.plan_context` 非空 |
-| `<current_date>` | `date.today()` | 无（build_lead_agent_prompt 直接生成） | 始终 |
+职责：
+- 跑主循环
+- 在每轮开始前准备 prompt 所需上下文
+- 在需要时获取和释放沙箱
+- 调用 LLM
+- 执行工具
+- 更新状态和 checkpoint
 
-### 4.4 注入链路
+核心文件：
+- [src/nanodeer/agent/react.py](/home/kai/workspace/nanodeer/src/nanodeer/agent/react.py:1)
+- [src/nanodeer/agent/context.py](/home/kai/workspace/nanodeer/src/nanodeer/agent/context.py:1)
+- [src/nanodeer/agent/sandbox_manager.py](/home/kai/workspace/nanodeer/src/nanodeer/agent/sandbox_manager.py:1)
 
-```
-before_llm chain
-  │
-  ├── MemoryMiddleware
-  │   └── memory_store.load_for_prompt()
-  │       ├── USER.md       (全量)
-  │       ├── wiki entries  (检索匹配)
-  │       ├── MEMORY.md     (全量)
-  │       └── episodic/     (今日+昨日)
-  │   → signals.memory_context (字符串)
-  │
-  ├── PlanMiddleware
-  │   └── PlanStore.list()
-  │   → signals.plan_context (字符串)
-  │
-  └── FileMiddleware
-      └── 写入 uploads/
-      → signals.uploaded_files_list
+### Layer 2: Capabilities
 
-↓
+- tools
+- subagents
+- prompt builder
+- memory/plan injection
 
-build_lead_agent_prompt()
-  ← 读 state.system_prompt (cache)
-  ← 读 signals.memory_context → <memory>
-  ← 读 signals.plan_context → <plan>
-  ← 读 signals.uploaded_files_list → <uploaded_files>
-  ← 读 date.today() → <current_date>
-  → 返回完整 system prompt
+职责：
+- 给主循环提供“能做什么”和“知道什么”
 
-↓
+核心文件：
+- [src/nanodeer/tools/__init__.py](/home/kai/workspace/nanodeer/src/nanodeer/tools/__init__.py:1)
+- [src/nanodeer/agent/prompt.py](/home/kai/workspace/nanodeer/src/nanodeer/agent/prompt.py:1)
+- [src/nanodeer/subagent/coordinator.py](/home/kai/workspace/nanodeer/src/nanodeer/subagent/coordinator.py:1)
 
-LLM.ainvoke([SystemMessage(prompt), ...HumanMessage, AIMessage, ToolMessage...])
-```
+### Layer 1: Persistence / Isolation / Data
+
+- checkpoint
+- memory
+- plan
+- sandbox provider
+- path translation
+
+职责：
+- 提供持久化、隔离和底层数据语义
+
+核心文件：
+- [src/nanodeer/agent/checkpoint/sqlite.py](/home/kai/workspace/nanodeer/src/nanodeer/agent/checkpoint/sqlite.py:1)
+- [src/nanodeer/agent/memory/storage.py](/home/kai/workspace/nanodeer/src/nanodeer/agent/memory/storage.py:1)
+- [src/nanodeer/plan/storage.py](/home/kai/workspace/nanodeer/src/nanodeer/plan/storage.py:1)
+- [src/nanodeer/sandbox/docker.py](/home/kai/workspace/nanodeer/src/nanodeer/sandbox/docker.py:1)
+- [src/nanodeer/sandbox/path.py](/home/kai/workspace/nanodeer/src/nanodeer/sandbox/path.py:1)
 
 ---
 
-## 5. 工厂装配（Factory Assembly）
+## 4. 主链路到底怎么走
 
-### 5.1 NanoDeerFactory.build() 流程
+主链路分成两种入口：
 
-```python
-executor, compression_mw = NanoDeerFactory(features).build(
-    llm,                    # LLM 实例
-    tools,                  # 工具列表（None → default_tools()）
-    memory_store=...,       # MemoryStore 实现
-    subagent_runner=...,    # SubagentCoordinator 实例（None → 自动创建）
-    extra_middlewares=...,  # 额外中间件
-    checkpointer=...,       # Checkpointer（None → SqliteCheckpointer）
-)
+- 非流式：`NanoEngine.run()`
+- 流式：`NanoEngine.run_streaming()`
+
+产品主入口是流式，因为前端 UI 要实时显示 token、tool call、tool result。
+
+### 4.1 从前端到后端
+
+前端通过 adapter 把用户最后一条消息取出来，发到 `/api/chat`。
+
+对应文件：
+- [frontend/components/nanodeer-adapter.ts](/home/kai/workspace/nanodeer/frontend/components/nanodeer-adapter.ts:53)
+- [frontend/lib/api.ts](/home/kai/workspace/nanodeer/frontend/lib/api.ts:41)
+
+后端 `api.py`：
+
+1. 读取 `prompt` 和 `thread_id`
+2. 创建 `NanoEngine`
+3. 调用 `engine.run_streaming()`
+4. 把内部事件包装成 SSE 发给前端
+
+对应文件：
+- [src/nanodeer/cli/api.py](/home/kai/workspace/nanodeer/src/nanodeer/cli/api.py:71)
+
+### 4.2 NanoEngine 做什么
+
+`NanoEngine` 不是主循环，它更像应用层调度器。
+
+它负责：
+
+1. 创建或恢复 `ThreadState`
+2. 根据配置创建 LLM
+3. 懒加载 executor
+4. 调用 executor 的 `run()` 或 `run_streaming()`
+5. 回合结束后做消息压缩
+6. 异步生成 conversation title
+
+关键点：
+
+- **checkpoint resume 在 engine 层做**
+- **compression 在 engine 层做**
+- **title generation 也在 engine 层做**
+
+这意味着 `ReActExecutor` 可以保持更纯粹，只关心单次 Agent 执行本身。
+
+对应文件：
+- [src/nanodeer/engine.py](/home/kai/workspace/nanodeer/src/nanodeer/engine.py:121)
+
+### 4.3 ReActExecutor 做什么
+
+这是整个 harness 的核心。
+
+可以把它理解成一段反复执行的循环：
+
+```text
+加载上下文
+-> 获取沙箱
+-> 调 LLM
+-> 判断是澄清、结束还是继续
+-> 有工具就执行工具
+-> 保存 checkpoint
+-> 吸收本轮到 episodic memory
+-> 下一轮
 ```
 
-build() 内部执行顺序：
+非流式主循环的顺序基本就是：
 
-```
-1. 解析配置
-   ├── extra = extra_middlewares or {}
-   ├── sandbox = _create_sandbox_provider()  # Docker → fallback Local
-   └── sp_kw = {"provider": sandbox}
+1. `ContextManager.load(state, signals)`
+2. `SandboxManager.acquire(state)`
+3. `build_lead_agent_prompt(...)`
+4. `self.llm.ainvoke(...)`
+5. `_check_clarification(...)`
+6. 如果有 tool calls，逐个执行
+7. `checkpointer.save(...)`
+8. `context.absorb(state)`
+9. 如果结束则 release sandbox
 
-2. 创建 CompressionMiddleware
-   └── App 层管理，不在 chain 中
+对应代码：
+- [src/nanodeer/agent/react.py](/home/kai/workspace/nanodeer/src/nanodeer/agent/react.py:243)
 
-3. 创建 MemoryMiddleware 单实例
-   └── memory_mw = MemoryMiddleware(memory_store=memory_store)
-   └── 注入 before_llm 和 before_tools 两个 hook
+流式路径则把第 4 步改成：
 
-4. 创建 PlanMiddleware
-   └── plan_mw = PlanMiddleware()
+- `llm.astream(...)`
+- 边收 token 边 `yield` 事件
+- 最后聚合成 assistant message 再进入 tool loop
 
-5. 装配 MiddlewareChain
-   ├── before_llm:     ThreadData → File → Memory → Plan → Detection → Sandbox
-   ├── after_llm:      Clarification → Title
-   ├── before_tools:   Handling → Memory → Sandbox
-   └── after_tools_all: Sandbox
-
-6. 包装工具
-   └── sandbox-aware 工具 → SandboxExecTool 包装
-   └── Host 工具（save_memory, spawn_subagent, create_plan 等）→ 原样通过
-
-7. 创建 SubagentCoordinator
-   └── subagent_runner is None → 自动创建（含 wrapped_tools + sandbox）
-   └── set_executor() 注册全局
-
-8. 创建 ReActExecutor
-   ├── tools = tools（原始工具，用于 llm.bind_tools()）
-   └── 之后替换 executor._tools = wrapped_tools
-
-9. 后处理
-   ├── compression_mw.set_llm(llm)
-   └── title_mw.set_llm(llm)
-```
-
-### 5.2 RuntimeFeatures 功能门
-
-```python
-@dataclass
-class RuntimeFeatures:
-    # Middleware 开关
-    uploads: bool = True         # FileMiddleware
-    compression: bool = True     # CompressionMiddleware（App 层）
-    sandbox: bool = True         # SandboxMiddleware
-    clarification: bool = True   # ClarificationMiddleware
-
-    # Compression 参数
-    context_window: int = 204800
-    compression_ratio: float = 0.7
-    compression_keep_recent: int = 5
-
-    # Prompt section 开关
-    prompt_memory: bool = True    # <memory> section
-    prompt_plan: bool = True      # <plan> section
-    prompt_skills: bool = True    # <skills> section
-    prompt_subagent: bool = True  # <subagent> section
-```
-
-**功能门作用机制**：
-
-```
-_chain() 方法：
-  for cls, feature, kw in specs:
-      if feature and not getattr(self.features, feature):
-          continue                  # ← 跳过这个中间件
-      result.append(cls(**kw) or cls())
-```
-
-- `feature=None` → 不受门控，始终注册
-- `feature="uploads"` → `getattr(features, "uploads")` → `True` 时注册，`False` 时跳过
-
-Prompt section 开关在 `build_lead_agent_prompt()` 和 `build_base_system_prompt()` 中检查：
-- `<memory>`: `config.memory and signals.memory_context`
-- `<plan>`: `config.plan and signals.plan_context`
-- `<skills>`: `config.skills and "invoke_skill" in tools`
-- `<subagent>`: `config.subagent and "spawn_subagent" in tools`
-
-### 5.3 Tool Wrapping 机制
-
-Tool wrapping 是 construction-then-swap 模式：
-
-```python
-# Step 1: 用原始工具创建 executor（LLM 需要原始 schema）
-executor = ReActExecutor(
-    llm=llm.bind_tools(tools),    # LLM 看到的是原始工具定义
-    tools=tools,                  # 原始工具
-    chain=chain,
-    ...
-)
-
-# Step 2: 用 wrapped tools 替换 executor 的执行层
-executor._tools = wrapped_tools
-executor._tool_map = {t.name: t for t in wrapped_tools}
-```
-
-**为什么这么做**：
-
-| 角色 | 用什么 tools | 目的 |
-|------|-------------|------|
-| `llm.bind_tools(tools)` | 原始 tools | LLM 看到正确的 tool schema，做出正确的 tool_call 决策 |
-| `executor._tools` | wrapped tools | 实际执行时路由到沙箱容器 |
-| `executor._tool_map` | wrapped tools | tool invocation 时按 name 查找正确的包装版 |
-
-**哪些工具被包装**：
-
-配置在 `SANDBOX_TOOL_CONFIGS` 中，当前 9 个沙箱感知工具：
-
-```python
-SANDBOX_TOOL_CONFIGS = {
-    "bash":        {"template": "cd {dir} && {command}", ...},
-    "read_file":   {"path_vars": {"file_path": ...}, ...},
-    "write_file":  {"path_vars": {"file_path": ...}, ...},
-    "ls":          {"path_vars": {"file_path": ...}, ...},
-    "glob":        {"path_vars": {"file_path": ...}, ...},
-    "grep":        {"path_vars": {"file_path": ...}, ...},
-    "git":         {...},
-    "exec_python": {...},
-    "web_search":  {...},
-}
-```
-
-不在配置中的工具（如 `save_memory`、`spawn_subagent`、`create_plan`、`add_step`）走 Host 直连。
-
-### 5.4 SubagentCoordinator 创建
-
-```python
-if subagent_runner is not False:  # None → 自动创建，False → 禁用
-    from ..subagent import SubagentCoordinator, set_executor
-    if subagent_runner is None:
-        cfg = get_config()
-        subagent_runner = SubagentCoordinator(
-            llm=llm,
-            tools=wrapped_tools,       # ← 注意！用的是 wrapped tools
-            sandbox_provider=sandbox,
-            max_concurrent=cfg.subagents.max_concurrent,
-            timeout_seconds=cfg.subagents.timeout_seconds,
-        )
-    set_executor(subagent_runner)     # 注册全局
-```
-
-**subagent_runner 参数的三种语义**：
-
-| 值 | 行为 |
-|----|------|
-| `None`（默认） | 自动创建 SubagentCoordinator，使用当前 llm 和 wrapped_tools |
-| 实例对象 | 使用传入的 subagent_runner |
-| `False` | 禁用 subagent |
-
-**全局注册**：`set_executor()` 将 subagent_runner 写入模块级全局变量。`spawn_subagent` 工具通过 `get_executor()` 获取这个实例来派发子任务。设计约束：**单用户模式，不支持同时运行多个 Engine 实例**。
-
-详情见 [Subagent 设计文档](subagent_design.md)。
-
-### 5.5 CompressionMiddleware（App 层）
-
-CompressionMiddleware 不在 MiddlewareChain 中，而是由 **NanoEngine** 在 `executor.run()` 结束后调用：
-
-```python
-# NanoEngine.run()
-final_state, events = await executor.run(state)
-
-if self._compression_mw is not None:
-    compressed = self._compression_mw.compress(final_state.messages)
-    if compressed is not None:
-        final_state.messages = compressed
-```
-
-**为什么不在 chain 中**：
-- Compression 的触发时机在每轮结束后，不是在 hook 点
-- 不影响 ReAct 循环的逻辑，是纯后处理
-- 由 App 层控制何时触发，不强制
-
-### 5.6 Checkpointer 注入
-
-```python
-# NanoEngine _get_executor() 中惰性创建
-if self._checkpointer is None:
-    if self.config.thread.checkpointer_type == "sqlite":
-        from nanodeer.agent.checkpoint import SqliteCheckpointer
-        self._checkpointer = SqliteCheckpointer(self.config.thread.db_path)
-
-# 传给 factory
-executor, compression_mw = create_nanodeer_agent(
-    model=llm,
-    tools=...,
-    checkpointer=self._checkpointer,
-)
-```
-
-**SqliteCheckpointer** 替换了原有的 FileCheckpointer。原因：FileCheckpointer 使用 `model_dump_json()` 序列化 ThreadState，但 Pydantic 对嵌套 dataclass 的子类型（BaseMessage → HumanMessage/AIMessage/ToolMessage）不支持多态——`tool_calls` 和 `tool_call_id`/`name` 在序列化中丢失。
-
-SqliteCheckpointer 以 SQLite 存储，`messages` 表的 `role` 列驱动正确的子类型重建：
-
-```
-messages 表:
-  role TEXT         →  HumanMessage / AIMessage / ToolMessage / SystemMessage
-  tool_calls TEXT   →  AIMessage 专用（JSON）
-  tool_call_id TEXT →  ToolMessage 专用
-  tool_name TEXT    →  ToolMessage 专用
-```
-
-ReActExecutor 在每轮 `after_tools_all` 后自动保存 checkpoint：
-
-```python
-if self._checkpointer and state.thread_id:
-    await self._checkpointer.save(state.thread_id, state)
-```
-
-新 thread 启动时，如果 `state.messages` 为空且存在 checkpoint，自动恢复：
-
-```python
-if self._checkpointer and not state.messages and state.thread_id:
-    saved = await self._checkpointer.load(state.thread_id)
-    if saved:
-        state = saved
-```
-
-### 5.7 注入点汇总
-
-```python
-def build(llm, tools, *, memory_store, subagent_runner, extra_middlewares, checkpointer):
-```
-
-| 参数 | 默认值 | 注入方式 | 用途 |
-|------|--------|----------|------|
-| `llm` | 必传 | 直接参数 | LLM 实例 |
-| `tools` | `default_tools()` | 直接参数（None 时） | 工具列表 |
-| `memory_store` | `None`（创建默认 MemoryStore） | → MemoryMiddleware | 记忆读写 |
-| `subagent_runner` | `None`（自动创建）或 `False` | → SubagentCoordinator 全局注册 | 子 Agent 执行 |
-| `extra_middlewares` | `None` | → MiddlewareChain（追加到各 hook 尾部） | 扩展中间件 |
-| `checkpointer` | `None`（创建 SqliteCheckpointer） | → ReActExecutor | 状态持久化 |
+对应代码：
+- [src/nanodeer/agent/react.py](/home/kai/workspace/nanodeer/src/nanodeer/agent/react.py:363)
 
 ---
 
-## 6. 完整执行流
+## 5. 为什么说它没有 middleware chain
 
-以下是一个完整轮次的时序（Turn N）：
+这是 NanoDeer 最关键的架构特点之一。
 
-```
-1. state.next_action = PROCESS          ← 每轮重置
-2. signals = TurnSignals()              ← 每轮新实例
+很多 Agent 框架会这样设计：
 
-3. before_llm chain:
-   a. ThreadDataMiddleware              mkdir user-data/{workspace,uploads,outputs}
-   b. FileMiddleware                    写入上传文件
-   c. MemoryMiddleware                  memory_store.load_for_prompt() → signals.memory_context
-   d. PlanMiddleware                    PlanStore.list() → signals.plan_context
-   e. DetectionMiddleware               state.sandbox.status == "released" → END
-   f. SandboxMiddleware                 provider.acquire() → state.sandbox
-   [如果 END → 跳出循环]
-   [如果 WAIT → 返回 state]
+- before_llm middleware
+- after_llm middleware
+- before_tools middleware
+- after_tools middleware
 
-4. LLM.ainvoke()
-   a. prompt = build_lead_agent_prompt(state, tools, signals, config, model_name)
-      ├── static: state.system_prompt (cache hit/miss)
-      ├── <memory> (if signals.memory_context)
-      ├── <plan> (if signals.plan_context)
-      ├── <uploaded_files> (if signals.uploaded_files_list)
-      └── <current_date>
-   b. resp = llm.ainvoke([SystemMessage(prompt), ...HumanMessage, ...])
-   c. state.messages.append(AIMessage(content=..., tool_calls=...))
+好处是扩展统一，但坏处也很明显：
 
-5. after_llm chain:
-   a. ClarificationMiddleware           检测 <clarification> → WAIT?
-   b. TitleMiddleware                   首轮生成标题
-   [如果 WAIT → 返回 state]
-   [如果 END → 跳出循环]
+- 控制流变得分散
+- 调试时要在很多 hook 间来回跳
+- 很难一眼看出“一次请求到底走了哪条路径”
 
-6. [如果 resp.tool_calls 为空]
-   → after_tools_all chain (SandboxMiddleware release)
-   → 跳出循环
+NanoDeer 当前不是这种设计。
 
-7. 工具循环 (for each tc in resp.tool_calls):
-   a. before_tools (each call):
-       HandlingMiddleware               检查 signals.error → END?
-       MemoryMiddleware                 拦截 save_memory → skip_tool?
-       SandboxMiddleware                bash 审计
-   b. tool.ainvoke()                    或者 skip_tool_result
-   c. state.messages.append(ToolMessage(...))
+它的做法是：
 
-8. after_tools_all chain:
-   a. SandboxMiddleware                 如果 END → release; 如果 PROCESS → 保留
+- **上下文加载**：交给 `ContextManager`
+- **沙箱生命周期**：交给 `SandboxManager`
+- **bash 审计**：在 `ReActExecutor` 里内联做
+- **clarification 检测**：在 `ReActExecutor` 里内联做
+- **LLM retry**：在 `react.py` 里内联做
 
-9. checkpoint save                      写入 SQLite
+所以它不是“没有横切关注点”，而是“横切关注点不通过 middleware chain 组织”。
 
-10. [如果 next_action == PROCESS → 回到步骤 1]
-    [如果 next_action == END → 跳出循环]
-```
+这带来的好处是：
+
+- 主链路短
+- 控制流显式
+- 新人更容易读懂
+- 调试体验更接近普通 Python 程序
+
+代价也有：
+
+- 扩展点没有 middleware 系统那么通用
+- 新能力接入时，常常要改 executor 或 manager 本身
+
+这个取舍是 NanoDeer 有意做的。
+
+---
+
+## 6. 两种状态：ThreadState 和 TurnSignals
+
+这两个对象非常重要，理解它们就理解了一半 harness。
+
+### 6.1 ThreadState：跨轮次、可持久化
+
+`ThreadState` 表示“这个会话现在长什么样”。
+
+它会跨多轮保留，核心字段有：
+
+- `thread_id`
+- `messages`
+- `next_action`
+- `title`
+- `sandbox`
+- `system_prompt`
+
+对应文件：
+- [src/nanodeer/agent/state.py](/home/kai/workspace/nanodeer/src/nanodeer/agent/state.py:26)
+
+可以把它理解成：
+
+**ThreadState = 这段对话的长期档案**
+
+### 6.2 TurnSignals：单轮临时信号
+
+`TurnSignals` 只在单轮执行里存在。
+
+它存的是这一轮临时算出来、又不值得持久化的数据，比如：
+
+- `memory_context`
+- `plan_context`
+- `clarification_question`
+- `uploaded_files_list`
+- `events`
+
+对应文件：
+- [src/nanodeer/agent/state.py](/home/kai/workspace/nanodeer/src/nanodeer/agent/state.py:15)
+
+可以把它理解成：
+
+**TurnSignals = 这一轮临时便签纸**
+
+为什么要分开：
+
+- 持久状态和临时状态混在一起，会让 checkpoint 很脏
+- 临时信号不应该污染会话历史
+- prompt 注入数据通常是单轮计算结果，不该直接写进长期状态
+
+---
+
+## 7. Prompt 是怎么拼出来的
+
+Prompt 采用“两层结构”。
+
+### 静态层
+
+只构建一次，缓存到 `state.system_prompt`：
+
+- identity
+- 安全约束
+- working directory 说明
+- skills 简介
+- subagent 简介
+- memory 使用说明
+
+对应文件：
+- [src/nanodeer/agent/prompt.py](/home/kai/workspace/nanodeer/src/nanodeer/agent/prompt.py:89)
+
+### 动态层
+
+每轮都重新注入：
+
+- `<plan>`
+- `<memory>`
+- `<uploaded_files>`
+- `<current_date>`
+
+对应文件：
+- [src/nanodeer/agent/prompt.py](/home/kai/workspace/nanodeer/src/nanodeer/agent/prompt.py:115)
+
+这套设计的好处是：
+
+- 静态说明不必每轮重建
+- 动态上下文又能及时更新
+- token 使用比“每轮从头拼完整 system prompt”更省
+
+---
+
+## 8. ContextManager：每轮给模型准备什么
+
+`ContextManager` 做的事情可以概括成一句话：
+
+**把这一轮 prompt 需要的上下文，尽量一次性准备好。**
+
+它负责：
+
+1. 加载 memory
+2. 加载 plan
+3. 处理上传文件
+4. 扫描 uploads 目录并生成文件列表
+
+对应文件：
+- [src/nanodeer/agent/context.py](/home/kai/workspace/nanodeer/src/nanodeer/agent/context.py:48)
+
+### 为什么它存在
+
+如果把这些逻辑全塞进 executor：
+
+- 主循环会越来越胖
+- 逻辑边界不清楚
+- memory/plan/uploads 很难独立测试
+
+所以 `ContextManager` 的角色很像：
+
+**每轮 LLM 调用前的“上下文装配工”**
+
+---
+
+## 9. Sandbox：不是一个模块，而是三层设计
+
+很多人会把 sandbox 理解成“就是 Docker 容器”。在 NanoDeer 里没那么简单。
+
+它其实分成三层：
+
+### 9.1 生命周期层
+
+由 `SandboxManager` 管：
+
+- 什么时候 acquire
+- 什么时候复用
+- 什么时候 release
+
+对应文件：
+- [src/nanodeer/agent/sandbox_manager.py](/home/kai/workspace/nanodeer/src/nanodeer/agent/sandbox_manager.py:1)
+
+### 9.2 Provider 层
+
+由 `DockerSandboxProvider` / `LocalSandboxProvider` 管：
+
+- 具体怎么创建执行环境
+- 具体怎么运行命令
+
+对应文件：
+- [src/nanodeer/sandbox/docker.py](/home/kai/workspace/nanodeer/src/nanodeer/sandbox/docker.py:1)
+- [src/nanodeer/sandbox/local.py](/home/kai/workspace/nanodeer/src/nanodeer/sandbox/local.py:1)
+
+### 9.3 Tool routing 层
+
+由 `SandboxExecTool` 管：
+
+- 哪些工具应该走沙箱
+- tool args 怎么翻译成可执行命令
+- 哪些参数需要 base64
+- 哪些路径需要校验和翻译
+
+对应文件：
+- [src/nanodeer/sandbox/tools.py](/home/kai/workspace/nanodeer/src/nanodeer/sandbox/tools.py:1)
+
+### 再加一个路径安全层
+
+路径翻译和路径校验由 [path.py](/home/kai/workspace/nanodeer/src/nanodeer/sandbox/path.py:1) 负责。
+
+它主要解决：
+
+- 禁止路径穿越
+- 屏蔽危险系统路径
+- 将虚拟路径和物理路径对齐
+
+### 为什么要做成多层
+
+因为“有个容器”不等于“工具执行安全”。
+
+真正要解决的是四件不同的事：
+
+1. 执行环境是什么
+2. 生命周期怎么管
+3. tool args 怎么变成命令
+4. 路径怎么限制
+
+分层后，代码可读性和可测性都更好。
+
+---
+
+## 10. Tools：模型能做什么
+
+默认工具集在 [src/nanodeer/tools/__init__.py](/home/kai/workspace/nanodeer/src/nanodeer/tools/__init__.py:20)。
+
+当前大体分成几类：
+
+- 文件类：`read_file` `write_file` `ls` `glob` `grep`
+- 执行类：`bash` `git` `exec_python`
+- 外部信息类：`web_search` `read_image`
+- 记忆类：`save_memory` `search_memory`
+- 计划类：`create_plan` `add_step` `update_step` `list_plans`
+- 协作类：`spawn_subagent` `get_subagent_results`
+- workflow 类：`invoke_skill`
+
+### 一个容易误解的点
+
+tool 定义本身，不一定等于 tool 执行逻辑本体。
+
+例如很多 sandbox-aware tool 的 Python 函数主体很薄，真正执行发生在 `SandboxExecTool` 里。
+
+所以要分清两个概念：
+
+- **tool schema**：LLM 看见的能力描述
+- **tool runtime**：系统如何真正执行这个能力
+
+---
+
+## 11. Memory：长期记忆是怎么工作的
+
+NanoDeer 的 memory 不是一个向量数据库，而是文件系统里的分层记忆。
+
+### 分层
+
+- `USER.md`
+  用户偏好、长期偏向
+- `MEMORY.md`
+  通用长期事实
+- `wiki/`
+  结构化知识页
+- `episodic/`
+  近期对话日志
+
+对应文件：
+- [src/nanodeer/agent/memory/storage.py](/home/kai/workspace/nanodeer/src/nanodeer/agent/memory/storage.py:1)
+- [src/nanodeer/agent/memory/layers.py](/home/kai/workspace/nanodeer/src/nanodeer/agent/memory/layers.py:1)
+
+### 两个动作
+
+1. **inject**
+   每轮把相关记忆注入 prompt
+
+2. **absorb**
+   每轮结束后把这轮对话摘要性地追加到 episodic
+
+这也很好理解：
+
+- `inject` 是“用记忆”
+- `absorb` 是“存经历”
+
+### 为什么不用纯向量库
+
+因为 NanoDeer 更强调：
+
+- 可检查
+- 可手改
+- 本地可审计
+- 小体量场景足够实用
+
+---
+
+## 12. Plan：不是 Todo 列表，而是共享工作上下文
+
+Plan 系统的作用不是“好看地列清单”，而是让模型知道：
+
+- 当前目标是什么
+- 已经做到哪一步
+- 哪些步骤有依赖
+- 下一步大概该推进什么
+
+存储是文件式 JSON 文档：
+
+- 每个 plan 一个文件
+- 再维护一个 index
+
+对应文件：
+- [src/nanodeer/plan/storage.py](/home/kai/workspace/nanodeer/src/nanodeer/plan/storage.py:1)
+
+在运行时：
+
+- `ContextManager._load_plan()` 会把所有 plan 格式化成 prompt 文本
+- LLM 再通过 plan tools 更新步骤
+
+所以 Plan 更像：
+
+**主 Agent 与未来轮次之间共享的一块进度白板**
+
+---
+
+## 13. Subagent：并行工人，不是第二套主系统
+
+Subagent 的设计目标很务实：
+
+- 主 Agent 卡在某个子任务时，可以把它分出去并行做
+- 子任务完成后，再由主 Agent 拉结果回来
+
+对应文件：
+- [src/nanodeer/subagent/coordinator.py](/home/kai/workspace/nanodeer/src/nanodeer/subagent/coordinator.py:1)
+
+### 工作方式
+
+1. 主 Agent 调 `spawn_subagent`
+2. `SubagentCoordinator.spawn()` 创建 worker
+3. worker 拿到独立 sandbox
+4. worker 运行自己的轻量 ReAct 循环
+5. 主 Agent 后续调 `get_subagent_results`
+
+### 为什么它不是“完整复制一份主 Agent”
+
+因为它被设计成更轻：
+
+- 没有完整 checkpoint
+- 没有 memory/plan 注入
+- prompt 更简
+- 只给安全的只读工具子集
+
+这说明 NanoDeer 的 subagent 设计偏工程保守：
+
+**宁可少给能力，也优先控制复杂度和风险。**
+
+---
+
+## 14. Checkpoint：为什么要单独用 SQLite
+
+memory 和 plan 用文件，checkpoint 用 SQLite，这是故意的混合设计。
+
+原因是它们的访问模式不同。
+
+### memory / plan
+
+更像知识和配置：
+
+- 需要可读
+- 需要可手动检查
+- 不需要高频复杂查询
+
+### checkpoint
+
+更像会话数据库：
+
+- 高频 save/load
+- 需要按 thread 列表查询
+- 需要 conversation metadata
+
+对应文件：
+- [src/nanodeer/agent/checkpoint/sqlite.py](/home/kai/workspace/nanodeer/src/nanodeer/agent/checkpoint/sqlite.py:1)
+
+所以选择是：
+
+- **可编辑内容** 用文件
+- **会话索引内容** 用 SQLite
+
+这是很实用的折中。
+
+---
+
+## 15. RuntimeFeatures：功能门在哪里
+
+NanoDeer 不是把所有能力永远写死，而是通过 `RuntimeFeatures` 控制装配。
+
+对应文件：
+- [src/nanodeer/agent/factory.py](/home/kai/workspace/nanodeer/src/nanodeer/agent/factory.py:17)
+
+可以开的能力包括：
+
+- `sandbox`
+- `compression`
+- `prompt_memory`
+- `prompt_plan`
+- `prompt_skills`
+- `prompt_subagent`
+
+这说明 `factory.py` 的地位很重要。
+
+它不是简单 new 对象，而是在做：
+
+**根据配置，拼出这一台 Agent 的能力组合。**
+
+---
+
+## 16. 一个完整请求的心智模型
+
+如果你想把 NanoDeer 想简单一点，可以用下面这个模型：
+
+### 第一步：先把工作台搭好
+
+- 恢复会话
+- 看看有没有历史
+- 看看有没有 plan、memory、uploads
+- 准备 system prompt
+
+### 第二步：给模型一个“这轮完整场景”
+
+- 用户刚说了什么
+- 之前聊了什么
+- 有哪些长期记忆
+- 当前计划是什么
+- 现在能用哪些工具
+
+### 第三步：模型做一个选择
+
+- 直接回答
+- 请求澄清
+- 调工具
+
+### 第四步：如果调工具，就把动作落地
+
+- 校验
+- 路由
+- 进入沙箱
+- 得到结果
+- 把结果作为新上下文再喂回模型
+
+### 第五步：把这一轮留痕
+
+- checkpoint
+- episodic memory
+- title
+- streaming events
+
+这就是 NanoDeer 的完整工作闭环。
+
+---
+
+## 17. 当前架构的优点
+
+### 优点 1：主链路可读
+
+`react.py` 基本就是执行真相，定位问题很直接。
+
+### 优点 2：模块职责比较干净
+
+- context 不管执行
+- sandbox manager 不管 prompt
+- engine 不管单轮推理细节
+
+### 优点 3：数据层可审计
+
+memory、plan、threads 都能直接查看。
+
+### 优点 4：很适合做研究型和工程型迭代
+
+因为每一层都不算“黑盒框架魔法”。
+
+---
+
+## 18. 当前架构的代价和边界
+
+### 代价 1：扩展点没有 middleware 系统那么统一
+
+新能力常常要改 executor 或 manager，而不是简单挂一个 hook。
+
+### 代价 2：部分 tool 的 schema 和 runtime 分离较深
+
+理解工具系统时，要同时看 tool 定义和 sandbox wrapper。
+
+### 代价 3：文档如果不跟代码同步，会很快漂移
+
+这也是为什么旧的 middleware/LangGraph 文档会很快过时。
+
+### 边界 4：`sandbox=False` 不是当前主要工作模式
+
+当前很多 sandbox-aware tools 的执行假设仍围绕 wrapper 设计，说明 NanoDeer 的主战场仍是“有沙箱的 harness”。
+
+---
+
+## 19. 这套架构最适合什么场景
+
+NanoDeer 很适合这些场景：
+
+- 想研究 Agent Harness 的核心骨架
+- 想要一个可读、可改、可本地部署的 Agent 底座
+- 想做文件操作、研究任务、轻量自动化
+- 想在不引入重框架的前提下，把 memory/plan/sandbox 组合起来
+
+它不追求的东西也很明确：
+
+- 不是流程编排平台
+- 不是超重型企业工作流系统
+- 不是“什么扩展都能靠插件无侵入挂上”的架构
+
+它追求的是：
+
+**用尽量少的层次，把一个真正可用的 Agent Harness 做扎实。**
+
+---
+
+## 20. 代码导航建议
+
+如果第一次读这个项目，推荐顺序：
+
+1. [src/nanodeer/engine.py](/home/kai/workspace/nanodeer/src/nanodeer/engine.py:1)
+2. [src/nanodeer/agent/react.py](/home/kai/workspace/nanodeer/src/nanodeer/agent/react.py:1)
+3. [src/nanodeer/agent/context.py](/home/kai/workspace/nanodeer/src/nanodeer/agent/context.py:1)
+4. [src/nanodeer/agent/prompt.py](/home/kai/workspace/nanodeer/src/nanodeer/agent/prompt.py:1)
+5. [src/nanodeer/agent/factory.py](/home/kai/workspace/nanodeer/src/nanodeer/agent/factory.py:1)
+6. [src/nanodeer/sandbox/tools.py](/home/kai/workspace/nanodeer/src/nanodeer/sandbox/tools.py:1)
+7. [src/nanodeer/agent/checkpoint/sqlite.py](/home/kai/workspace/nanodeer/src/nanodeer/agent/checkpoint/sqlite.py:1)
+8. [src/nanodeer/agent/memory/storage.py](/home/kai/workspace/nanodeer/src/nanodeer/agent/memory/storage.py:1)
+9. [src/nanodeer/plan/storage.py](/home/kai/workspace/nanodeer/src/nanodeer/plan/storage.py:1)
+10. [src/nanodeer/subagent/coordinator.py](/home/kai/workspace/nanodeer/src/nanodeer/subagent/coordinator.py:1)
+
+按这个顺序读，基本能从“外层入口”一路走到“底层能力”。
+
+---
+
+## 21. 一句话总结
+
+NanoDeer 的 harness 不是靠复杂编排撑起来的，而是靠一条短而明确的 ReAct 主链路，把状态、上下文、工具、沙箱和持久化稳稳接起来。

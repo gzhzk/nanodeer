@@ -1,149 +1,126 @@
-# NanoDeer 轻量化AI Super Agent系统项目蓝图
+# NanoDeer Blueprint 2026-04-01
 
-## 项目概述
-NanoDeer是一款基于**Python+LangGraph**打造的轻量化AI Super Agent系统，核心定位为**飞书生态适配的企业级轻量化Agent底座**，通过复刻DeerFlow大厂级分层架构、融合Claude Code核心设计亮点，在保持**Agent编排、沙箱隔离、主动式记忆、多Agent协作、企业级安全**五大核心能力完整的前提下，实现架构、依赖、功能、运行全维度轻量化。
+## 说明
 
-### 核心技术栈
-| 技术维度 | 核心技术/工具 | 选型理由 |
-|----------|---------------|----------|
-| 核心框架 | Python 3.10+、LangGraph 0.2+、LangChain Core | 轻量化、易上手，天然支持Agent状态机、编排与多智能体协作 |
-| 后端服务 | FastAPI | 高性能、异步支持，原生支持SSE流式响应 |
-| 沙箱隔离 | Docker SDK（必须） | 临时容器隔离，每次执行创建新容器，用完即销毁，更安全 |
-| 状态校验 | Pydantic v2 | 轻量高效的类型校验 |
-| 异步能力 | asyncio | 原生Python异步框架 |
-| 生态适配 | 飞书OpenAPI、云文档/多维表格SDK | 深度对接飞书生态 |
+这份文档保留的是 **2026-04-01 阶段的早期蓝图**，方便回看项目最初的设计意图。
 
----
+它 **不是当前实现的准确架构说明**。其中不少表述已经过时，包括但不限于：
 
-## 核心架构设计
+- `Python + LangGraph` 作为核心执行底座
+- `middleware chain` 作为主编排机制
+- 以飞书生态为中心的应用定位
+- 若干尚未落地或已经换实现方式的模块拆分
 
-NanoDeer采用**三层分层架构**：技术底座层 → 核心框架层（Harness） → 应用层（App）
+当前代码的真实运行时架构，请以这份文档为准。当前实现建议按 **五层结构** 理解：
 
-### 整体架构全景
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│ 技术底座层：Python+LangGraph                                             │
-│  ├─ 后端支撑：Python、LangGraph、LangChain Core、FastAPI                 │
-│  ├─ 沙箱支撑：Docker SDK（容器级，临时容器，用完即销毁）                  │
-│  ├─ 工具支撑：Pydantic v2、asyncio、python-dotenv                       │
-│  └─ 生态支撑：飞书OpenAPI、云文档/多维表格SDK                             │
-└───────────────────────────┬─────────────────────────────────────────────┘
-                            │
-┌───────────────────────────▼─────────────────────────────────────────────┐
-│ 核心框架层（Harness）：deerflow.*，可独立发布                             │
-│  ├─ 主agent + 状态机：Agent编排与状态管理核心                             │
-│  ├─ middlewares：中间件链，全流程逻辑拦截                                │
-│  ├─ sandbox：沙箱隔离系统，虚拟路径映射+安全执行                         │
-│  ├─ memory：Kairos主动式长期记忆系统                                     │
-│  ├─ subagents：多Agent协作系统，双线程池+并行调度                       │
-│  ├─ tools：工具系统，统一抽象基类+斜杠指令体系                           │
-│  ├─ security：企业级安全系统，6级权限验证+4层决策管道                     │
-│  └─ plan：Ultraplan深度任务规划系统                                      │
-└───────────────────────────┬─────────────────────────────────────────────┘
-                            │
-┌───────────────────────────▼─────────────────────────────────────────────┐
-│ 应用层（App）：app.*，业务落地与生态对接                                  │
-│  ├─ FastAPI接口层：SSE流式响应、线程级会话管理、RESTful API              │
-│  └─ 渠道集成层（channels）：飞书机器人（核心）                           │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
-### 核心框架层模块详解
-
-#### 1. 主agent + 状态机
-- **工厂模式**：通过`make_lead_agent()`创建Lead Agent实例，支持运行时配置
-- **ThreadState状态机**：自定义Pydantic BaseModel，封装沙箱信息、对话消息、工具产物、上传文件、线程ID
-- **LangGraph有状态图**："START→Agent节点→END"核心流程，支持中间件拦截、检查点持久化
-
-#### 2. middlewares：中间件链
-- 基于LangChain `before_model/after_model`钩子实现
-- **固定执行顺序**：
-  1. ThreadDataMiddleware（线程目录创建）
-  2. SandboxMiddleware（沙箱初始化）
-  3. SecurityMiddleware（安全校验）
-  4. UploadsMiddleware（上传文件注入）
-  5. CompressionMiddleware（上下文压缩）
-  6. MemoryMiddleware（记忆更新）
-  7. SubagentLimitMiddleware（并发限制）
-  8. ClarificationMiddleware（澄清请求拦截）
-- 插拔式设计：新增中间件仅需实现钩子函数
-
-#### 3. sandbox：沙箱隔离系统
-- **Docker临时容器**：只使用Docker方案，每次执行创建新容器，用完即销毁（更安全）
-- **Provider模式**：抽象基类`SandboxProvider`，`AioSandboxProvider`实现容器管理
-- **虚拟路径系统**：Agent视角仅可见`/mnt/user-data/`，通过`virtual2physical()`映射，物理路径绑定线程ID
-- **全链路安全校验**：`validate_path()`验证，防止路径穿越
-
-#### 4. memory：Kairos主动式记忆系统
-- **三组件架构**：MemoryQueue（30秒防抖）+ MemoryUpdater（LLM事实提取+去重）+ MemoryStorage（原子文件存储）
-- **4阶段梦境整理**：定向→收集→整合→修剪，自动整理为结构化Markdown笔记
-- **跨会话持久化**：记忆绑定用户ID（飞书ID），下次交互自动注入Top15核心事实
-
-#### 5. subagents：多Agent协作系统
-- **双线程池架构**：调度池（scheduler_pool）+ 执行池（execution_pool），最大并发数默认3
-- **依赖调度**：无依赖子任务并行执行，有依赖子任务按序执行
-- **超时控制**：所有子Agent任务设置15分钟超时，SSE实时推送状态
-
-#### 6. tools：工具系统
-- **统一抽象基类**：`NanoDeerTool`基类，所有工具继承实现`run()`方法
-- **工具分类**：沙箱工具（bash、ls、write_file、read_file）、子Agent工具（task）、飞书工具（feishu_doc）、通用工具（ask_clarification）
-- **斜杠指令体系**：`/ultraplan`、`/bash`、`/memory`等
-- **动态组装**：`get_available_tools()`根据运行时配置动态加载
-
-#### 7. security：企业级安全系统
-- **6级权限验证链**：AST语法解析→注入检测→用户规则匹配→沙盒自动允许→AI分类器→上下文决策
-- **4层决策管道**：输入接收→权限验证→决策引擎→执行反馈
-- **4种权限模式**：default、plan、auto、bypass
-- **飞书权限绑定**：权限规则与飞书UserID/部门ID/租户ID绑定
-
-#### 8. plan：Ultraplan深度任务规划
-- **大模型驱动拆解**：调用轻量大模型，将复杂任务拆解为分层、有依赖、可执行的子任务
-- **飞书可视化**：自动同步到飞书多维表格，支持用户手动调整
-- **与子Agent联动**：子任务自动分发到执行池
-
-### 应用层设计
-
-#### FastAPI接口层
-- `/api/threads/{thread_id}/runs/stream`：SSE流式接口
-- 线程级会话管理，`thread_id`区分不同会话
-- 异步处理所有请求，支持高并发
-
-#### 渠道集成层（channels）
-- 基于飞书OpenAPI实现消息接收/发送
-- 飞书生态全联动：云文档（记忆同步）、多维表格（任务规划）、组织架构（权限绑定）、消息推送
-- 用户身份映射：飞书UserID → NanoDeer用户ID
+- [docs/harness_architecture.md](/home/kai/workspace/nanodeer/docs/harness_architecture.md:1)
 
 ---
 
-## 核心架构设计原则
+## 从早期蓝图到当前实现，发生了什么变化
 
-1. **分层解耦**：技术底座层→核心框架层→应用层，单向依赖，无循环依赖
-2. **轻量化优先**：最小可用闭环，无冗余逻辑，不引入重型中间件
-3. **企业级能力不打折**：安全、记忆、多Agent协作等能力1:1复刻原版设计
-4. **高可扩展性**：统一抽象基类、插拔式中间件、动态工具组装
-5. **飞书生态原生适配**：所有核心能力围绕飞书生态设计
-6. **数据安全优先**：私有化部署，6级安全验证+组织架构权限绑定
+可以把这次演进理解成一件事：
+
+**NanoDeer 从“计划中的图式框架”逐步收敛成了“可直接读懂、可直接调试的原生 ReAct harness”。**
+
+最关键的变化有 5 点。
+
+### 1. 从 LangGraph 收敛到原生 ReAct 循环
+
+早期蓝图倾向于：
+
+- 图节点
+- 状态机边
+- 框架式编排
+
+当前实现改成了：
+
+- 一个明确的 `while` 主循环
+- 在 [react.py](/home/kai/workspace/nanodeer/src/nanodeer/agent/react.py:1) 中顺序推进
+- 不依赖图 DSL 或图编译
+
+这样做的好处是：
+
+- 控制流更直观
+- 调试路径更短
+- 状态更新更容易追踪
+
+### 2. 从 middleware chain 收敛到 Manager + inline orchestration
+
+早期蓝图里，很多横切逻辑都被设想成 middleware。
+
+当前实现则把这些职责拆成了几类更清楚的部件：
+
+- `NanoEngine`：应用入口和回合级收尾
+- `ReActExecutor`：主循环
+- `ContextManager`：上下文准备
+- `SandboxManager`：沙箱生命周期
+- 若干内联函数：clarification、bash 审计、重试、tool loop
+
+这意味着现在的架构重点不是“钩子系统”，而是：
+
+**把每个阶段显式写在主链路上。**
+
+### 3. 从“概念很多”收敛到“主链路优先”
+
+早期蓝图里有很多大的能力设想，比如：
+
+- 企业级安全链
+- 深度多 Agent 协作
+- 飞书生态耦合
+- 长程任务链路
+
+当前实现优先落地的是最小可工作的主链路：
+
+- 会话状态
+- prompt 组装
+- 工具调用
+- 沙箱隔离
+- checkpoint 恢复
+- memory / plan 注入
+- SSE 流式输出
+
+也就是说，NanoDeer 现在是一个 **先把底座跑稳** 的 harness，而不是一个“所有高阶能力已经完备”的平台。
+
+### 4. 从渠道中心转向 runtime 中心
+
+早期蓝图把“飞书生态适配”放得很前。
+
+当前实现更像一个通用 runtime：
+
+- 前端可以是 assistant-ui
+- 接入方式可以是 HTTP SSE
+- CLI / REPL 仍可调试
+- 重点是运行时本身，而不是某个特定渠道
+
+### 5. 从方案文档转向代码即架构
+
+现在最重要的架构说明，不再是“理论上有哪些模块”，而是：
+
+- 主链路到底怎么跑
+- 状态怎么存
+- 工具怎么执行
+- 沙箱怎么隔离
+- SSE 怎么把事件送出去
+
+所以后续如果继续演进，建议把这份文件当成历史归档，而把 [docs/harness_architecture.md](/home/kai/workspace/nanodeer/docs/harness_architecture.md:1) 当成当前事实来源。
 
 ---
 
-## 项目优势
+## 如何使用这份归档
 
-| 对比维度 | NanoDeer | 传统AI Agent框架 | 商业AI工具 |
-|----------|----------|-----------------|-----------|
-| 部署成本 | 极低：一键部署，零运维 | 高：需Docker/Redis/PG等中间件 | 中高：商业订阅费用高 |
-| 私有化能力 | 极好：本地/内网部署，数据全落地本地 | 好但部署复杂 | 差：云端为主 |
-| 飞书适配 | 极佳：深度联动飞书全生态 | 差：无针对性适配 | 中等：功能单一 |
-| 可定制性 | 极佳：模块化，插拔式设计 | 好但成本高 | 差：无法定制核心 |
-| 资源占用 | 极低：几百MB内存 | 高 | 高 |
-| 成本 | 零：免费开源 | 中：开源免费但运维成本高 | 高：订阅/定制费高 |
+这份文档仍然有参考价值，但建议只把它当成下面两类材料：
 
----
+1. **设计演进记录**
+   看项目最初想解决什么问题、为什么会有后来的取舍。
 
-## 项目总结
+2. **未来能力清单**
+   一些当时设想过但还没完整落地的板块，后续仍然可以重新评估是否值得实现。
 
-NanoDeer核心价值：**"核心能力不打折，落地成本降为零"**
+如果你的目标是理解今天的 NanoDeer，请直接读：
 
-- 保持Agent编排、沙箱隔离、主动式记忆、多Agent协作、企业级安全五大核心能力完整
-- 实现架构、依赖、功能、运行全维度轻量化
-- 深度适配飞书生态，实现飞书内一站式AI提效
-- 适合：飞书生态企业私有化AI助手、个人开发者、小团队协作、垂直领域Agent定制
+1. [docs/harness_architecture.md](/home/kai/workspace/nanodeer/docs/harness_architecture.md:1)
+2. [src/nanodeer/engine.py](/home/kai/workspace/nanodeer/src/nanodeer/engine.py:1)
+3. [src/nanodeer/agent/react.py](/home/kai/workspace/nanodeer/src/nanodeer/agent/react.py:1)
+4. [src/nanodeer/agent/context.py](/home/kai/workspace/nanodeer/src/nanodeer/agent/context.py:1)
+5. [src/nanodeer/sandbox/tools.py](/home/kai/workspace/nanodeer/src/nanodeer/sandbox/tools.py:1)

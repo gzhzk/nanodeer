@@ -2,12 +2,12 @@
 
 # NanoDeer
 
-**🚀 A 4-Layer AI Agent Harness Built from Scratch**
+**🚀 A 5-Layer AI Agent Harness Built from Scratch**
 
 [![MIT License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 [![Python 3.13](https://img.shields.io/badge/Python-3.13-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.135-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
-[![Docker](https://img.shields.io/badge/Docker-required-2496ED?style=flat-square&logo=docker&logoColor=white)](https://docker.com)
+[![Docker](https://img.shields.io/badge/Docker-optional-2496ED?style=flat-square&logo=docker&logoColor=white)](https://docker.com)
 [![Version 0.1.0](https://img.shields.io/badge/Version-0.1.0-orange?style=flat-square)](https://github.com/gzhzk/nanodeer)
 
 Native ReAct · ContextManager · Sandbox Isolation · HTTP SSE API
@@ -27,7 +27,7 @@ English | [中文](./README_zh.md)
 - [Background](#background)
 - [Key Differentiators](#key-differentiators)
 - [Architecture](#architecture)
-  - [4-Layer Overview](#4-layer-overview)
+  - [5-Layer Overview](#5-layer-overview)
   - [Execution Flow](#execution-flow)
   - [Storage Paths](#storage-paths)
   - [Signal & State Design](#signal--state-design)
@@ -60,7 +60,7 @@ nanodeer/
 │       │   ├── context.py        # Parallel context loader
 │       │   └── sandbox_manager.py # Sandbox lifecycle
 │       ├── sandbox/              # Docker + Local sandbox providers
-│       ├── tools/                # 18 built-in tools
+│       ├── tools/                # 19 built-in tools
 │       ├── subagent/             # SubagentCoordinator
 │       ├── skills/               # Skill workflow loader
 │       ├── engine.py             # NanoEngine entry point
@@ -68,7 +68,7 @@ nanodeer/
 │
 ├── frontend/                      # Next.js + assistant-ui chat UI
 ├── config.yaml                   # Harness configuration
-└── tests/                        # 344+ tests across 9 suites
+└── tests/                        # 283 tests in the current suite
 ```
 
 ---
@@ -192,37 +192,42 @@ Three design layers, not one:
 
 ## Architecture
 
-### 4-Layer Overview
+### 5-Layer Overview
 
 ```
     ┌────────────────────────────────────────────────────────────────────────────────────┐
-    │ Layer 4: HTTP API — FastAPI + SSE                                                  │
+    │ Layer 5: HTTP API — FastAPI + SSE                                                  │
     │   api.py — /api/chat (SSE), /api/chat/cancel, /api/conversations                   │
     │   repl.py — Async CLI REPL for debugging                                           │
     └────────────────────────────────────────────────────────────────────────────────────┘
                              │  calls engine.run_streaming()
                              ▼
     ┌────────────────────────────────────────────────────────────────────────────────────┐
-    │ Layer 3: NanoEngine — Application Entry                                            │
+    │ Layer 4: NanoEngine — Application Entry                                            │
     │   engine.py — creates ThreadState, calls executor                                  │
     │   App-layer compression lives here, not in middleware                              │
     └────────────────────────────────────────────────────────────────────────────────────┘
-                             │  calls executor.run()
+                             │  calls executor.run_streaming()
                              ▼
     ┌────────────────────────────────────────────────────────────────────────────────────┐
-    │ Layer 2: ReActExecutor (inline orchestration)                                     │
-    │   react.py   — Native async ReAct loop, 4 hooks                                    │
-    │   factory.py — NanoDeerFactory assembles chain                                     │
-    │   state.py   — ThreadState, TurnSignals, NextAction                                │
+    │ Layer 3: Execution Core                                                            │
+    │   react.py   — Native async ReAct loop                                             │
+    │   context.py — ContextManager                                                      │
+    │   sandbox_manager.py — Sandbox lifecycle                                           │
+    └────────────────────────────────────────────────────────────────────────────────────┘
+                             │  invokes tools through the execution loop
+                             ▼
+    ┌────────────────────────────────────────────────────────────────────────────────────┐
+    │ Layer 2: Capabilities                                                              │
+    │   tools/     — Built-in tools and execution surfaces                               │
     │   prompt.py  — Prompt construction                                                 │
+    │   subagent/  — SubagentCoordinator                                                 │
     └────────────────────────────────────────────────────────────────────────────────────┘
                              │  tools.invoke()
                              ▼
     ┌────────────────────────────────────────────────────────────────────────────────────┐
-    │ Layer 1: Tools + Sandbox + Data                                                    │
-    │   tools/     — 18 built-in tools                                                   │
-    │   sandbox/   — DockerSandboxProvider, path translation                             │
-    │   subagent/  — SubagentCoordinator (spawn/stop/list)                               │
+    │ Layer 1: Persistence / Isolation / Data                                            │
+    │   sandbox/   — DockerSandboxProvider, Local fallback, path translation             │
     │   memory/    — File-based MemoryStore (3 tiers)                                    │
     │   checkpoint/— SqliteCheckpointer for session resume                               │
     └────────────────────────────────────────────────────────────────────────────────────┘
@@ -372,7 +377,7 @@ NanoDeer uses two data carriers with distinct lifetimes:
 **Current (v0.1.0)** — Core framework stable:
 - ✅ Native ReAct loop with inline orchestration
 - ✅ Docker + Local sandbox with path isolation
-- ✅ 18 built-in tools
+- ✅ 19 built-in tools
 - ✅ File-based memory, plan, checkpoint, conversation persistence
 - ✅ HTTP SSE API (FastAPI)
 - ✅ CLI REPL

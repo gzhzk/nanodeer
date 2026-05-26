@@ -2,52 +2,69 @@
 
 ## Project Overview
 
-NanoDeer is a lightweight AI Agent framework with a **Python kernel** and **HTTP SSE API** for frontend consumption. It provides a native async ReAct executor with inline context loading, pluggable sandbox isolation (Docker/local), and built-in tools/memory/todo/subagent capabilities.
+NanoDeer is a lightweight AI agent harness centered on a native async ReAct loop and an HTTP SSE API.
 
-**Key differentiators**: no LangGraph dependency, no middleware chain (direct executor pattern), sandbox tool routing, FastAPI SSE streaming.
+Current implementation highlights:
+
+- no LangGraph dependency
+- no middleware chain
+- `NanoEngine` as the application entry
+- `ReActExecutor` as the execution core
+- `ContextManager` + `SandboxManager` for turn setup and isolation
+- sandbox-aware tool routing with Docker-first, Local fallback
+- file-based memory and plan storage
+- SQLite checkpoint persistence for conversation resume
+
+If you need the shortest mental model:
+
+**UI/API -> NanoEngine -> ReActExecutor -> tools/sandbox -> memory/plan/checkpoint**
 
 ---
 
-## Architecture: 4 Layers
+## Architecture: 5 Layers
 
-```
-Layer 4: HTTP API — FastAPI + SSE
-  src/nanodeer/cli/api.py
-    POST /api/chat          → SSE stream of events
-    POST /api/chat/cancel   → cancel running task
-    GET  /api/conversations → list conversations
-    GET  /api/conversations/{id} → get conversation messages
+```text
+Layer 5: HTTP API / UI Interface
+  frontend/                         -> Next.js + assistant-ui
+  src/nanodeer/cli/api.py          -> FastAPI + SSE API
+  src/nanodeer/cli/repl.py         -> async CLI REPL
+  src/nanodeer/cli/brain.py        -> legacy NDJSON stdio adapter
 
-Layer 3: NanoEngine — Application Entry Point
+Layer 4: Application Entry
   src/nanodeer/engine.py
-    NanoEngine.run(prompt) → RunResult
-    NanoEngine.run_streaming() → AsyncGenerator[StreamEvent]
+    NanoEngine.run()               -> RunResult
+    NanoEngine.run_streaming()     -> AsyncGenerator[dict]
 
-Layer 2: Orchestration
-  src/nanodeer/agent/
-    react.py            — Native async ReAct loop, inline context/sandbox
-    factory.py          — NanoDeerFactory assembles executor with dependencies
-    context.py          — ContextManager: parallel dirs + memory + plan + uploads
-    sandbox_manager.py  — SandboxManager: idempotent acquire/release
-    state.py            — ThreadState, TurnSignals, NextAction
-    messages.py         — HumanMessage, AIMessage, ToolMessage, ToolCall
+Layer 3: Execution Core
+  src/nanodeer/agent/react.py      -> ReActExecutor
+  src/nanodeer/agent/context.py    -> ContextManager
+  src/nanodeer/agent/sandbox_manager.py -> SandboxManager
+  src/nanodeer/agent/state.py      -> ThreadState, TurnSignals, NextAction
 
-Layer 1: Tools + Sandbox + Data
-  src/nanodeer/tools/      — 16 built-in tools
-  src/nanodeer/sandbox/    — Sandbox providers
-  src/nanodeer/subagent/   — SubagentExecutor
-  src/nanodeer/agent/memory/    — MemoryStore
-  src/nanodeer/agent/checkpoint/ — SqliteCheckpointer
-  src/nanodeer/agent/prompt.py  — Prompt assembly
+Layer 2: Capabilities
+  src/nanodeer/tools/              -> built-in tools
+  src/nanodeer/agent/prompt.py     -> prompt assembly
+  src/nanodeer/subagent/           -> SubagentCoordinator
+  src/nanodeer/skills/             -> skill loader
+
+Layer 1: Persistence / Isolation / Data
+  src/nanodeer/sandbox/            -> DockerSandboxProvider, LocalSandboxProvider, path translation
+  src/nanodeer/agent/memory/       -> MemoryStore + wiki storage
+  src/nanodeer/plan/               -> PlanStore + Plan/Step types
+  src/nanodeer/agent/checkpoint/   -> SqliteCheckpointer
 ```
 
-**Entry flow**: Browser/HTTP → api.py (SSE) → NanoEngine.run_streaming() → ReActExecutor.run() → Tools → Sandbox
+**Primary entry flow**:
 
-**Debug entry**: `python -m nanodeer.cli.repl` — simple async CLI REPL
+`Browser/HTTP -> /api/chat -> NanoEngine.run_streaming() -> ReActExecutor.run_streaming() -> tool loop -> SSE events`
+
+**Non-streaming flow**:
+
+`NanoEngine.run() -> ReActExecutor.run() -> RunResult`
 
 ---
 
-## API Protocol (Layer 4)
+## API Protocol
 
 **Base URL**: `http://127.0.0.1:20266`
 
@@ -56,14 +73,20 @@ Layer 1: Tools + Sandbox + Data
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/health` | Health check |
-| POST | `/api/chat` | Start streaming chat (returns SSE) |
-| POST | `/api/chat/cancel` | Cancel running chat by thread_id |
+| GET | `/api/info` | Runtime model/provider info |
+| POST | `/api/chat` | Start streaming chat, returns SSE |
+| POST | `/api/chat/cancel` | Cancel a running chat by `thread_id` |
 | GET | `/api/conversations` | List saved conversations |
-| GET | `/api/conversations/{thread_id}` | Get full conversation |
+| GET | `/api/conversations/{thread_id}` | Get a full conversation |
+| GET | `/api/conversations/{thread_id}/meta` | Get conversation metadata only |
+| DELETE | `/api/conversations/{thread_id}` | Delete a conversation |
+| PATCH | `/api/conversations/{thread_id}/rename` | Rename a conversation |
+| PATCH | `/api/conversations/{thread_id}/archive` | Archive a conversation |
+| PATCH | `/api/conversations/{thread_id}/unarchive` | Unarchive a conversation |
 
-### SSE Event Format
+### SSE Event Shape
 
-Each SSE event has `event: message` and `data: {...}` where the JSON matches:
+The frontend consumes JSON payloads yielded by `NanoEngine.run_streaming()`. Common events include:
 
 ```json
 {"event": "turn_start", "threadId": "...", "turnMs": 0}
@@ -77,251 +100,391 @@ Each SSE event has `event: message` and `data: {...}` where the JSON matches:
 {"event": "cancelled", "threadId": "..."}
 ```
 
+Notes:
+
+- normal completion emits a single `end`
+- clarification emits `wait`
+- cancellation is surfaced as `cancelled`
+
 ---
 
-## Execution Flow (ReAct Loop)
+## Main Execution Flow
 
+The current harness is built around a direct ReAct loop, not around middleware hooks.
+
+### Streaming path
+
+```text
+POST /api/chat
+  -> NanoEngine.run_streaming(prompt, thread_id)
+  -> restore/create ThreadState
+  -> ReActExecutor.run_streaming(state)
+  -> ContextManager.load(state, signals)
+  -> SandboxManager.acquire(state)
+  -> LLM.astream(...)
+  -> clarification check / tool-call aggregation
+  -> tool loop
+  -> checkpoint save
+  -> context absorb (episodic memory)
+  -> next turn or end
 ```
+
+### Non-streaming path
+
+```text
+NanoEngine.run(prompt, thread_id)
+  -> restore/create ThreadState
+  -> ReActExecutor.run(state)
+  -> same turn lifecycle without SSE token streaming
+```
+
+### ReAct loop outline
+
+```python
 while True:
-    # ① ContextManager.load()       — parallel: mkdir + memory + plan + uploads
-    # ② SandboxManager.acquire()    — idempotent, reuses _sandbox_context
-    # ③ Health check                — release if sandbox died
-    # ④ LLM.ainvoke()               — with retry on 429/5xx/timeout
-    # ⑤ Clarification check         — inline regex [CLARIFICATION] → WAIT
-    # ⑥ Tool loop:
-    #      for tc in tool_calls:
-    #          _bash_safe() audit   — inline, blocks chain/rm -rf/curl|bash
-    #          tool.ainvoke()        — SandboxExecTool for sandbox-aware tools
-    # ⑦ Checkpoint.save()           — persist state
-    # END → SandboxManager.release()
-    # PROCESS → continue
-    # WAIT → return to caller
+    # 1. ContextManager.load()       -> dirs + memory + plan + uploads
+    # 2. SandboxManager.acquire()    -> idempotent acquire/reuse
+    # 3. health check                -> detect released/dead sandbox
+    # 4. LLM call                    -> ainvoke() or astream(), with retry
+    # 5. clarification check         -> [CLARIFICATION] => WAIT
+    # 6. if no tool calls            -> END
+    # 7. else tool loop              -> one tool call at a time
+    # 8. checkpoint save
+    # 9. context.absorb()            -> episodic memory append
+    # 10. release sandbox on END
 ```
 
 ---
 
-## Key Concepts
+## Core Runtime Concepts
 
-### ContextManager (replaces 4 middlewares)
-- Single class in `context.py` that parallel-loads everything needed before an LLM turn:
-  - `_ensure_dirs()` — creates `{thread_id}/user-data/{workspace,uploads,outputs}`
-  - `_load_memory()` — reads USER.md/MEMORY.md via MemoryStore
-  - `_load_plan()` — reads plans via PlanStore
-  - `_process_uploads()` — writes uploaded files to uploads/
-  - `_scan_uploads()` — reads uploads/ dir into signals
-- All I/O is parallel via `asyncio.create_task` (dirs first, then uploads, then memory+plan)
+### NanoEngine
 
-### SandboxManager (replaces SandboxMiddleware)
-- `acquire(state)` — idempotent: checks state → `_sandbox_context` → provider.acquire()
-- `release(state)` — idempotent: checks status → provider.release() → clear_sandbox()
-- Module-level `_sandbox_context: dict[str, Sandbox]` persists sandbox across turns
-- Release only on END (PROCESS keeps container alive)
+`src/nanodeer/engine.py`
 
-### Tool Sandboxing
-- 9 sandbox-aware tools: `bash`, `git`, `read_file`, `write_file`, `ls`, `glob`, `grep`, `exec_python`, `web_search`
-- `SandboxExecTool` wraps them at factory assembly time via `_wrap_tools()`
-- Virtual path `/mnt/user-data/...` maps to host `{base_path}/{exec_id}/user-data/...`
-- Host-only tools (not in SANDBOX_TOOL_CONFIGS): `save_memory`, `save_user_memory`, `write_todo`, `list_todos`, `spawn_subagent`, `invoke_skill`, `read_image`
+Responsibilities:
 
-### Bash Audit (inline, no middleware)
-- `_bash_safe()` in `react.py` — blocks shell metacharacters (`;`, `&&`, `|`, etc.), high-risk patterns (`rm -rf /`, `curl | bash`, `mkfs`, `dd if=`)
-- Medium-risk commands (`pip install`, `chmod 777`) are warn-only, allowed
-- Runs before every tool call in the ReAct loop
+- create the configured chat model
+- restore thread state from checkpoint
+- append the latest user message
+- lazily build the executor via `NanoDeerFactory`
+- run streaming or non-streaming execution
+- perform app-layer compression after a turn
+- generate conversation titles asynchronously
 
-### Clarification Check (inline, no middleware)
-- `_check_clarification()` in `react.py` — checks if LLM output contains `[CLARIFICATION]...[/CLARIFICATION]`
-- Extracts question, sets `signals.clarification_question`, returns WAIT
+### ReActExecutor
 
-### LLM Retry (inline)
-- `_call_with_retry()` / `_astream_with_retry()` — exponential backoff (2s → 4s → 8s)
-- Retries on: 429, 5xx, `asyncio.TimeoutError`, connection/reset/timeout errors
-- Max 3 retries, then re-raises
+`src/nanodeer/agent/react.py`
 
-### Todo Persistence
-- TodoStore uses slug `"default"` (not thread_id) — single-user, cross-session
-- Loaded by ContextManager._load_plan() into `signals.plan_context`
+Responsibilities:
 
-### Subagent
-- Read-only safe tools subset: `web_search`, `read_file`, `ls`, `glob`, `grep`, `read_image`
-- No shell, no write, no spawn — filtered at factory assembly via `_SUBAGENT_SAFE_TOOLS`
-- Each subagent gets its own sandbox via `sandbox_provider.acquire(sub_id)`
+- own the main agent loop
+- bind tools to the model
+- stream tokens and aggregate tool calls
+- detect clarification requests
+- run tools and append `ToolMessage`s
+- set `NextAction` (`PROCESS`, `WAIT`, `END`)
+- save checkpoints
+
+### ContextManager
+
+`src/nanodeer/agent/context.py`
+
+Responsibilities:
+
+- ensure per-thread workspace dirs exist
+- load memory context
+- load plan context
+- process uploads
+- scan uploads into prompt-visible context
+- absorb the completed turn into episodic memory
+
+This replaces the need for separate thread/upload/memory/plan middlewares.
+
+### SandboxManager
+
+`src/nanodeer/agent/sandbox_manager.py`
+
+Responsibilities:
+
+- acquire sandbox instances lazily and idempotently
+- reuse sandbox across turns when still active
+- release sandbox on end
+- keep sandbox lifecycle logic out of the main prompt/building code
+
+### ThreadState vs TurnSignals
+
+`src/nanodeer/agent/state.py`
+
+- `ThreadState`: persistent cross-turn state
+  - thread id
+  - message history
+  - sandbox state
+  - title
+  - next action
+- `TurnSignals`: per-turn transient data
+  - clarification question
+  - memory context
+  - plan context
+  - uploads context
+  - per-turn metadata
+
+Rule of thumb:
+
+- if it must survive resume/reload, it belongs in `ThreadState`
+- if it only helps one turn build/run, it belongs in `TurnSignals`
+
+---
+
+## Tool System
+
+### Built-in tools
+
+Current default tool list is 19 tools:
+
+- File: `read_file`, `write_file`, `ls`, `glob`, `grep`
+- Shell/code: `bash`, `git`, `exec_python`
+- External/media: `web_search`, `read_image`
+- Skills: `invoke_skill`
+- Memory: `save_memory`, `search_memory`
+- Plan: `create_plan`, `add_step`, `update_step`, `list_plans`
+- Subagent: `spawn_subagent`, `get_subagent_results`
+
+Source:
+
+- `src/nanodeer/tools/__init__.py`
+
+### Sandbox-aware tools
+
+Sandbox wrapping is configured in `src/nanodeer/sandbox/tools.py`.
+
+The execution model is:
+
+- LLM sees the original tool schema
+- `NanoDeerFactory` wraps sandbox-aware tools for runtime execution
+- wrapped tools route to Docker or Local sandbox transparently
+
+Important design detail:
+
+- many file/shell tools rely on sandbox wrappers for actual execution
+- host-only tools, such as memory/plan/skills, execute directly outside sandbox
+
+### Host-side tools
+
+These are conceptually host-side capabilities:
+
+- `save_memory`
+- `search_memory`
+- `create_plan`
+- `add_step`
+- `update_step`
+- `list_plans`
+- `invoke_skill`
+
+### Bash safety
+
+`_bash_safe()` in `react.py` audits risky shell commands before execution.
+
+It blocks clearly dangerous patterns such as destructive filesystem wipes and suspicious shell chaining patterns.
+
+---
+
+## Memory, Plan, Checkpoint
 
 ### Memory
-- `MemoryStore` is file-based: `USER.md`, `MEMORY.md`, `episodic/` (per thread)
-- Loaded by ContextManager._load_memory() into `signals.memory_context`
+
+`src/nanodeer/agent/memory/storage.py`
+
+Current memory layout:
+
+- `USER.md` -> user preferences/context
+- `MEMORY.md` -> long-term flat memory
+- `episodic/YYYY-MM-DD.md` -> recent session logs
+- `wiki/entries/**` + `wiki/index.json` -> structured knowledge base
+
+`save_memory` supports:
+
+- `target="user"`
+- `target="memory"`
+- `target="wiki/<category>/<name>"`
+
+`search_memory` searches wiki entries, which are now the preferred structured memory format.
+
+### Plan
+
+`src/nanodeer/plan/storage.py`
+
+Current plan system is file-based, not todo-slug based.
+
+Storage:
+
+- `~/.nanodeer/plans/{plan_id}.json`
+- `~/.nanodeer/plans/index.json`
+
+Core types:
+
+- `Plan`
+- `Step`
+- `PlanStatus`
+- `StepStatus`
+
+Plan tools:
+
+- `create_plan`
+- `add_step`
+- `update_step`
+- `list_plans`
 
 ### Checkpoint
-- `SqliteCheckpointer` saves ThreadState to SQLite DB
-- Loaded at `run()` start if `thread_id` has checkpoint and messages are empty
-- Saved after each tool loop, before next turn or END
+
+`src/nanodeer/agent/checkpoint/sqlite.py`
+
+Checkpoint is SQLite-backed and is used for:
+
+- restoring prior thread state
+- conversation listing
+- metadata updates like rename/archive
+
+---
+
+## Subagent System
+
+Current implementation uses `SubagentCoordinator`, not the older executor naming.
+
+Files:
+
+- `src/nanodeer/subagent/__init__.py`
+- `src/nanodeer/subagent/coordinator.py`
+- `src/nanodeer/subagent/runner.py`
+- `src/nanodeer/subagent/types.py`
+
+Design:
+
+- coordinator-managed worker lifecycle
+- semaphore-based concurrency control
+- timeout per worker
+- dedicated worker ids
+- own sandbox per worker
+
+Safe tool subset for subagents:
+
+- `web_search`
+- `read_file`
+- `ls`
+- `glob`
+- `grep`
+- `read_image`
+
+Subagents intentionally do not get shell/write/spawn capabilities.
+
+---
+
+## Sandbox Design
+
+Files:
+
+- `src/nanodeer/sandbox/__init__.py`
+- `src/nanodeer/sandbox/docker.py`
+- `src/nanodeer/sandbox/local.py`
+- `src/nanodeer/sandbox/path.py`
+- `src/nanodeer/sandbox/tools.py`
+
+Key points:
+
+- Docker is preferred when available
+- if Docker provider setup fails, runtime can fall back to `LocalSandboxProvider`
+- virtual sandbox path is `/mnt/user-data/...`
+- host path is translated under the execution-specific directory
+- path validation protects against traversal
+
+This means "sandbox enabled" does not strictly mean "Docker required at runtime".
 
 ---
 
 ## Module Map
 
-### API (Layer 4)
+### Layer 5: UI / API
+
 | File | Role |
 |------|------|
-| `src/nanodeer/cli/api.py` | `app` (FastAPI) + `main()` — SSE streaming, conversations, cancellation |
+| `frontend/app/assistant.tsx` | primary assistant UI |
+| `frontend/components/nanodeer-adapter.ts` | frontend adapter for NanoDeer SSE |
+| `src/nanodeer/cli/api.py` | FastAPI app, SSE chat, conversation APIs |
+| `src/nanodeer/cli/repl.py` | async CLI REPL |
+| `src/nanodeer/cli/brain.py` | legacy stdio adapter |
 
-### NanoEngine (Layer 3)
+### Layer 4: Application Entry
+
 | File | Role |
 |------|------|
-| `src/nanodeer/engine.py` | `NanoEngine` — lazy-loads executor, `run()` / `run_streaming()`, `RunResult` |
-| `src/nanodeer/cli/brain.py` | Brain — NDJSON stdio adapter (legacy, for testing) |
-| `src/nanodeer/cli/repl.py` | REPL — async CLI debug interface |
+| `src/nanodeer/engine.py` | `NanoEngine`, model creation, resume, run, compression, title |
 
-### Core Loop (Layer 2)
+### Layer 3: Execution Core
+
 | File | Role |
 |------|------|
-| `src/nanodeer/agent/react.py` | `ReActExecutor` — native async ReAct loop, inline context/sandbox |
-| `src/nanodeer/agent/factory.py` | `NanoDeerFactory` — assembles executor, wraps tools, `RuntimeFeatures` |
-| `src/nanodeer/agent/context.py` | `ContextManager` — parallel context loading (dirs, memory, plan, uploads) |
-| `src/nanodeer/agent/sandbox_manager.py` | `SandboxManager` — idempotent sandbox acquire/release |
-| `src/nanodeer/agent/compression.py` | `CompressionMiddleware` — app-layer message compression |
-| `src/nanodeer/agent/state.py` | `ThreadState`, `SandboxState`, `TurnSignals`, `NextAction` |
-| `src/nanodeer/agent/messages.py` | `HumanMessage`, `AIMessage`, `ToolMessage`, `SystemMessage`, `ToolCall` |
-| `src/nanodeer/agent/prompt.py` | `build_lead_agent_prompt`, `PromptConfig` |
-| `src/nanodeer/config.py` | `HarnessConfig`, `get_config()` |
+| `src/nanodeer/agent/react.py` | `ReActExecutor`, retry, clarification, bash audit, tool loop |
+| `src/nanodeer/agent/context.py` | `ContextManager`, load + absorb |
+| `src/nanodeer/agent/sandbox_manager.py` | `SandboxManager` |
+| `src/nanodeer/agent/state.py` | state types |
+| `src/nanodeer/agent/messages.py` | NanoDeer message models |
+| `src/nanodeer/agent/factory.py` | `NanoDeerFactory`, `RuntimeFeatures` |
 
-### Inline Components (no middleware chain)
-| Component | Location | Role |
-|-----------|----------|------|
-| ContextManager | `agent/context.py` | Parallel mkdir + memory + plan + uploads loading |
-| SandboxManager | `agent/sandbox_manager.py` | Idempotent sandbox acquire/release |
-| _bash_safe() | `agent/react.py` | Inline bash command audit (metachar, rm -rf, curl-pipe) |
-| _check_clarification() | `agent/react.py` | Inline `[CLARIFICATION]` regex detection |
-| _call_with_retry() | `agent/react.py` | LLM retry with exponential backoff |
-| CompressionMiddleware | `agent/compression.py` | App-layer message compression, called by NanoEngine |
+### Layer 2: Capabilities
 
-### Sandbox
 | File | Role |
 |------|------|
-| `sandbox/__init__.py` | `Sandbox`, `SandboxProvider` ABC, `set_sandbox`/`get_sandbox`/`clear_sandbox` |
-| `sandbox/docker.py` | `DockerSandboxProvider` — ephemeral containers, volume mounts |
-| `sandbox/local.py` | `LocalSandboxProvider` — local directory per exec |
-| `sandbox/path.py` | `validate_path`, `virtual2physical`, `translate_and_validate` |
-| `sandbox/tools.py` | `SandboxToolWrapper`, `SandboxExecTool`, `wrap_tool_for_sandbox`, `SANDBOX_TOOL_CONFIGS` |
+| `src/nanodeer/tools/__init__.py` | default tool registry |
+| `src/nanodeer/agent/prompt.py` | lead agent prompt builder |
+| `src/nanodeer/subagent/coordinator.py` | subagent orchestration |
+| `src/nanodeer/skills/loader.py` | skill loading |
 
-### Tools (16 built-in)
-File tools: `read_file`, `write_file`, `ls`, `glob`, `grep`
-Shell: `bash`, `git`, `exec_python`
-Web: `web_search`, `read_image`
-Agent: `invoke_skill`, `save_memory`
-Plan: `write_todo`, `list_todos`
-Subagent: `spawn_subagent`, `get_subagent_results`
+### Layer 1: Persistence / Isolation / Data
 
-### Subagent
 | File | Role |
 |------|------|
-| `subagent/__init__.py` | `SubagentExecutor`, `run_many`, `set_executor`/`get_executor` globals |
-| `subagent/runner.py` | `SubagentExecutor.run()`, `run_many()`, `format_result()` |
-
-### Skills
-| File | Role |
-|------|------|
-| `skills/__init__.py` | Skill module exports |
-| `skills/loader.py` | `SkillLoader` — discovers and loads skill modules |
-
-### Data / Persistence
-| File | Role |
-|------|------|
-| `agent/memory/__init__.py` | `MemoryStore` — file-based (USER.md/MEMORY.md/episodic/) |
-| `agent/memory/storage.py` | `FileMemoryStore` implementation |
-| `agent/checkpoint/__init__.py` | `Checkpointer` ABC + `SqliteCheckpointer` |
-| `agent/checkpoint/base.py` | `Checkpointer` abstract base |
-| `agent/checkpoint/sqlite.py` | `SqliteCheckpointer` implementation |
-
-| `src/nanodeer/cli/config.py` | `AppConfig` — HTTP host/port/storage paths (independent from HarnessConfig) |
+| `src/nanodeer/sandbox/docker.py` | Docker sandbox provider |
+| `src/nanodeer/sandbox/local.py` | Local sandbox provider |
+| `src/nanodeer/sandbox/path.py` | virtual/physical path translation |
+| `src/nanodeer/sandbox/tools.py` | sandbox tool wrapping |
+| `src/nanodeer/agent/memory/storage.py` | `MemoryStore` |
+| `src/nanodeer/plan/storage.py` | `PlanStore` |
+| `src/nanodeer/agent/checkpoint/sqlite.py` | `SqliteCheckpointer` |
 
 ---
 
 ## Important Design Decisions
 
-1. **Package import path**: Use `from nanodeer.` (package lives at `src/nanodeer/`)
+1. **No LangGraph**
+   The harness uses a native async ReAct loop in `react.py`.
 
-2. **No LangGraph**: Native async ReAct loop in `react.py`. `langchain_core` used only for `BaseChatModel` and `BaseTool` interfaces.
+2. **No middleware chain**
+   Cross-cutting logic lives in explicit runtime components:
+   - inline functions in `react.py`
+   - `ContextManager`
+   - `SandboxManager`
+   - app-layer `NanoEngine` responsibilities
 
-3. **HTTP SSE over stdio**: `api.py` replaces the old brain.py + TS SDK stdio protocol. Frontend (assistant-ui) connects via SSE directly. No intermediate TypeScript layer.
+3. **Engine owns app concerns**
+   Checkpoint resume, compression, and title generation happen in `NanoEngine`, not in the executor loop.
 
-4. **No middleware chain**: All cross-cutting concerns are either inline in `react.py` (bash audit, clarification check, LLM retry) or grouped into `ContextManager` and `SandboxManager`. See [Execution Flow](#execution-flow-react-loop).
+4. **Streaming is the primary product path**
+   The frontend is built around SSE from `run_streaming()`.
 
-5. **Todo slug = "default"**: Not per-thread. Single-user harness — todos persist across sessions.
+5. **Tools are schema/runtime split**
+   LLM-facing tool schemas are original tools; runtime execution may be sandbox-wrapped.
 
-6. **Factory wraps tools at assembly**: `_wrap_tools()` converts raw tools to `SandboxExecTool` before passing to `ReActExecutor`. No runtime branching.
+6. **Sandbox lifecycle is turn-aware**
+   Sandboxes are reused across turns and released on end.
 
-7. **Sandbox release on END only**: `SandboxManager.release()` called only when `next_action == END`. `PROCESS` keeps container alive for next turn.
+7. **Structured memory prefers wiki entries**
+   `wiki/...` entries are the preferred long-term knowledge format over flat memory blobs.
 
-8. **Virtual path isolation**: All file access inside container via `/mnt/user-data/...` which maps to host path with `{exec_id}` isolation.
+8. **Plan system replaced old todo terminology**
+   Current runtime uses plans and steps, not `write_todo` / `list_todos`.
 
-9. **Clarification = WAIT**: Inline `_check_clarification()` sets WAIT and `signals.clarification_question`. Caller yields wait event; frontend prompts user.
+9. **Subagents are intentionally constrained**
+   They get a read-only safe subset and their own sandbox.
 
-10. **Subagent safe subset**: Subagents get only read-only tools (no shell, no write, no spawn). Filtered at factory assembly via `_SUBAGENT_SAFE_TOOLS`.
-
-11. **App/Harness config separation**: `app/config.py` (HTTP/storage) and `harness/config.py` (LLM/sandbox/memory) are independent, composed at runtime via runner.
-
----
-
-## Common Patterns
-
-### Adding a new sandbox-aware tool
-1. Add tool function decorated with `@tool` in `tools/`
-2. Add entry to `SANDBOX_TOOL_CONFIGS` in `sandbox/tools.py` with template/path_vars/b64_vars
-3. If special path handling needed, add to `translate_vars`
-
-### WAIT / Clarification flow
-```
-LLM → _check_clarification() sets WAIT → executor.run() returns state
-api.py yields wait event → frontend prompts user → calls /api/chat again
-```
-
-### save_memory append/replace mode
-```
-save_memory(content, mode="append"|"replace")
-→ Tool runs on host (not in SANDBOX_TOOL_CONFIGS)
-→ Writes directly to host MemoryStore via MemoryStore.append()/.replace()
-```
-
-### Sandbox fire-and-forget subagent
-```
-spawn_subagent(task="do X") → asyncio.create_task(executor.run())
-get_subagent_results(sub_id) → polls executor._results
-```
-
-### Adding a new inline concern to ReAct Loop
-1. If it's context loading (read before LLM) → add to `ContextManager.load()`
-2. If it's LLM output interception → add inline after `llm.ainvoke()` in `react.py`
-3. If it's tool-level security → add to `_bash_safe()` or the tool loop in `react.py`
-4. If it's lifecycle management → add to `SandboxManager.acquire()/release()`
-
----
-
-## Config
-
-**Harness Config** (`src/nanodeer/config.py`):
-`config.yaml` — `HarnessConfig` loaded via `get_config()`. Controls:
-- `thread.storage_path`: base for `{thread_id}/user-data/`
-- `thread.checkpointer_type`: "sqlite" (default)
-- `thread.db_path`: path to SQLite database directory
-- `sandbox.image`, `container_prefix`, `network_mode`
-- `agents.defaults`: provider, model, max_tokens, temperature
-
-**App Config** (`src/nanodeer/cli/config.py`):
-`AppConfig` — HTTP host/port/storage paths, independent from HarnessConfig.
-- `NANODEER_APP_HOST`, `NANODEER_APP_PORT`, `NANODEER_APP_UPLOAD_DIR`, etc.
-
-**Import path**: `from nanodeer.` (package lives at `src/nanodeer/`)
-
----
-
-## Testing
-
-- `tests/test_agent/` — executor, factory, engine, state, messages, compression
-- `tests/test_sandbox/` — context, path translation, sandbox exec, tools
-- `tests/test_tools_integration/` — tool schema validation, web_search, read_image, list_todos, write_todo, save_memory, invoke_skill
-- `tests/test_subagents/` — SubagentExecutor
-- `tests/test_plan/` — TodoStore
-- `tests/test_agent_memory/` — MemoryStore
-- `tests/test_skills/` — SkillLoader
-
-**Do not run tests in WSL** — can hang/freeze the environment.
+10. **Docker is preferred, not mandatory**
+    Local fallback exists when Docker is unavailable.

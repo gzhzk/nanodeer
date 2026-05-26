@@ -2,12 +2,12 @@
 
 # NanoDeer
 
-**🚀 从零实现的 4 层 AI Agent Harness**
+**🚀 从零实现的 5 层 AI Agent Harness**
 
 [![MIT License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 [![Python 3.13](https://img.shields.io/badge/Python-3.13-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.135-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
-[![Docker](https://img.shields.io/badge/Docker-required-2496ED?style=flat-square&logo=docker&logoColor=white)](https://docker.com)
+[![Docker](https://img.shields.io/badge/Docker-optional-2496ED?style=flat-square&logo=docker&logoColor=white)](https://docker.com)
 [![Version 0.1.0](https://img.shields.io/badge/Version-0.1.0-orange?style=flat-square)](https://github.com/gzhzk/nanodeer)
 
 原生 ReAct · ContextManager · 沙箱隔离 · HTTP SSE API
@@ -27,7 +27,7 @@
 - [背景](#背景)
 - [核心差异点](#核心差异点)
 - [架构](#架构)
-  - [4 层架构总览](#4-层架构总览)
+  - [5 层架构总览](#5-层架构总览)
   - [执行流程](#执行流程)
   - [存储路径](#存储路径)
   - [信号与状态设计](#信号与状态设计)
@@ -61,7 +61,7 @@ nanodeer/
 │       │   ├── messages.py       # HumanMessage、AIMessage、ToolMessage
 │       │   └── prompt.py         # 系统 prompt 组装
 │       ├── sandbox/              # Docker + Local 沙箱提供商
-│       ├── tools/                # 18 个内置工具
+│       ├── tools/                # 19 个内置工具
 │       ├── subagent/             # SubagentCoordinator
 │       ├── skills/               # 技能工作流加载器
 │       ├── engine.py             # NanoEngine 入口
@@ -69,7 +69,7 @@ nanodeer/
 │
 ├── frontend/                      # Next.js + assistant-ui 聊天界面
 ├── config.yaml                   # 配置文件
-└── tests/                        # 344+ 测试，9 个套件
+└── tests/                        # 当前套件共 283 个测试
 ```
 
 ---
@@ -203,38 +203,41 @@ NanoDeer 提供 FastAPI 服务器，使用 Server-Sent Events 实现实时流式
 
 ## 架构
 
-### 4 层架构总览
+### 5 层架构总览
 ```
     ┌────────────────────────────────────────────────────────────────────────────────────┐
-    │ Layer 4: HTTP API — FastAPI + SSE                                                  │
+    │ Layer 5: HTTP API — FastAPI + SSE                                                  │
     │   api.py — /api/chat (SSE), /api/chat/cancel, /api/conversations                   │
     │   repl.py — 异步 CLI REPL（调试用）                                                 │
     └────────────────────────────────────────────────────────────────────────────────────┘
                              │  调用 engine.run_streaming()
                              ▼
     ┌────────────────────────────────────────────────────────────────────────────────────┐
-    │ Layer 3: NanoEngine — 应用入口                                                      │
+    │ Layer 4: NanoEngine — 应用入口                                                      │
     │   engine.py — 创建 ThreadState，调用 executor                                       │
     │   应用层压缩在此处理，不在 middleware 中                                             │
     └────────────────────────────────────────────────────────────────────────────────────┘
-                             │  调用 executor.run()
+                             │  调用 executor.run_streaming()
                              ▼
     ┌────────────────────────────────────────────────────────────────────────────────────┐
-    │ Layer 2: ReActExecutor + ContextManager + SandboxManager                           │
-    │   react.py            — 原生 async ReAct 循环 + 内联 bash 审计 + clarification      │
-    │   context.py          — ContextManager 并行加载上下文                                │
-    │   sandbox_manager.py  — SandboxManager 幂等获取/释放沙箱                            │
-    │   factory.py          — NanoDeerFactory 组装 executor                               │
-    │   state.py            — ThreadState、TurnSignals、NextAction                        │
-    │   prompt.py           — Prompt 构建                                                 │
+    │ Layer 3: Execution Core                                                            │
+    │   react.py            — 原生 async ReAct 循环                                       │
+    │   context.py          — ContextManager                                              │
+    │   sandbox_manager.py  — Sandbox 生命周期管理                                       │
+    └────────────────────────────────────────────────────────────────────────────────────┘
+                             │  在执行循环中调用 tools
+                             ▼
+    ┌────────────────────────────────────────────────────────────────────────────────────┐
+    │ Layer 2: Capabilities                                                              │
+    │   tools/             — 内置工具与执行能力面                                         │
+    │   prompt.py          — Prompt 构建                                                 │
+    │   subagent/          — SubagentCoordinator                                         │
     └────────────────────────────────────────────────────────────────────────────────────┘
                              │  tools.invoke()
                              ▼
     ┌────────────────────────────────────────────────────────────────────────────────────┐
-    │ Layer 1: Tools + Sandbox + Data                                                    │
-    │   tools/     — 18 个内置工具                                                        │
-    │   sandbox/   — DockerSandboxProvider、路径翻译                                      │
-    │   subagent/  — SubagentCoordinator（spawn/stop/list）                              │
+    │ Layer 1: Persistence / Isolation / Data                                            │
+    │   sandbox/   — DockerSandboxProvider、Local fallback、路径翻译                      │
     │   memory/    — 基于文件的 MemoryStore（3 层）                                       │
     │   checkpoint/— SqliteCheckpointer 会话恢复                                          │
     └────────────────────────────────────────────────────────────────────────────────────┘
@@ -365,7 +368,7 @@ NanoDeer 使用两个生命周期不同的数据载体：
 **当前（v0.1.0）** — 核心框架稳定：
 - ✅ 原生 ReAct 循环（无 middleware 链）
 - ✅ Docker + Local 沙箱 + 路径隔离
-- ✅ 18 个内置工具
+- ✅ 19 个内置工具
 - ✅ 文件型记忆、计划、checkpoint、会话持久化
 - ✅ NDJSON brain/shell 协议
 - ✅ assistant-ui 前端（Next.js + assistant-ui）
