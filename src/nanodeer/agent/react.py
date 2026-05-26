@@ -271,6 +271,7 @@ class ReActExecutor:
 
             # 3. Health check
             if state.sandbox and state.sandbox.status == "released":
+                state.next_action = NextAction.END
                 break
 
             # 4. LLM call
@@ -298,6 +299,7 @@ class ReActExecutor:
             # 6. Tool loop
             if not raw_tcs:
                 # LLM ended without tool calls → final answer
+                state.next_action = NextAction.END
                 if self._checkpointer and state.thread_id:
                     await self._checkpointer.save(state.thread_id, state)
                 if self._context:
@@ -396,9 +398,10 @@ class ReActExecutor:
 
             # 3. Health check
             if state.sandbox and state.sandbox.status == "released":
+                state.next_action = NextAction.END
                 yield {"event": "end", "next_action": "end", "threadId": thread_id,
                        "durationMs": int(time.time() * 1000) - start_ms}
-                break
+                return
 
             # 4. LLM streaming call
             prompt = build_lead_agent_prompt(state, signals, self._prompt_config, self._model_name)
@@ -465,13 +468,16 @@ class ReActExecutor:
 
             # 6. Tool loop
             if not raw_tcs:
+                state.next_action = NextAction.END
                 if self._checkpointer and state.thread_id:
                     await self._checkpointer.save(state.thread_id, state)
                 if self._context:
                     await self._context.absorb(state)
+                if self._sandbox:
+                    await self._sandbox.release(state)
                 yield {"event": "end", "next_action": "end", "threadId": thread_id,
                        "durationMs": int(time.time() * 1000) - start_ms}
-                break
+                return
 
             exec_id = state.thread_id or "default"
             for tc in raw_tcs:
@@ -513,7 +519,7 @@ class ReActExecutor:
                 await self._sandbox.release(state) if self._sandbox else None
                 yield {"event": "end", "next_action": "end", "threadId": thread_id,
                        "durationMs": int(time.time() * 1000) - start_ms}
-                break
+                return
 
         yield {"event": "end", "next_action": state.next_action.value, "threadId": thread_id,
                "durationMs": int(time.time() * 1000) - start_ms}

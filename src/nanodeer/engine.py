@@ -40,7 +40,18 @@ class RunResult:
 
 
 # Providers whose native API follows OpenAI's format
-_OPENAI_COMPATIBLE = {"openai", "siliconflow", "gemini", "groq", "ollama"}
+_OPENAI_COMPATIBLE = {
+    "openai",
+    "openrouter",
+    "deepseek",
+    "moonshot",
+    "zhipu",
+    "dashscope",
+    "siliconflow",
+    "gemini",
+    "groq",
+    "ollama",
+}
 
 
 def _create_llm(config: HarnessConfig, model_name: str | None = None):

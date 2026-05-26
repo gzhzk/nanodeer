@@ -28,6 +28,11 @@ anthropic:
   api_key: $ANTHROPIC_API_KEY
   api_base: https://api.anthropic.com
 
+minimax:
+  api_key: $MINIMAX_API_KEY
+  api_base: $MINIMAX_BASE_URL  # Set to the Anthropic-compatible endpoint.
+
+# OpenAI-compatible providers (use ChatOpenAI)
 openrouter:
   api_key: $OPENROUTER_API_KEY
   api_base: https://openrouter.ai/api/v1
@@ -48,15 +53,10 @@ dashscope:
   api_key: $DASHSCOPE_API_KEY
   api_base: https://dashscope.aliyuncs.com/api/v1
 
-minimax:
-  api_key: $MINIMAX_API_KEY
-  api_base: $MINIMAX_BASE_URL  # Set in environment
-
 siliconflow:
   api_key: $SILICONFLOW_API_KEY
   api_base: https://api.siliconflow.cn
 
-# OpenAI-compatible providers (use ChatOpenAI)
 openai:
   api_key: $OPENAI_API_KEY
   api_base: https://api.openai.com/v1
@@ -97,7 +97,8 @@ subagents:
 
 thread:
   storage_path: ~/.nanodeer/threads
-  checkpointer_type: file
+  checkpointer_type: sqlite
+  db_path: ~/.nanodeer/threads
 
 # ============================================================================
 # Security Configuration
