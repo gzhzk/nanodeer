@@ -93,11 +93,23 @@ pip install -e .
 ### Run
 
 ```bash
-# Start HTTP API server
-nanodeer
-# Listening at http://127.0.0.1:20266
+# Start backend API + frontend dev server
+./scripts/dev.sh
+# Frontend: http://127.0.0.1:20265
+# Backend:  http://127.0.0.1:20266
+```
 
-# Or use CLI REPL for debugging
+For manual debugging:
+
+```bash
+# Terminal 1: HTTP API server
+.venv/bin/python -m nanodeer.cli.api
+
+# Terminal 2: frontend
+cd frontend
+npm run dev
+
+# Optional CLI REPL
 nanodeer-repl
 ```
 
@@ -115,7 +127,7 @@ npm run dev
 # Opens at http://127.0.0.1:20265
 ```
 
-Requires the backend API server running at `http://127.0.0.1:20266`.
+The frontend proxies `/api/*` to the backend at `http://127.0.0.1:20266`.
 
 ### Configuration
 

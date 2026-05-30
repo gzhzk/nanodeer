@@ -94,11 +94,23 @@ pip install -e .
 ### 运行
 
 ```bash
-# 启动 HTTP API 服务器
-nanodeer
-# 监听 http://127.0.0.1:20266
+# 一键启动后端 API + 前端开发服务器
+./scripts/dev.sh
+# 前端: http://127.0.0.1:20265
+# 后端: http://127.0.0.1:20266
+```
 
-# 或使用 CLI REPL 调试
+手动调试时也可以分开启动：
+
+```bash
+# 终端 1：HTTP API 服务器
+.venv/bin/python -m nanodeer.cli.api
+
+# 终端 2：前端
+cd frontend
+npm run dev
+
+# 可选：CLI REPL 调试
 nanodeer-repl
 ```
 
@@ -116,7 +128,7 @@ npm run dev
 # 打开 http://127.0.0.1:20265
 ```
 
-需要后端 API 服务器运行在 `http://127.0.0.1:20266`。
+前端会把 `/api/*` 代理到 `http://127.0.0.1:20266` 的后端服务。
 
 ### 配置
 
