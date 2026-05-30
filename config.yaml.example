@@ -12,8 +12,8 @@
 
 agents:
   defaults:
-    model: MiniMax-M2.7  # Model name
-    provider: minimax  # minimax, anthropic, openrouter, deepseek, moonshot, etc.
+    model: deepseek-ai/DeepSeek-V4-Flash  # Model name
+    provider: siliconflow  # minimax, anthropic, openrouter, deepseek, moonshot, etc.
     max_tokens: 8192
     temperature: 0.1
 
