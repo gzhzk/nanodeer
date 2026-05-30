@@ -37,6 +37,7 @@ class RunResult:
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     duration_ms: int = 0
     events: list = field(default_factory=list)  # JSON events from --json-events mode
+    metrics: dict[str, Any] = field(default_factory=dict)
 
 
 # Providers whose native API follows OpenAI's format
@@ -205,7 +206,13 @@ class NanoEngine:
         end_ms = int(time.time() * 1000)
         return self._extract_result(final_state, events, thread_id, end_ms - start_ms)
 
-    def _extract_result(self, state: ThreadState, events: list, thread_id: str, duration_ms: int) -> RunResult:
+    def _extract_result(
+        self,
+        state: ThreadState,
+        events: list,
+        thread_id: str,
+        duration_ms: int,
+    ) -> RunResult:
         """Extract RunResult from ThreadState and accumulated events."""
         # Patch duration into the final end event
         for ev in reversed(events):
@@ -240,7 +247,44 @@ class NanoEngine:
             tool_calls=tool_calls,
             duration_ms=duration_ms,
             events=events,
+            metrics=self._extract_metrics(events, duration_ms),
         )
+
+    @staticmethod
+    def _extract_metrics(events: list, duration_ms: int) -> dict[str, Any]:
+        """Compute lightweight benchmark metrics from trace events."""
+        usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        llm_calls = 0
+        tool_calls = 0
+        tool_errors = 0
+        turns = 0
+        retry_count = 0
+
+        for ev in events:
+            name = ev.get("event") or ev.get("type")
+            if name == "turn_start":
+                turns += 1
+            elif name == "llm_end":
+                llm_calls += 1
+                ev_usage = ev.get("usage") or {}
+                for key in usage:
+                    usage[key] += int(ev_usage.get(key) or 0)
+            elif name == "tool_call":
+                tool_calls += 1
+            elif name == "tool_result" and ev.get("success") is False:
+                tool_errors += 1
+            elif name == "llm_retry":
+                retry_count += 1
+
+        return {
+            "duration_ms": duration_ms,
+            "num_turns": turns,
+            "num_llm_calls": llm_calls,
+            "num_tool_calls": tool_calls,
+            "num_tool_errors": tool_errors,
+            "llm_retry_count": retry_count,
+            **usage,
+        }
 
     async def _generate_and_save_title(self, state: ThreadState) -> None:
         """Fire-and-forget: generate a short title from the first turn and persist."""
@@ -261,8 +305,18 @@ class NanoEngine:
                 text += f"\nAssistant: {first_assistant}"
 
             resp = await llm.ainvoke([
-                SystemMessage(content="You generate concise conversation titles. Return ONLY the title, no punctuation, no quotes, no explanation."),
-                LCHumanMessage(content=f"Generate a short title (≤6 words) for this conversation:\n\n{text[:1500]}"),
+                SystemMessage(
+                    content=(
+                        "You generate concise conversation titles. Return ONLY the title, "
+                        "no punctuation, no quotes, no explanation."
+                    )
+                ),
+                LCHumanMessage(
+                    content=(
+                        "Generate a short title (≤6 words) for this conversation:"
+                        f"\n\n{text[:1500]}"
+                    )
+                ),
             ])
 
             title = str(resp.content).strip().strip('"\'.,;:!?').strip()

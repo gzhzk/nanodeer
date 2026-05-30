@@ -17,7 +17,7 @@ import json
 import logging
 import re
 import time
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator
 
 from pydantic import ValidationError
 from langchain_core.messages import HumanMessage as LCHumanMessage, AIMessage as LAIMessage
@@ -94,6 +94,103 @@ def _bash_safe(tool_name: str, tool_args: dict) -> bool:
 _MAX_RETRIES = 3
 _BASE_DELAY = 2.0
 
+_TRACE_SCHEMA_VERSION = "nanodeer.trace.v1"
+_TRACE_PREVIEW_CHARS = 500
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _elapsed_ms(start: float) -> int:
+    return int((time.monotonic() - start) * 1000)
+
+
+def _preview(value: Any, limit: int = _TRACE_PREVIEW_CHARS) -> Any:
+    """Return a JSON-friendly, size-bounded value for trace payloads."""
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return value if len(value) <= limit else value[:limit] + "...[truncated]"
+    if isinstance(value, dict):
+        return {str(k): _preview(v, limit) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_preview(v, limit) for v in value[:20]]
+    return _preview(str(value), limit)
+
+
+def _trace(event: str, **fields) -> dict:
+    return {
+        "event": event,
+        "type": event,
+        "schema_version": _TRACE_SCHEMA_VERSION,
+        "ts_ms": _now_ms(),
+        **fields,
+    }
+
+
+def _normalize_event(event: dict, **defaults) -> dict:
+    name = event.get("event") or event.get("type") or "unknown"
+    normalized = _trace(name, **defaults)
+    normalized.update(event)
+    normalized["event"] = name
+    normalized["type"] = name
+    normalized.setdefault("schema_version", _TRACE_SCHEMA_VERSION)
+    normalized.setdefault("ts_ms", _now_ms())
+    return normalized
+
+
+def _extract_usage(resp_or_chunk) -> dict[str, int]:
+    """Extract token usage from common LangChain/OpenAI/Anthropic shapes."""
+    candidates = []
+    usage_metadata = getattr(resp_or_chunk, "usage_metadata", None)
+    if usage_metadata:
+        candidates.append(usage_metadata)
+    response_metadata = getattr(resp_or_chunk, "response_metadata", None)
+    if response_metadata:
+        candidates.extend([
+            response_metadata.get("token_usage") if isinstance(response_metadata, dict) else None,
+            response_metadata.get("usage") if isinstance(response_metadata, dict) else None,
+            response_metadata if isinstance(response_metadata, dict) else None,
+        ])
+    llm_output = getattr(resp_or_chunk, "llm_output", None)
+    if isinstance(llm_output, dict):
+        candidates.extend([llm_output.get("token_usage"), llm_output.get("usage"), llm_output])
+
+    usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    aliases = {
+        "input_tokens": ("input_tokens", "prompt_tokens", "prompt_token_count"),
+        "output_tokens": ("output_tokens", "completion_tokens", "completion_token_count"),
+        "total_tokens": ("total_tokens", "total_token_count"),
+    }
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        for out_key, keys in aliases.items():
+            if usage[out_key]:
+                continue
+            for key in keys:
+                value = candidate.get(key)
+                if isinstance(value, int):
+                    usage[out_key] = value
+                    break
+
+    if not usage["total_tokens"] and (usage["input_tokens"] or usage["output_tokens"]):
+        usage["total_tokens"] = usage["input_tokens"] + usage["output_tokens"]
+    return usage
+
+
+def _tool_success(content: Any, explicit_success: bool = True) -> bool:
+    if not explicit_success:
+        return False
+    text = str(content)
+    return not (
+        text.startswith("Error:")
+        or text.startswith("Error executing ")
+        or " not found" in text[:120]
+        or "requires parameters:" in text[:160]
+    )
+
 
 def _extract_status(exc: Exception) -> int | None:
     status = getattr(exc, 'status_code', None)
@@ -120,7 +217,7 @@ def _is_retryable(exc: Exception) -> bool:
     return False
 
 
-async def _call_with_retry(llm_call, logger_prefix: str = ""):
+async def _call_with_retry(llm_call, logger_prefix: str = "", on_retry=None):
     last_exc = None
     prefix = f"{logger_prefix}: " if logger_prefix else ""
     for attempt in range(_MAX_RETRIES + 1):
@@ -136,11 +233,13 @@ async def _call_with_retry(llm_call, logger_prefix: str = ""):
             delay = _BASE_DELAY * (2 ** attempt)
             logger.warning("%sLLM call failed (attempt %d/%d), retrying in %.1fs: %s",
                           prefix, attempt + 1, _MAX_RETRIES, delay, e)
+            if on_retry:
+                on_retry(attempt + 1, delay, e)
             await asyncio.sleep(delay)
     raise last_exc  # type: ignore[misc]
 
 
-async def _astream_with_retry(llm, messages, logger_prefix: str = ""):
+async def _astream_with_retry(llm, messages, logger_prefix: str = "", on_retry=None):
     attempt = 0
     started = False
     prefix = f"{logger_prefix}: " if logger_prefix else ""
@@ -162,6 +261,8 @@ async def _astream_with_retry(llm, messages, logger_prefix: str = ""):
             delay = _BASE_DELAY * (2 ** (attempt - 1))
             logger.warning("%sLLM stream failed (attempt %d/%d), retrying in %.1fs: %s",
                           prefix, attempt, _MAX_RETRIES, delay, e)
+            if on_retry:
+                on_retry(attempt, delay, e)
             await asyncio.sleep(delay)
 
 
@@ -252,6 +353,7 @@ class ReActExecutor:
 
         turn = 0
         accumulated_events: list[dict] = []
+        run_start_ms = _now_ms()
         while True:
             turn += 1
             state.next_action = NextAction.PROCESS
@@ -259,7 +361,27 @@ class ReActExecutor:
             signals._uploaded_files = uploaded_files
 
             # 1. Context loading
+            accumulated_events.append(_trace(
+                "turn_start",
+                turn=turn,
+                model=self._model_name,
+                threadId=state.thread_id or "default",
+                message_count=len(state.messages),
+                turnMs=_now_ms() - run_start_ms,
+            ))
+            context_start = time.monotonic()
             await self._context.load(state, signals)
+            accumulated_events.append(_trace(
+                "context_loaded",
+                turn=turn,
+                duration_ms=_elapsed_ms(context_start),
+                has_memory=bool(signals.memory_context),
+                has_plan=bool(signals.plan_context),
+                has_uploaded_files=bool(signals.uploaded_files_list),
+            ))
+            if signals.events:
+                accumulated_events.extend(_normalize_event(ev, turn=turn) for ev in signals.events)
+                signals.events.clear()
             turn_start = time.monotonic()
             logger.info("turn=%d context_loaded messages=%d sandbox=%s",
                         turn, len(state.messages),
@@ -267,7 +389,16 @@ class ReActExecutor:
 
             # 2. Sandbox acquire (if available)
             if self._sandbox:
+                sandbox_start = time.monotonic()
                 await self._sandbox.acquire(state)
+                accumulated_events.append(_trace(
+                    "sandbox_acquired",
+                    turn=turn,
+                    duration_ms=_elapsed_ms(sandbox_start),
+                    exec_id=state.sandbox.exec_id if state.sandbox else None,
+                    container_id=state.sandbox.container_id if state.sandbox else None,
+                    status=state.sandbox.status if state.sandbox else None,
+                ))
 
             # 3. Health check
             if state.sandbox and state.sandbox.status == "released":
@@ -278,13 +409,42 @@ class ReActExecutor:
             prompt = build_lead_agent_prompt(state, signals, self._prompt_config, self._model_name)
             lc_messages = self._to_lc_messages(state, prompt)
             llm_start = time.monotonic()
-            resp = await _call_with_retry(lambda: self.llm.ainvoke(lc_messages), f"turn={turn}")
+            accumulated_events.append(_trace(
+                "llm_start",
+                turn=turn,
+                model=self._model_name,
+                prompt_chars=sum(len(str(getattr(m, "content", ""))) for m in lc_messages),
+                message_count=len(lc_messages),
+            ))
+            resp = await _call_with_retry(
+                lambda: self.llm.ainvoke(lc_messages),
+                f"turn={turn}",
+                on_retry=lambda attempt, delay, exc: accumulated_events.append(_trace(
+                    "llm_retry",
+                    turn=turn,
+                    attempt=attempt,
+                    delay_seconds=delay,
+                    error_type=type(exc).__name__,
+                    error=_preview(str(exc), 200),
+                )),
+            )
 
             raw_tcs, our_tcs = self._extract_tool_calls(resp)
             state.messages.append(AIMessage(content=resp.content, tool_calls=our_tcs or None))
+            llm_duration_ms = _elapsed_ms(llm_start)
+            accumulated_events.append(_trace(
+                "llm_end",
+                turn=turn,
+                duration_ms=llm_duration_ms,
+                usage=_extract_usage(resp),
+                tool_call_count=len(raw_tcs),
+                tool_calls=[{"name": tc.get("name"), "id": tc.get("id")} for tc in raw_tcs],
+                content_chars=len(str(resp.content or "")),
+            ))
 
             tool_names = [tc["name"] for tc in raw_tcs]
-            content_preview = (str(resp.content)[:200] + "...") if resp.content and len(str(resp.content)) > 200 else str(resp.content) if resp.content else ""
+            content = str(resp.content) if resp.content else ""
+            content_preview = (content[:200] + "...") if len(content) > 200 else content
             logger.info("turn=%d llm duration=%.2fs tools=%d names=%s content=%s",
                         turn, time.monotonic() - llm_start,
                         len(raw_tcs), tool_names if raw_tcs else [], content_preview)
@@ -294,42 +454,108 @@ class ReActExecutor:
                 state.next_action = NextAction.WAIT
                 if self._checkpointer and state.thread_id:
                     await self._checkpointer.save(state.thread_id, state)
+                accumulated_events.append(_trace(
+                    "wait",
+                    turn=turn,
+                    question=_preview(signals.clarification_question),
+                ))
                 return state, accumulated_events
 
             # 6. Tool loop
             if not raw_tcs:
                 # LLM ended without tool calls → final answer
                 state.next_action = NextAction.END
+                checkpoint_start = time.monotonic()
                 if self._checkpointer and state.thread_id:
                     await self._checkpointer.save(state.thread_id, state)
+                    accumulated_events.append(_trace(
+                        "checkpoint_saved",
+                        turn=turn,
+                        duration_ms=_elapsed_ms(checkpoint_start),
+                    ))
+                absorb_start = time.monotonic()
                 if self._context:
                     await self._context.absorb(state)
+                    accumulated_events.append(_trace(
+                        "context_absorbed",
+                        turn=turn,
+                        duration_ms=_elapsed_ms(absorb_start),
+                    ))
                 break
 
             exec_id = state.thread_id or "default"
-            for tc in raw_tcs:
+            for call_index, tc in enumerate(raw_tcs):
                 tool = self._tool_map.get(tc["name"])
+                accumulated_events.append(_trace(
+                    "tool_call",
+                    turn=turn,
+                    call_index=call_index,
+                    name=tc["name"],
+                    id=tc.get("id"),
+                    args=_preview(tc.get("args", {})),
+                ))
 
                 # Bash audit (defense-in-depth for sandbox)
                 if not _bash_safe(tc["name"], tc.get("args", {})):
+                    accumulated_events.append(_trace(
+                        "tool_blocked",
+                        turn=turn,
+                        call_index=call_index,
+                        name=tc["name"],
+                        id=tc.get("id"),
+                        reason="bash_audit",
+                    ))
+                    accumulated_events.append(_trace(
+                        "tool_result",
+                        turn=turn,
+                        call_index=call_index,
+                        name=tc["name"],
+                        id=tc.get("id"),
+                        result="Blocked by bash audit",
+                        success=False,
+                        duration_ms=0,
+                    ))
                     state.next_action = NextAction.END
                     break
 
                 # Execute tool
+                tool_start = time.monotonic()
+                explicit_success = True
                 try:
-                    content = await tool.ainvoke(tc.get("args", {}), exec_id=exec_id) if tool else f"Tool {tc['name']} not found"
+                    if tool:
+                        content = await tool.ainvoke(tc.get("args", {}), exec_id=exec_id)
+                    else:
+                        explicit_success = False
+                        content = f"Tool {tc['name']} not found"
                 except ValidationError as e:
+                    explicit_success = False
                     field_names = [err.get("loc", ["?"])[0] for err in e.errors()]
-                    content = f"Tool '{tc['name']}' requires parameters: {', '.join(field_names)}. Please provide all required parameters."
-                    logger.warning("turn=%d tool=%s validation_error fields=%s", turn, tc["name"], field_names)
+                    content = (
+                        f"Tool '{tc['name']}' requires parameters: "
+                        f"{', '.join(field_names)}. Please provide all required parameters."
+                    )
+                    logger.warning(
+                        "turn=%d tool=%s validation_error fields=%s",
+                        turn,
+                        tc["name"],
+                        field_names,
+                    )
                 except Exception as e:
+                    explicit_success = False
                     content = f"Error executing {tc['name']}: {e}"
                     logger.warning("turn=%d tool=%s error=%s", turn, tc["name"], e)
 
+                success = _tool_success(content, explicit_success)
+
                 signals.events.append({
                     "type": "tool_result",
+                    "event": "tool_result",
+                    "turn": turn,
+                    "call_index": call_index,
                     "name": tc["name"],
                     "result": str(content)[:500],
+                    "success": success,
+                    "duration_ms": _elapsed_ms(tool_start),
                 })
 
                 state.messages.append(ToolMessage(
@@ -339,25 +565,43 @@ class ReActExecutor:
                 ))
 
             # 7. Checkpoint
+            checkpoint_start = time.monotonic()
             if self._checkpointer and state.thread_id:
                 await self._checkpointer.save(state.thread_id, state)
+                accumulated_events.append(_trace(
+                    "checkpoint_saved",
+                    turn=turn,
+                    duration_ms=_elapsed_ms(checkpoint_start),
+                ))
+            absorb_start = time.monotonic()
             if self._context:
                 await self._context.absorb(state)
+                accumulated_events.append(_trace(
+                    "context_absorbed",
+                    turn=turn,
+                    duration_ms=_elapsed_ms(absorb_start),
+                ))
 
             logger.info("turn=%d after_tools next_action=%s turn_duration=%.2fs",
                         turn, state.next_action.value, time.monotonic() - turn_start)
 
             if signals.events:
-                accumulated_events.extend(signals.events)
+                accumulated_events.extend(_normalize_event(ev, turn=turn) for ev in signals.events)
 
             if state.next_action == NextAction.END:
                 break
 
         # 8. Release sandbox on END
         if self._sandbox:
+            release_start = time.monotonic()
             await self._sandbox.release(state)
+            accumulated_events.append(_trace(
+                "sandbox_released",
+                duration_ms=_elapsed_ms(release_start),
+                status=state.sandbox.status if state.sandbox else None,
+            ))
 
-        accumulated_events.append({"type": "end", "next_action": state.next_action.value})
+        accumulated_events.append(_trace("end", next_action=state.next_action.value))
         return state, accumulated_events
 
     # -- run_streaming() ------------------------------------------------------
@@ -375,44 +619,80 @@ class ReActExecutor:
             if saved:
                 state = saved
 
+        turn = 0
         while True:
+            turn += 1
             state.next_action = NextAction.PROCESS
             signals = TurnSignals()
             signals._uploaded_files = uploaded_files
 
-            yield {"event": "turn_start", "model": self._model_name, "threadId": thread_id,
-                   "turnMs": int(time.time() * 1000) - start_ms}
+            yield _trace("turn_start", model=self._model_name, threadId=thread_id,
+                         turnMs=int(time.time() * 1000) - start_ms,
+                         turn=turn,
+                         message_count=len(state.messages))
 
             # 1. Context loading
+            context_start = time.monotonic()
             await self._context.load(state, signals)
+            yield _trace(
+                "context_loaded",
+                duration_ms=_elapsed_ms(context_start),
+                has_memory=bool(signals.memory_context),
+                has_plan=bool(signals.plan_context),
+                has_uploaded_files=bool(signals.uploaded_files_list),
+                threadId=thread_id,
+                turn=turn,
+            )
             if signals.memory_context:
-                yield {"event": "memory_context", "has_memory": True, "threadId": thread_id}
+                yield _trace("memory_context", has_memory=True, threadId=thread_id, turn=turn)
             if signals.plan_context:
-                yield {"event": "plan_context", "threadId": thread_id}
+                yield _trace("plan_context", threadId=thread_id, turn=turn)
 
             # 2. Sandbox acquire
             if self._sandbox:
+                sandbox_start = time.monotonic()
                 await self._sandbox.acquire(state)
                 if state.sandbox and state.sandbox.container_id:
-                    yield {"event": "sandbox_acquired", "exec_id": state.sandbox.exec_id, "threadId": thread_id}
+                    yield _trace(
+                        "sandbox_acquired",
+                        exec_id=state.sandbox.exec_id,
+                        container_id=state.sandbox.container_id,
+                        status=state.sandbox.status,
+                        duration_ms=_elapsed_ms(sandbox_start),
+                        threadId=thread_id,
+                        turn=turn,
+                    )
 
             # 3. Health check
             if state.sandbox and state.sandbox.status == "released":
                 state.next_action = NextAction.END
-                yield {"event": "end", "next_action": "end", "threadId": thread_id,
-                       "durationMs": int(time.time() * 1000) - start_ms}
+                yield _trace("end", next_action="end", threadId=thread_id, turn=turn,
+                             durationMs=int(time.time() * 1000) - start_ms)
                 return
 
             # 4. LLM streaming call
             prompt = build_lead_agent_prompt(state, signals, self._prompt_config, self._model_name)
             lc_messages = self._to_lc_messages(state, prompt)
+            llm_start = time.monotonic()
+            yield _trace(
+                "llm_start",
+                model=self._model_name,
+                prompt_chars=sum(len(str(getattr(m, "content", ""))) for m in lc_messages),
+                message_count=len(lc_messages),
+                threadId=thread_id,
+                turn=turn,
+            )
 
             raw_tcs_by_index: dict[int, dict] = {}
             raw_args_buf: dict[int, str] = {}
             collected_content = ""
             collected_reasoning = ""
+            stream_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
 
             async for chunk in _astream_with_retry(self.llm, lc_messages, f"turn={thread_id}"):
+                chunk_usage = _extract_usage(chunk)
+                if chunk_usage["total_tokens"]:
+                    stream_usage = chunk_usage
                 reasoning = chunk.additional_kwargs.get("reasoning_content", "")
                 if reasoning:
                     collected_reasoning += reasoning
@@ -453,55 +733,140 @@ class ReActExecutor:
                         pass
 
             raw_tcs = [tc for tc in raw_tcs_by_index.values() if tc["name"]]
-            our_tcs = [ToolCall(name=tc["name"], args=tc["args"], id=tc.get("id")) for tc in raw_tcs]
+            our_tcs = [
+                ToolCall(name=tc["name"], args=tc["args"], id=tc.get("id"))
+                for tc in raw_tcs
+            ]
             state.messages.append(AIMessage(content=collected_content, tool_calls=our_tcs or None))
+            yield _trace(
+                "llm_end",
+                duration_ms=_elapsed_ms(llm_start),
+                usage=stream_usage,
+                tool_call_count=len(raw_tcs),
+                tool_calls=[{"name": tc.get("name"), "id": tc.get("id")} for tc in raw_tcs],
+                content_chars=len(collected_content),
+                reasoning_chars=len(collected_reasoning),
+                threadId=thread_id,
+                turn=turn,
+            )
 
-            yield {"event": "assistant_response", "text": collected_content, "has_tools": bool(raw_tcs), "threadId": thread_id}
+            yield {
+                "event": "assistant_response",
+                "text": collected_content,
+                "has_tools": bool(raw_tcs),
+                "threadId": thread_id,
+            }
 
             # 5. Clarification check
             if self._check_clarification(collected_content, signals):
                 state.next_action = NextAction.WAIT
                 if self._checkpointer and state.thread_id:
                     await self._checkpointer.save(state.thread_id, state)
-                yield {"event": "wait", "question": signals.clarification_question, "threadId": thread_id}
+                yield _trace("wait", question=_preview(signals.clarification_question),
+                             threadId=thread_id, turn=turn)
                 return
 
             # 6. Tool loop
             if not raw_tcs:
                 state.next_action = NextAction.END
+                checkpoint_start = time.monotonic()
                 if self._checkpointer and state.thread_id:
                     await self._checkpointer.save(state.thread_id, state)
+                    yield _trace(
+                        "checkpoint_saved",
+                        duration_ms=_elapsed_ms(checkpoint_start),
+                        threadId=thread_id,
+                        turn=turn,
+                    )
+                absorb_start = time.monotonic()
                 if self._context:
                     await self._context.absorb(state)
+                    yield _trace(
+                        "context_absorbed",
+                        duration_ms=_elapsed_ms(absorb_start),
+                        threadId=thread_id,
+                        turn=turn,
+                    )
                 if self._sandbox:
+                    release_start = time.monotonic()
                     await self._sandbox.release(state)
-                yield {"event": "end", "next_action": "end", "threadId": thread_id,
-                       "durationMs": int(time.time() * 1000) - start_ms}
+                    yield _trace("sandbox_released", duration_ms=_elapsed_ms(release_start),
+                                 status=state.sandbox.status if state.sandbox else None,
+                                 threadId=thread_id, turn=turn)
+                yield _trace("end", next_action="end", threadId=thread_id,
+                             turn=turn, durationMs=int(time.time() * 1000) - start_ms)
                 return
 
             exec_id = state.thread_id or "default"
-            for tc in raw_tcs:
+            for call_index, tc in enumerate(raw_tcs):
                 tool = self._tool_map.get(tc["name"])
 
                 # Bash audit
                 if not _bash_safe(tc["name"], tc.get("args", {})):
                     state.next_action = NextAction.END
+                    yield _trace(
+                        "tool_blocked",
+                        call_index=call_index,
+                        name=tc["name"],
+                        id=tc.get("id"),
+                        reason="bash_audit",
+                        threadId=thread_id,
+                        turn=turn,
+                    )
+                    yield _trace(
+                        "tool_result",
+                        call_index=call_index,
+                        name=tc["name"],
+                        id=tc.get("id"),
+                        result="Blocked by bash audit",
+                        success=False,
+                        duration_ms=0,
+                        threadId=thread_id,
+                        turn=turn,
+                    )
                     break
 
-                yield {"event": "tool_call", "name": tc["name"], "args": tc.get("args", {}), "threadId": thread_id}
+                yield _trace(
+                    "tool_call",
+                    call_index=call_index,
+                    name=tc["name"],
+                    id=tc.get("id"),
+                    args=tc.get("args", {}),
+                    args_preview=_preview(tc.get("args", {})),
+                    threadId=thread_id,
+                    turn=turn,
+                )
 
+                tool_start = time.monotonic()
+                explicit_success = True
                 try:
-                    content = await tool.ainvoke(tc.get("args", {}), exec_id=exec_id) if tool else f"Tool {tc['name']} not found"
+                    if tool:
+                        content = await tool.ainvoke(tc.get("args", {}), exec_id=exec_id)
+                    else:
+                        explicit_success = False
+                        content = f"Tool {tc['name']} not found"
                 except ValidationError as e:
+                    explicit_success = False
                     field_names = [err.get("loc", ["?"])[0] for err in e.errors()]
                     content = f"Tool '{tc['name']}' requires parameters: {', '.join(field_names)}."
                     logger.warning("tool=%s validation_error fields=%s", tc["name"], field_names)
                 except Exception as e:
+                    explicit_success = False
                     content = f"Error executing {tc['name']}: {e}"
                     logger.warning("tool=%s error=%s", tc["name"], e)
 
                 result_str = str(content)[:500]
-                yield {"event": "tool_result", "name": tc["name"], "result": result_str, "success": True, "threadId": thread_id}
+                yield _trace(
+                    "tool_result",
+                    call_index=call_index,
+                    name=tc["name"],
+                    id=tc.get("id"),
+                    result=result_str,
+                    success=_tool_success(content, explicit_success),
+                    duration_ms=_elapsed_ms(tool_start),
+                    threadId=thread_id,
+                    turn=turn,
+                )
 
                 state.messages.append(ToolMessage(
                     tool_call_id=tc.get("id", ""),
@@ -510,16 +875,35 @@ class ReActExecutor:
                 ))
 
             # 7. Checkpoint
+            checkpoint_start = time.monotonic()
             if self._checkpointer and state.thread_id:
                 await self._checkpointer.save(state.thread_id, state)
+                yield _trace(
+                    "checkpoint_saved",
+                    duration_ms=_elapsed_ms(checkpoint_start),
+                    threadId=thread_id,
+                    turn=turn,
+                )
+            absorb_start = time.monotonic()
             if self._context:
                 await self._context.absorb(state)
+                yield _trace(
+                    "context_absorbed",
+                    duration_ms=_elapsed_ms(absorb_start),
+                    threadId=thread_id,
+                    turn=turn,
+                )
 
             if state.next_action == NextAction.END:
-                await self._sandbox.release(state) if self._sandbox else None
-                yield {"event": "end", "next_action": "end", "threadId": thread_id,
-                       "durationMs": int(time.time() * 1000) - start_ms}
+                if self._sandbox:
+                    release_start = time.monotonic()
+                    await self._sandbox.release(state)
+                    yield _trace("sandbox_released", duration_ms=_elapsed_ms(release_start),
+                                 status=state.sandbox.status if state.sandbox else None,
+                                 threadId=thread_id, turn=turn)
+                yield _trace("end", next_action="end", threadId=thread_id,
+                             turn=turn, durationMs=int(time.time() * 1000) - start_ms)
                 return
 
-        yield {"event": "end", "next_action": state.next_action.value, "threadId": thread_id,
-               "durationMs": int(time.time() * 1000) - start_ms}
+        yield _trace("end", next_action=state.next_action.value, threadId=thread_id,
+                     turn=turn, durationMs=int(time.time() * 1000) - start_ms)

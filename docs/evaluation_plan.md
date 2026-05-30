@@ -76,6 +76,46 @@ cost = (input_tokens / 1_000_000) * input_price
 
 Provider 单价维护在 `benchmarks/pricing.yaml` 中。
 
+### 2.3 Trace Schema v1
+
+执行层输出的 trace 事件使用普通 JSON dict，统一包含：
+
+| 字段 | 含义 |
+|------|------|
+| `schema_version` | 固定为 `nanodeer.trace.v1` |
+| `event` / `type` | 事件名；两者保持一致，兼容 SSE 和非流式事件 |
+| `ts_ms` | 事件产生的毫秒时间戳 |
+| `turn` | ReAct 轮次，从 1 开始 |
+| `threadId` | 会话 ID；流式路径必带，非流式路径在关键入口事件中带 |
+
+核心事件：
+
+| 事件 | 关键字段 |
+|------|----------|
+| `turn_start` | `model`, `message_count`, `turnMs` |
+| `context_loaded` | `duration_ms`, `has_memory`, `has_plan`, `has_uploaded_files` |
+| `sandbox_acquired` / `sandbox_released` | `duration_ms`, `exec_id`, `container_id`, `status` |
+| `llm_start` | `model`, `prompt_chars`, `message_count` |
+| `llm_retry` | `attempt`, `delay_seconds`, `error_type`, `error` |
+| `llm_end` | `duration_ms`, `usage`, `tool_call_count`, `tool_calls`, `content_chars` |
+| `tool_call` | `name`, `id`, `call_index`, `args` / `args_preview` |
+| `tool_result` | `name`, `id`, `call_index`, `success`, `duration_ms`, `result` |
+| `checkpoint_saved` / `context_absorbed` | `duration_ms` |
+| `wait` | `question` |
+| `end` | `next_action`, `duration_ms` / `durationMs` |
+
+`RunResult.metrics` 从 trace 聚合出第一批稳定指标：
+
+- `duration_ms`
+- `num_turns`
+- `num_llm_calls`
+- `num_tool_calls`
+- `num_tool_errors`
+- `llm_retry_count`
+- `input_tokens`
+- `output_tokens`
+- `total_tokens`
+
 ---
 
 ## 3. 任务定义格式

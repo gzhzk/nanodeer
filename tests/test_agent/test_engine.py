@@ -27,6 +27,39 @@ class TestRunResult:
         assert r.next_action == NextAction.PROCESS
         assert r.tool_calls == []
         assert r.duration_ms == 0
+        assert r.metrics == {}
+
+    def test_extract_metrics_from_trace_events(self):
+        events = [
+            {"event": "turn_start"},
+            {
+                "event": "llm_end",
+                "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+            },
+            {"event": "tool_call", "name": "read_file"},
+            {"event": "tool_result", "name": "read_file", "success": True},
+            {"event": "turn_start"},
+            {"event": "llm_retry"},
+            {
+                "event": "llm_end",
+                "usage": {"input_tokens": 7, "output_tokens": 3, "total_tokens": 10},
+            },
+            {"event": "tool_result", "name": "bash", "success": False},
+        ]
+
+        metrics = NanoEngine._extract_metrics(events, duration_ms=123)
+
+        assert metrics == {
+            "duration_ms": 123,
+            "num_turns": 2,
+            "num_llm_calls": 2,
+            "num_tool_calls": 1,
+            "num_tool_errors": 1,
+            "llm_retry_count": 1,
+            "input_tokens": 17,
+            "output_tokens": 8,
+            "total_tokens": 25,
+        }
 
 
 class TestNanoEngineInit:

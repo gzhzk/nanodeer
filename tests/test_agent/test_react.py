@@ -16,9 +16,10 @@ class MockLLM:
     Subsequent calls return no tool_calls (to prevent infinite ReAct loop).
     """
 
-    def __init__(self, response_content="Done", tool_calls=None):
+    def __init__(self, response_content="Done", tool_calls=None, usage_metadata=None):
         self.response_content = response_content
         self._tool_calls = tool_calls
+        self.usage_metadata = usage_metadata or {}
         self.call_count = 0
 
     def bind_tools(self, tools):
@@ -29,6 +30,7 @@ class MockLLM:
         resp = MagicMock()
         resp.content = self.response_content
         resp.tool_calls = self._tool_calls if self.call_count == 1 else None
+        resp.usage_metadata = self.usage_metadata
         return resp
 
 
@@ -138,10 +140,40 @@ class TestReActLoop:
         state = ThreadState(thread_id="t1", messages=[HumanMessage(content="Hi")])
         final, _events = await executor.run(state)
 
-        # After tool execution, LLM runs again: Human + AIMessage(tc) + ToolMessage + AIMessage(final)
+        # After tool execution, LLM runs again:
+        # Human + AIMessage(tc) + ToolMessage + AIMessage(final)
         assert len(final.messages) == 4
         tool_msg = final.messages[-2]  # Second-to-last is the ToolMessage
         assert tool_msg.content == "tool result"
+
+    @pytest.mark.asyncio
+    async def test_run_emits_structured_trace_events(self):
+        """Non-streaming runs emit per-turn, LLM, and tool trace events."""
+        tc = {"name": "mock_tool", "args": {"arg1": "value1"}, "id": "call-1"}
+        usage = {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
+
+        llm = MockLLM(response_content="Thinking...", tool_calls=[tc], usage_metadata=usage)
+        tools = [MockTool(name="mock_tool", result="tool result")]
+        executor = ReActExecutor(llm, tools, context_manager=MockContext())
+
+        state = ThreadState(thread_id="t1", messages=[HumanMessage(content="Hi")])
+        _final, events = await executor.run(state)
+
+        names = [event["event"] for event in events]
+        assert names.count("turn_start") == 2
+        assert names.count("llm_start") == 2
+        assert names.count("llm_end") == 2
+        assert "tool_call" in names
+        assert "tool_result" in names
+        assert events[-1]["event"] == "end"
+        assert all("schema_version" in event for event in events)
+
+        llm_end = next(event for event in events if event["event"] == "llm_end")
+        assert llm_end["usage"] == usage
+
+        tool_result = next(event for event in events if event["event"] == "tool_result")
+        assert tool_result["success"] is True
+        assert isinstance(tool_result["duration_ms"], int)
 
     @pytest.mark.asyncio
     async def test_executor_uses_thread_id_for_exec_id(self):
@@ -225,6 +257,24 @@ class TestReActExecutorToolNotFound:
 
         tool_msg = final.messages[-2]
         assert "not found" in tool_msg.content
+
+    @pytest.mark.asyncio
+    async def test_unknown_tool_trace_is_unsuccessful(self):
+        """Unknown tool trace records a failed tool result."""
+        tc = {"name": "nonexistent_tool", "args": {}, "id": "call-1"}
+
+        llm = MockLLM(response_content="Calling tool", tool_calls=[tc])
+        executor = ReActExecutor(
+            llm,
+            [MockTool(name="some_other_tool")],
+            context_manager=MockContext(),
+        )
+
+        state = ThreadState(thread_id="t1", messages=[HumanMessage(content="Hi")])
+        _final, events = await executor.run(state)
+
+        tool_result = next(event for event in events if event["event"] == "tool_result")
+        assert tool_result["success"] is False
 
 
 class TestBashSafe:
