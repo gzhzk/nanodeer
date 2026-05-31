@@ -2,6 +2,8 @@
 
 Sandbox 为 Agent 工具提供容器化的临时执行环境，具备严格的安全隔离和线程隔离。
 
+> 当前实现提示：NanoDeer 已经移除 sandbox middleware。当前生命周期由 `SandboxManager.acquire()/release()` 管理，工具路由由 `SandboxExecTool` 管理，Docker 不可用时会 fallback 到 `LocalSandboxProvider`。
+
 ---
 
 ## 目录
@@ -123,8 +125,8 @@ Agent 不需要知道底层细节，只用两种"虚拟路径"：
 ```
 agent.start(thread_id="abc")
     ↓
-Middleware.before_llm()
-    → SandboxMiddleware.acquire("abc")
+ReActExecutor.run()
+    → SandboxManager.acquire(state)
         → provider.acquire() → Sandbox(..., thread_id="abc", container_id="xxx")
         → set_sandbox("abc", sandbox)  → 存入模块级字典
     ↓
@@ -133,8 +135,8 @@ tool.ainvoke(args, thread_id="abc")
         → translate_and_validate() → 物理路径
         → provider.run(sandbox, cmd)
     ↓
-Middleware.after_tools_all()
-    → SandboxMiddleware.release("abc")
+ReActExecutor END
+    → SandboxManager.release(state)
         → provider.release()
         → clear_sandbox("abc")
 ```

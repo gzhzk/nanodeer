@@ -2,6 +2,8 @@
 
 Plan 模块为 Agent 提供多步骤任务跟踪能力。设计核心：**Plan 是聚合根，steps 是其内嵌值对象**，没有独立的 Step 存储。
 
+> 当前实现提示：NanoDeer 已经移除 middleware chain。当前 plan prompt 注入由 `ContextManager._load_plan()` 完成，工具为 `create_plan` / `add_step` / `update_step` / `list_plans`。文中出现 `PlanMiddleware` 的段落是早期设计表述，应按当前 `ContextManager + PlanStore` 理解。
+
 ---
 
 ## 目录
@@ -10,7 +12,7 @@ Plan 模块为 Agent 提供多步骤任务跟踪能力。设计核心：**Plan �
 - [数据类型](#数据类型)
 - [PlanStore](#planstore)
 - [Tools](#tools)
-- [Middleware](#middleware)
+- [当前运行时集成](#当前运行时集成)
 - [存储结构](#存储结构)
 - [与旧 Todo 系统的区别](#与旧-todo-系统的区别)
 
@@ -21,7 +23,7 @@ Plan 模块为 Agent 提供多步骤任务跟踪能力。设计核心：**Plan �
 1. **Plan 即文档**：一个 Plan 是一个自包含的 JSON 文件，包含 goal、metadata 和所有 steps。没有关联表，没有外键。
 2. **Steps 内嵌于 Plan**：steps 是 Plan 文档的一个数组字段，没有独立的 StepStore。增删改 step 都是对整个 Plan 文档的再写入。
 3. **Index 加速列表**：`index.json` 仅存摘要（plan_id、goal、status、progress），避免列举时加载所有 Plan 文档。Index 是 PlanStore 的内部缓存，由 `save()` 维护一致性。
-4. **PlanContext 注入 Prompt**：`PlanMiddleware.before_llm()` 读取所有 Plan，格式化为 `<plan>` XML 块注入 `signals.plan_context`，使 LLM 能看到全局进度。
+4. **PlanContext 注入 Prompt**：`ContextManager._load_plan()` 读取所有 Plan，格式化为 `<plan>` XML 块注入 `signals.plan_context`，使 LLM 能看到全局进度。
 
 ---
 
@@ -149,16 +151,16 @@ step 变为 ACTIVE    → plan.status = ACTIVE（如果当前是 DRAFTING/COMPLE
 
 ---
 
-## Middleware
+## 当前运行时集成
 
-`PlanMiddleware` 位于 `before_llm` 链中，在 MemoryMiddleware 之后、SandboxMiddleware 之前。
+当前没有 `PlanMiddleware`。Plan 上下文由 `ContextManager._load_plan()` 在每个 ReAct turn 开始时加载。
 
-### before_llm 流程
+### load 流程
 
 ```
-PlanMiddleware.before_llm_streaming()
+ContextManager._load_plan()
   → PlanStore.list() 读取所有 Plan
-  → _compute_plan_context() 格式化为 XML 块
+  → 格式化为 XML 块
   → 写入 signals.plan_context
 
 signals.plan_context 示例:
@@ -241,5 +243,5 @@ Plan 信息只需要在 LLM 调用前注入 prompt，不涉及工具执行拦截
 | 分配 | 无 | `Step.assigned_to`，支持 subagent |
 | 结果记录 | 无 | `Step.result` + `Step.notes` |
 | 列举 | 直接读 JSON | index 摘要加速 |
-| prompt 注入 | `TodoMiddleware` | `PlanMiddleware` |
+| prompt 注入 | `TodoMiddleware` | `ContextManager._load_plan()` |
 | 工具 | `write_todo` / `list_todos` | `create_plan` / `add_step` / `update_step` / `list_plans` |

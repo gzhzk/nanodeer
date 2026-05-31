@@ -2,6 +2,8 @@
 
 Memory 模块为 Agent 提供多层次的记忆存储，支持用户偏好、长期记忆和结构化 wiki 知识库。
 
+> 当前实现提示：NanoDeer 已经移除 middleware chain。当前 memory 注入由 `ContextManager._load_memory()` 调用 `MemoryLayers.inject()` 完成；回合结束由 `ContextManager.absorb()` 调用 `MemoryLayers.absorb()` 写 episodic。`save_memory` / `search_memory` 是 host-side tools，直接操作 `MemoryStore`。
+
 ---
 
 ## 目录
@@ -17,7 +19,7 @@ Memory 模块为 Agent 提供多层次的记忆存储，支持用户偏好、长
   - [读取与检索](#读取与检索)
 - [数据类型](#数据类型)
 - [MemoryStore API](#memorystore-api)
-- [Middleware 集成](#middleware-集成)
+- [当前运行时集成](#当前运行时集成)
 - [使用场景](#使用场景)
 - [安全与限制](#安全与限制)
 
@@ -55,7 +57,7 @@ packages/harness/nanodeer/agent/memory/
 └── MEMORY.md                   # 原有：长期记忆（平面）
 ```
 
-Todo 列表由 `plan.TodoStore` 管理（`~/.nanodeer/todos/`），不在此模块。
+Plan 列表由 `PlanStore` 管理（默认 `~/.nanodeer/plans/`），不在此模块。
 
 ---
 
@@ -64,8 +66,8 @@ Todo 列表由 `plan.TodoStore` 管理（`~/.nanodeer/todos/`），不在此模�
 | 层级 | 名称 | 存储 | 维护者 | 用途 |
 |------|------|------|--------|------|
 | L1 | 会话上下文 | `ThreadState.messages` | ReAct 循环 | 当前轮推理上下文 |
-| L2 | 会话日志 | `episodic/YYYY-MM-DD.md` | MemoryMiddleware（自动 append） | 历史追溯 |
-| **L3** | **Wiki 知识库** | `wiki/entries/**/*.json` | **Agent 主动写入（内容）+ Middleware 维护（索引）** | **结构化知识：项目、用户偏好、任务目标** |
+| L2 | 会话日志 | `episodic/YYYY-MM-DD.md` | `ContextManager.absorb()` 自动 append | 历史追溯 |
+| **L3** | **Wiki 知识库** | `wiki/entries/**/*.json` | **Agent 主动写入（内容）+ WikiStore 维护（索引）** | **结构化知识：项目、用户偏好、任务目标** |
 | L4 | 长期记忆 | `USER.md` + `MEMORY.md` | Agent 通过 `save_memory` 写入 | 平面长期记忆（兼容旧版） |
 
 ---
@@ -74,7 +76,7 @@ Todo 列表由 `plan.TodoStore` 管理（`~/.nanodeer/todos/`），不在此模�
 
 ### 设计原则
 
-1. **Agent 管内容，Middleware 管索引**：Agent 通过 `save_memory` 自主决定写什么；MemoryMiddleware 在拦截时自动更新 `index.json`，Agent 无需感知索引存在。
+1. **Agent 管内容，WikiStore 管索引**：Agent 通过 `save_memory` 自主决定写什么；`WikiStore.save_wiki_entry()` 自动更新 `index.json`，Agent 无需感知索引存在。
 2. **分类但不限制**：预设 project/user/task 分类路径，但不限制 Agent 创建新分类。
 3. **增量写入**：不会因为全量替换丢失其他条目。
 4. **按需检索**：读取时根据对话上下文检索相关条目，而非全量加载。
@@ -107,7 +109,7 @@ Todo 列表由 `plan.TodoStore` 管理（`~/.nanodeer/todos/`），不在此模�
 
 ### Index 索引
 
-`index.json` 由 **MemoryMiddleware** 在拦截 `save_memory` 时自动维护，Agent 无需手动操作：
+`index.json` 由 **WikiStore** 在 `save_memory(target="wiki/...")` 时自动维护，Agent 无需手动操作：
 
 ```json
 {
@@ -141,7 +143,7 @@ Agent 通过扩展后的 `save_memory` 工具写入 wiki：
 ```
 Agent 调用: save_memory(target="wiki/project/language", content="...", tags=["..."])
 
-↓ MemoryMiddleware.before_tools() 拦截
+↓ save_memory 工具调用 MemoryStore.save_wiki_entry()
 
 ├─ 1. 写入 wiki/entries/project/language.json（覆盖或新建）
 ├─ 2. 更新 wiki/index.json 中对应条目元信息
@@ -169,7 +171,7 @@ def save_memory(
 
 ### 读取与检索
 
-MemoryMiddleware.`load_for_prompt()` 改造为按需检索，而非全量加载：
+MemoryStore.`load_for_prompt()` 按需检索，而非全量加载：
 
 ```python
 def load_for_prompt(self, context_hint: str | None = None) -> str:
@@ -338,56 +340,37 @@ v2 注入顺序（含 Wiki）：
 
 ---
 
-## Middleware 集成
+## 当前运行时集成
 
-### MemoryMiddleware 改造
+### ContextManager + MemoryLayers
 
-当前 MemoryMiddleware 在两个 hook 上：
+当前 memory 运行时路径：
 
-| Hook | 现有行为 | v2 新增行为 |
-|------|----------|------------|
-| `before_llm` | 加载 USER/MEMORY/episodic → `signals.memory_context` | 额外检索 wiki 相关条目，合并注入 |
-| `before_tools` | 拦截 `save_memory`，写 MEMORY.md，skip_tool | 拦截 `save_memory`，区分 wiki 路径 vs MEMORY.md 路径 |
+| 时机 | 当前实现 |
+|------|----------|
+| turn 开始 | `ContextManager._load_memory()` 调用 `MemoryLayers.inject()` |
+| tool 调用 | `save_memory` / `search_memory` 直接操作 `MemoryStore` |
+| turn 结束 | `ContextManager.absorb()` 调用 `MemoryLayers.absorb()` |
 
-#### before_llm 改造
+#### 注入流程
 
 ```python
-async def before_llm(self, state: ThreadState, signals: TurnSignals):
-    # 1. 原有加载逻辑
-    memory_context = self.memory_store.load_for_prompt()
-    
-    # 2. 新增：从当前对话上下文提取关键词，检索 wiki
-    last_user_msg = self._get_last_user_message(state.messages)
-    wiki_entries = self.memory_store.search_wiki(
-        tags=self._extract_tags(last_user_msg),
-        max_entries=3,
-    )
-    
-    # 3. 合并注入
-    wiki_section = self._format_wiki_entries(wiki_entries)
-    signals.memory_context = memory_context + "\n\n" + wiki_section
+async def _load_memory(self, state: ThreadState, signals: TurnSignals):
+    context_hint = self._get_last_user_message(state) or None
+    self._layers.inject(signals, context_hint=context_hint)
 ```
 
-#### before_tools 改造
+#### 工具写入流程
 
 ```python
-async def before_tools(self, state, signals, tool_name, tool_args):
-    if tool_name == "save_memory":
-        target = tool_args.get("target", "")
-        content = tool_args.get("content", "")
-
-        if target.startswith("wiki/"):
-            # Wiki 写入路径
-            path = target.removeprefix("wiki/")  # "project/language"
-            tags = tool_args.get("tags", [])
-            self.memory_store.save_wiki_entry(path, content, tags)
-            signals.skip_tool = True
-            signals.skip_tool_result = f"Wiki 条目 '{path}' 已保存"
-        else:
-            # 原有路径（USER.md / MEMORY.md）
-            self.memory_store.save_memory(content)
-            signals.skip_tool = True
-            signals.skip_tool_result = "记忆已保存"
+def save_memory(target: str, content: str, tags: list[str] | None = None, mode: str = "append"):
+    store = MemoryStore()
+    if target.startswith("wiki/"):
+        store.save_wiki_entry(path, content, tags=tags)
+    elif target == "user":
+        store.save_user_memory(content)
+    else:
+        store.save_memory(content, mode=mode)
 ```
 
 ---
@@ -406,7 +389,7 @@ Agent 调用:
     tags=["tech-stack", "python", "langchain"]
   )
 
-→ 下次对话 MemoryMiddleware 自动注入相关条目
+→ 下次对话 `ContextManager._load_memory()` 会通过 context_hint 检索相关条目
 ```
 
 ### 2. Agent 记录用户偏好
@@ -429,7 +412,7 @@ Agent 调用:
 ```
 Session 1: Agent 记录项目框架信息
 Session 2: 用户问 "我们的技术栈是什么？"
-           → MemoryMiddleware 检索到 wiki/project/language 条目
+           → MemoryStore/WikiStore 检索到 wiki/project/language 条目
            → 注入 prompt
            → Agent 直接回答，无需重新描述
 ```
@@ -461,8 +444,8 @@ memory_store.save_memory(content)
 |------|------|----------|
 | **Phase 1** | WikiEntry / WikiIndex 数据类型 | `types.py` |
 | **Phase 2** | save_wiki_entry / load_wiki_entry / search_wiki | `storage.py` |
-| **Phase 3** | MemoryMiddleware before_llm 检索注入 | `middlewares/memory.py` |
-| **Phase 4** | MemoryMiddleware before_tools wiki 路径拦截 | `middlewares/memory.py` |
+| **Phase 3** | ContextManager + MemoryLayers 检索注入 | `agent/context.py`, `agent/memory/layers.py` |
+| **Phase 4** | save_memory 支持 wiki 路径写入 | `tools/save_memory.py` |
 | **Phase 5** | save_memory 工具扩展 wiki target | `tools/` |
 | **Phase 6** | 旧版 USER.md / MEMORY.md → wiki 迁移脚本 | `scripts/migrate_memory.py` |
 

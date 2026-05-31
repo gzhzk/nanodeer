@@ -2,6 +2,8 @@
 
 > Agent 长程任务能力的三条支柱：上下文灌输、记忆-计划衔接、持续学习
 
+> 当前实现提示：本文是长程能力的方案草案，包含 `FocusMiddleware` / `LearningMiddleware` 等尚未落地的早期设想。当前 NanoDeer 主链路没有 middleware chain；请以 `docs/runtime_architecture.md`、`docs/tools_design.md` 和当前代码为准。
+
 ---
 
 ## 设计哲学
