@@ -1,0 +1,160 @@
+- id: tool_file_pipeline
+  category: file_ops
+  description: "Read a CSV, compute a deterministic total, write a report file, and answer with the total."
+  setup:
+    files:
+      - source: benchmarks/fixtures/data.csv
+        target: data.csv
+  prompt: |
+    Use the available tools to inspect /mnt/user-data/data.csv.
+    Compute the sum of the amount column. Write /mnt/user-data/summary.md
+    containing exactly the marker TOTAL_AMOUNT=65, then answer with TOTAL_AMOUNT=65.
+  assertions:
+    - type: tool_called_any
+      names: [read_file, exec_python]
+    - type: tool_called
+      name: write_file
+    - type: file_contains
+      path: summary.md
+      text: TOTAL_AMOUNT=65
+    - type: output_contains
+      text: TOTAL_AMOUNT=65
+    - type: no_tool_errors
+    - type: trace_contract
+
+- id: tool_python_logs
+  category: tool_execution
+  description: "Use Python-capable execution to analyze a log file and persist JSON."
+  setup:
+    files:
+      - source: benchmarks/fixtures/logs
+        target: logs
+  prompt: |
+    Analyze /mnt/user-data/logs/app.log with tools. Count ERROR lines.
+    Write /mnt/user-data/log_summary.json containing {"ERROR_COUNT": 2}
+    and answer with ERROR_COUNT=2.
+  assertions:
+    - type: tool_called_any
+      names: [exec_python, read_file, grep]
+    - type: file_contains
+      path: log_summary.json
+      text: ERROR_COUNT
+    - type: output_contains
+      text: ERROR_COUNT=2
+    - type: no_tool_errors
+    - type: trace_contract
+
+- id: sandbox_isolation
+  category: sandbox
+  description: "Verify sandbox acquisition, release trace, and virtual path writes."
+  prompt: |
+    Write the text SANDBOX_SENTINEL_314159 to /mnt/user-data/sandbox_probe.txt,
+    read the file back, and answer with SANDBOX_SENTINEL_314159.
+  assertions:
+    - type: trace_has
+      event: sandbox_acquired
+    - type: trace_has
+      event: sandbox_released
+    - type: tool_called
+      name: write_file
+    - type: file_contains
+      path: sandbox_probe.txt
+      text: SANDBOX_SENTINEL_314159
+    - type: output_contains
+      text: SANDBOX_SENTINEL_314159
+    - type: no_tool_errors
+    - type: trace_contract
+
+- id: memory_write_search
+  category: memory
+  description: "Save a wiki memory entry and retrieve it in the same task."
+  prompt: |
+    Save this durable fact to wiki memory: the NanoDeer eval codename is ND-EVAL-001.
+    Then search memory for ND-EVAL-001 and answer with ND-EVAL-001.
+  assertions:
+    - type: tool_called
+      name: save_memory
+    - type: tool_called
+      name: search_memory
+    - type: output_contains
+      text: ND-EVAL-001
+    - type: no_tool_errors
+    - type: trace_contract
+
+- id: memory_recall_next_turn
+  category: memory
+  description: "Persist memory in one turn and recall it in the next turn."
+  turns:
+    - |
+      Save this fact to wiki memory under a sensible path:
+      NanoDeer's benchmark recall phrase is MAPLE-2026.
+      Confirm only that it was saved.
+    - |
+      Search your memory for the benchmark recall phrase and answer with MAPLE-2026.
+  assertions:
+    - type: tool_called
+      name: save_memory
+    - type: tool_called
+      name: search_memory
+    - type: output_contains
+      text: MAPLE-2026
+    - type: no_tool_errors
+    - type: trace_contract
+
+- id: plan_lifecycle
+  category: plan
+  description: "Create a plan, update a step, and list the final plan state."
+  prompt: |
+    Use the plan tools to create a plan titled "Eval Plan Smoke" with one step:
+    "verify plan lifecycle". Mark that step completed, then list the plan and
+    answer with PLAN_LIFECYCLE_COMPLETED.
+  assertions:
+    - type: tool_called
+      name: create_plan
+    - type: tool_called
+      name: update_step
+    - type: tool_called
+      name: list_plans
+    - type: output_contains
+      text: PLAN_LIFECYCLE_COMPLETED
+    - type: no_tool_errors
+    - type: trace_contract
+
+- id: subagent_basic
+  category: subagent
+  description: "Spawn a simple subagent and retrieve its result."
+  prompt: |
+    Spawn a subagent named verifier. Its task is simple: respond with exactly
+    SUBAGENT_OK_2026 and no extra requirements. Then retrieve the subagent
+    result. If it is still running, try retrieving it again. Answer with
+    SUBAGENT_OK_2026 after you see the result.
+  assertions:
+    - type: tool_called
+      name: spawn_subagent
+    - type: tool_called
+      name: get_subagent_results
+    - type: output_contains
+      text: SUBAGENT_OK_2026
+    - type: no_tool_errors
+    - type: trace_contract
+
+- id: checkpoint_resume
+  category: checkpoint
+  description: "Use the same thread across turns and verify tool-created state can be reused."
+  turns:
+    - |
+      Write CHECKPOINT_SENTINEL_9001 to /mnt/user-data/checkpoint.txt.
+      Confirm it was written.
+    - |
+      Read /mnt/user-data/checkpoint.txt and answer with CHECKPOINT_SENTINEL_9001.
+  assertions:
+    - type: trace_has
+      event: checkpoint_saved
+    - type: tool_called
+      name: write_file
+    - type: tool_called
+      name: read_file
+    - type: output_contains
+      text: CHECKPOINT_SENTINEL_9001
+    - type: no_tool_errors
+    - type: trace_contract
