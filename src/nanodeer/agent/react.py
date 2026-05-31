@@ -30,6 +30,12 @@ from .state import NextAction, ThreadState, TurnSignals
 from .prompt import build_lead_agent_prompt, PromptConfig
 from .context import ContextManager
 from .sandbox_manager import SandboxManager
+from .trace import (
+    TRACE_PREVIEW_CHARS,
+    TraceCollector,
+    now_ms as trace_now_ms,
+    preview as trace_preview,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -94,50 +100,17 @@ def _bash_safe(tool_name: str, tool_args: dict) -> bool:
 _MAX_RETRIES = 3
 _BASE_DELAY = 2.0
 
-_TRACE_SCHEMA_VERSION = "nanodeer.trace.v1"
-_TRACE_PREVIEW_CHARS = 500
-
-
 def _now_ms() -> int:
-    return int(time.time() * 1000)
+    return trace_now_ms()
 
 
 def _elapsed_ms(start: float) -> int:
     return int((time.monotonic() - start) * 1000)
 
 
-def _preview(value: Any, limit: int = _TRACE_PREVIEW_CHARS) -> Any:
+def _preview(value: Any, limit: int = TRACE_PREVIEW_CHARS) -> Any:
     """Return a JSON-friendly, size-bounded value for trace payloads."""
-    if value is None or isinstance(value, (bool, int, float)):
-        return value
-    if isinstance(value, str):
-        return value if len(value) <= limit else value[:limit] + "...[truncated]"
-    if isinstance(value, dict):
-        return {str(k): _preview(v, limit) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_preview(v, limit) for v in value[:20]]
-    return _preview(str(value), limit)
-
-
-def _trace(event: str, **fields) -> dict:
-    return {
-        "event": event,
-        "type": event,
-        "schema_version": _TRACE_SCHEMA_VERSION,
-        "ts_ms": _now_ms(),
-        **fields,
-    }
-
-
-def _normalize_event(event: dict, **defaults) -> dict:
-    name = event.get("event") or event.get("type") or "unknown"
-    normalized = _trace(name, **defaults)
-    normalized.update(event)
-    normalized["event"] = name
-    normalized["type"] = name
-    normalized.setdefault("schema_version", _TRACE_SCHEMA_VERSION)
-    normalized.setdefault("ts_ms", _now_ms())
-    return normalized
+    return trace_preview(value, limit)
 
 
 def _extract_usage(resp_or_chunk) -> dict[str, int]:
@@ -352,8 +325,9 @@ class ReActExecutor:
                 state = saved
 
         turn = 0
-        accumulated_events: list[dict] = []
         run_start_ms = _now_ms()
+        thread_id = state.thread_id or "default"
+        collector = TraceCollector(thread_id=thread_id)
         while True:
             turn += 1
             state.next_action = NextAction.PROCESS
@@ -361,26 +335,26 @@ class ReActExecutor:
             signals._uploaded_files = uploaded_files
 
             # 1. Context loading
-            accumulated_events.append(_trace(
+            collector.emit(
                 "turn_start",
                 turn=turn,
                 model=self._model_name,
-                threadId=state.thread_id or "default",
                 message_count=len(state.messages),
                 turnMs=_now_ms() - run_start_ms,
-            ))
+            )
             context_start = time.monotonic()
             await self._context.load(state, signals)
-            accumulated_events.append(_trace(
+            collector.emit(
                 "context_loaded",
                 turn=turn,
                 duration_ms=_elapsed_ms(context_start),
                 has_memory=bool(signals.memory_context),
                 has_plan=bool(signals.plan_context),
                 has_uploaded_files=bool(signals.uploaded_files_list),
-            ))
+            )
             if signals.events:
-                accumulated_events.extend(_normalize_event(ev, turn=turn) for ev in signals.events)
+                for ev in signals.events:
+                    collector.normalize(ev, turn=turn)
                 signals.events.clear()
             turn_start = time.monotonic()
             logger.info("turn=%d context_loaded messages=%d sandbox=%s",
@@ -391,14 +365,14 @@ class ReActExecutor:
             if self._sandbox:
                 sandbox_start = time.monotonic()
                 await self._sandbox.acquire(state)
-                accumulated_events.append(_trace(
+                collector.emit(
                     "sandbox_acquired",
                     turn=turn,
                     duration_ms=_elapsed_ms(sandbox_start),
                     exec_id=state.sandbox.exec_id if state.sandbox else None,
                     container_id=state.sandbox.container_id if state.sandbox else None,
                     status=state.sandbox.status if state.sandbox else None,
-                ))
+                )
 
             # 3. Health check
             if state.sandbox and state.sandbox.status == "released":
@@ -409,30 +383,30 @@ class ReActExecutor:
             prompt = build_lead_agent_prompt(state, signals, self._prompt_config, self._model_name)
             lc_messages = self._to_lc_messages(state, prompt)
             llm_start = time.monotonic()
-            accumulated_events.append(_trace(
+            collector.emit(
                 "llm_start",
                 turn=turn,
                 model=self._model_name,
                 prompt_chars=sum(len(str(getattr(m, "content", ""))) for m in lc_messages),
                 message_count=len(lc_messages),
-            ))
+            )
             resp = await _call_with_retry(
                 lambda: self.llm.ainvoke(lc_messages),
                 f"turn={turn}",
-                on_retry=lambda attempt, delay, exc: accumulated_events.append(_trace(
+                on_retry=lambda attempt, delay, exc: collector.emit(
                     "llm_retry",
                     turn=turn,
                     attempt=attempt,
                     delay_seconds=delay,
                     error_type=type(exc).__name__,
                     error=_preview(str(exc), 200),
-                )),
+                ),
             )
 
             raw_tcs, our_tcs = self._extract_tool_calls(resp)
             state.messages.append(AIMessage(content=resp.content, tool_calls=our_tcs or None))
             llm_duration_ms = _elapsed_ms(llm_start)
-            accumulated_events.append(_trace(
+            collector.emit(
                 "llm_end",
                 turn=turn,
                 duration_ms=llm_duration_ms,
@@ -440,7 +414,7 @@ class ReActExecutor:
                 tool_call_count=len(raw_tcs),
                 tool_calls=[{"name": tc.get("name"), "id": tc.get("id")} for tc in raw_tcs],
                 content_chars=len(str(resp.content or "")),
-            ))
+            )
 
             tool_names = [tc["name"] for tc in raw_tcs]
             content = str(resp.content) if resp.content else ""
@@ -454,12 +428,12 @@ class ReActExecutor:
                 state.next_action = NextAction.WAIT
                 if self._checkpointer and state.thread_id:
                     await self._checkpointer.save(state.thread_id, state)
-                accumulated_events.append(_trace(
+                collector.emit(
                     "wait",
                     turn=turn,
                     question=_preview(signals.clarification_question),
-                ))
-                return state, accumulated_events
+                )
+                return state, collector.events
 
             # 6. Tool loop
             if not raw_tcs:
@@ -468,53 +442,56 @@ class ReActExecutor:
                 checkpoint_start = time.monotonic()
                 if self._checkpointer and state.thread_id:
                     await self._checkpointer.save(state.thread_id, state)
-                    accumulated_events.append(_trace(
+                    collector.emit(
                         "checkpoint_saved",
                         turn=turn,
                         duration_ms=_elapsed_ms(checkpoint_start),
-                    ))
+                    )
                 absorb_start = time.monotonic()
                 if self._context:
                     await self._context.absorb(state)
-                    accumulated_events.append(_trace(
+                    collector.emit(
                         "context_absorbed",
                         turn=turn,
                         duration_ms=_elapsed_ms(absorb_start),
-                    ))
+                    )
                 break
 
             exec_id = state.thread_id or "default"
             for call_index, tc in enumerate(raw_tcs):
                 tool = self._tool_map.get(tc["name"])
-                accumulated_events.append(_trace(
+                collector.emit(
                     "tool_call",
                     turn=turn,
                     call_index=call_index,
                     name=tc["name"],
                     id=tc.get("id"),
                     args=_preview(tc.get("args", {})),
-                ))
+                    args_preview=_preview(tc.get("args", {})),
+                )
 
                 # Bash audit (defense-in-depth for sandbox)
                 if not _bash_safe(tc["name"], tc.get("args", {})):
-                    accumulated_events.append(_trace(
+                    collector.emit(
                         "tool_blocked",
                         turn=turn,
                         call_index=call_index,
                         name=tc["name"],
                         id=tc.get("id"),
                         reason="bash_audit",
-                    ))
-                    accumulated_events.append(_trace(
+                    )
+                    collector.emit(
                         "tool_result",
                         turn=turn,
                         call_index=call_index,
                         name=tc["name"],
                         id=tc.get("id"),
                         result="Blocked by bash audit",
+                        result_preview="Blocked by bash audit",
+                        result_bytes=len("Blocked by bash audit"),
                         success=False,
                         duration_ms=0,
-                    ))
+                    )
                     state.next_action = NextAction.END
                     break
 
@@ -546,6 +523,7 @@ class ReActExecutor:
                     logger.warning("turn=%d tool=%s error=%s", turn, tc["name"], e)
 
                 success = _tool_success(content, explicit_success)
+                result_text = str(content)
 
                 signals.events.append({
                     "type": "tool_result",
@@ -553,9 +531,13 @@ class ReActExecutor:
                     "turn": turn,
                     "call_index": call_index,
                     "name": tc["name"],
-                    "result": str(content)[:500],
+                    "id": tc.get("id"),
+                    "result": result_text[:500],
+                    "result_preview": result_text[:500],
+                    "result_bytes": len(result_text.encode("utf-8", errors="replace")),
                     "success": success,
                     "duration_ms": _elapsed_ms(tool_start),
+                    "threadId": thread_id,
                 })
 
                 state.messages.append(ToolMessage(
@@ -568,25 +550,26 @@ class ReActExecutor:
             checkpoint_start = time.monotonic()
             if self._checkpointer and state.thread_id:
                 await self._checkpointer.save(state.thread_id, state)
-                accumulated_events.append(_trace(
+                collector.emit(
                     "checkpoint_saved",
                     turn=turn,
                     duration_ms=_elapsed_ms(checkpoint_start),
-                ))
+                )
             absorb_start = time.monotonic()
             if self._context:
                 await self._context.absorb(state)
-                accumulated_events.append(_trace(
+                collector.emit(
                     "context_absorbed",
                     turn=turn,
                     duration_ms=_elapsed_ms(absorb_start),
-                ))
+                )
 
             logger.info("turn=%d after_tools next_action=%s turn_duration=%.2fs",
                         turn, state.next_action.value, time.monotonic() - turn_start)
 
             if signals.events:
-                accumulated_events.extend(_normalize_event(ev, turn=turn) for ev in signals.events)
+                for ev in signals.events:
+                    collector.normalize(ev, turn=turn)
 
             if state.next_action == NextAction.END:
                 break
@@ -595,14 +578,21 @@ class ReActExecutor:
         if self._sandbox:
             release_start = time.monotonic()
             await self._sandbox.release(state)
-            accumulated_events.append(_trace(
+            collector.emit(
                 "sandbox_released",
+                turn=turn,
                 duration_ms=_elapsed_ms(release_start),
+                exec_id=state.sandbox.exec_id if state.sandbox else None,
+                container_id=state.sandbox.container_id if state.sandbox else None,
                 status=state.sandbox.status if state.sandbox else None,
-            ))
+            )
 
-        accumulated_events.append(_trace("end", next_action=state.next_action.value))
-        return state, accumulated_events
+        collector.emit(
+            "end",
+            turn=turn,
+            next_action=state.next_action.value,
+        )
+        return state, collector.events
 
     # -- run_streaming() ------------------------------------------------------
 
@@ -613,6 +603,7 @@ class ReActExecutor:
     ) -> AsyncGenerator[dict, None]:
         start_ms = int(time.time() * 1000)
         thread_id = state.thread_id or "default"
+        collector = TraceCollector(thread_id=thread_id)
 
         if self._checkpointer and not state.messages and state.thread_id:
             saved = await self._checkpointer.load(state.thread_id)
@@ -626,7 +617,7 @@ class ReActExecutor:
             signals = TurnSignals()
             signals._uploaded_files = uploaded_files
 
-            yield _trace("turn_start", model=self._model_name, threadId=thread_id,
+            yield collector.emit("turn_start", model=self._model_name, threadId=thread_id,
                          turnMs=int(time.time() * 1000) - start_ms,
                          turn=turn,
                          message_count=len(state.messages))
@@ -634,7 +625,7 @@ class ReActExecutor:
             # 1. Context loading
             context_start = time.monotonic()
             await self._context.load(state, signals)
-            yield _trace(
+            yield collector.emit(
                 "context_loaded",
                 duration_ms=_elapsed_ms(context_start),
                 has_memory=bool(signals.memory_context),
@@ -643,17 +634,19 @@ class ReActExecutor:
                 threadId=thread_id,
                 turn=turn,
             )
-            if signals.memory_context:
-                yield _trace("memory_context", has_memory=True, threadId=thread_id, turn=turn)
+            if signals.events:
+                for ev in signals.events:
+                    yield collector.normalize(ev, turn=turn)
+                signals.events.clear()
             if signals.plan_context:
-                yield _trace("plan_context", threadId=thread_id, turn=turn)
+                yield collector.emit("plan_context", threadId=thread_id, turn=turn)
 
             # 2. Sandbox acquire
             if self._sandbox:
                 sandbox_start = time.monotonic()
                 await self._sandbox.acquire(state)
                 if state.sandbox and state.sandbox.container_id:
-                    yield _trace(
+                    yield collector.emit(
                         "sandbox_acquired",
                         exec_id=state.sandbox.exec_id,
                         container_id=state.sandbox.container_id,
@@ -666,7 +659,7 @@ class ReActExecutor:
             # 3. Health check
             if state.sandbox and state.sandbox.status == "released":
                 state.next_action = NextAction.END
-                yield _trace("end", next_action="end", threadId=thread_id, turn=turn,
+                yield collector.emit("end", next_action="end", threadId=thread_id, turn=turn,
                              durationMs=int(time.time() * 1000) - start_ms)
                 return
 
@@ -674,7 +667,7 @@ class ReActExecutor:
             prompt = build_lead_agent_prompt(state, signals, self._prompt_config, self._model_name)
             lc_messages = self._to_lc_messages(state, prompt)
             llm_start = time.monotonic()
-            yield _trace(
+            yield collector.emit(
                 "llm_start",
                 model=self._model_name,
                 prompt_chars=sum(len(str(getattr(m, "content", ""))) for m in lc_messages),
@@ -696,19 +689,19 @@ class ReActExecutor:
                 reasoning = chunk.additional_kwargs.get("reasoning_content", "")
                 if reasoning:
                     collected_reasoning += reasoning
-                    yield {"event": "reasoning_token", "text": reasoning, "threadId": thread_id}
+                    yield collector.emit("reasoning_token", text=reasoning, threadId=thread_id, turn=turn)
 
                 if isinstance(chunk.content, str):
                     if chunk.content:
                         collected_content += chunk.content
-                        yield {"event": "llm_token", "text": chunk.content, "threadId": thread_id}
+                        yield collector.emit("llm_token", text=chunk.content, threadId=thread_id, turn=turn)
                 elif isinstance(chunk.content, list):
                     for block in chunk.content:
                         if isinstance(block, dict) and block.get("type") == "text":
                             text = block.get("text", "")
                             if text:
                                 collected_content += text
-                                yield {"event": "llm_token", "text": text, "threadId": thread_id}
+                                yield collector.emit("llm_token", text=text, threadId=thread_id, turn=turn)
 
                 for tcc in getattr(chunk, "tool_call_chunks", []):
                     idx = tcc.get("index", 0)
@@ -738,7 +731,7 @@ class ReActExecutor:
                 for tc in raw_tcs
             ]
             state.messages.append(AIMessage(content=collected_content, tool_calls=our_tcs or None))
-            yield _trace(
+            yield collector.emit(
                 "llm_end",
                 duration_ms=_elapsed_ms(llm_start),
                 usage=stream_usage,
@@ -750,19 +743,20 @@ class ReActExecutor:
                 turn=turn,
             )
 
-            yield {
-                "event": "assistant_response",
-                "text": collected_content,
-                "has_tools": bool(raw_tcs),
-                "threadId": thread_id,
-            }
+            yield collector.emit(
+                "assistant_response",
+                text=collected_content,
+                has_tools=bool(raw_tcs),
+                threadId=thread_id,
+                turn=turn,
+            )
 
             # 5. Clarification check
             if self._check_clarification(collected_content, signals):
                 state.next_action = NextAction.WAIT
                 if self._checkpointer and state.thread_id:
                     await self._checkpointer.save(state.thread_id, state)
-                yield _trace("wait", question=_preview(signals.clarification_question),
+                yield collector.emit("wait", question=_preview(signals.clarification_question),
                              threadId=thread_id, turn=turn)
                 return
 
@@ -772,7 +766,7 @@ class ReActExecutor:
                 checkpoint_start = time.monotonic()
                 if self._checkpointer and state.thread_id:
                     await self._checkpointer.save(state.thread_id, state)
-                    yield _trace(
+                    yield collector.emit(
                         "checkpoint_saved",
                         duration_ms=_elapsed_ms(checkpoint_start),
                         threadId=thread_id,
@@ -781,7 +775,7 @@ class ReActExecutor:
                 absorb_start = time.monotonic()
                 if self._context:
                     await self._context.absorb(state)
-                    yield _trace(
+                    yield collector.emit(
                         "context_absorbed",
                         duration_ms=_elapsed_ms(absorb_start),
                         threadId=thread_id,
@@ -790,10 +784,10 @@ class ReActExecutor:
                 if self._sandbox:
                     release_start = time.monotonic()
                     await self._sandbox.release(state)
-                    yield _trace("sandbox_released", duration_ms=_elapsed_ms(release_start),
+                    yield collector.emit("sandbox_released", duration_ms=_elapsed_ms(release_start),
                                  status=state.sandbox.status if state.sandbox else None,
                                  threadId=thread_id, turn=turn)
-                yield _trace("end", next_action="end", threadId=thread_id,
+                yield collector.emit("end", next_action="end", threadId=thread_id,
                              turn=turn, durationMs=int(time.time() * 1000) - start_ms)
                 return
 
@@ -801,32 +795,7 @@ class ReActExecutor:
             for call_index, tc in enumerate(raw_tcs):
                 tool = self._tool_map.get(tc["name"])
 
-                # Bash audit
-                if not _bash_safe(tc["name"], tc.get("args", {})):
-                    state.next_action = NextAction.END
-                    yield _trace(
-                        "tool_blocked",
-                        call_index=call_index,
-                        name=tc["name"],
-                        id=tc.get("id"),
-                        reason="bash_audit",
-                        threadId=thread_id,
-                        turn=turn,
-                    )
-                    yield _trace(
-                        "tool_result",
-                        call_index=call_index,
-                        name=tc["name"],
-                        id=tc.get("id"),
-                        result="Blocked by bash audit",
-                        success=False,
-                        duration_ms=0,
-                        threadId=thread_id,
-                        turn=turn,
-                    )
-                    break
-
-                yield _trace(
+                yield collector.emit(
                     "tool_call",
                     call_index=call_index,
                     name=tc["name"],
@@ -836,6 +805,33 @@ class ReActExecutor:
                     threadId=thread_id,
                     turn=turn,
                 )
+
+                # Bash audit
+                if not _bash_safe(tc["name"], tc.get("args", {})):
+                    state.next_action = NextAction.END
+                    yield collector.emit(
+                        "tool_blocked",
+                        call_index=call_index,
+                        name=tc["name"],
+                        id=tc.get("id"),
+                        reason="bash_audit",
+                        threadId=thread_id,
+                        turn=turn,
+                    )
+                    yield collector.emit(
+                        "tool_result",
+                        call_index=call_index,
+                        name=tc["name"],
+                        id=tc.get("id"),
+                        result="Blocked by bash audit",
+                        result_preview="Blocked by bash audit",
+                        result_bytes=len("Blocked by bash audit"),
+                        success=False,
+                        duration_ms=0,
+                        threadId=thread_id,
+                        turn=turn,
+                    )
+                    break
 
                 tool_start = time.monotonic()
                 explicit_success = True
@@ -855,13 +851,16 @@ class ReActExecutor:
                     content = f"Error executing {tc['name']}: {e}"
                     logger.warning("tool=%s error=%s", tc["name"], e)
 
-                result_str = str(content)[:500]
-                yield _trace(
+                result_text = str(content)
+                result_str = result_text[:500]
+                yield collector.emit(
                     "tool_result",
                     call_index=call_index,
                     name=tc["name"],
                     id=tc.get("id"),
                     result=result_str,
+                    result_preview=result_str,
+                    result_bytes=len(result_text.encode("utf-8", errors="replace")),
                     success=_tool_success(content, explicit_success),
                     duration_ms=_elapsed_ms(tool_start),
                     threadId=thread_id,
@@ -878,7 +877,7 @@ class ReActExecutor:
             checkpoint_start = time.monotonic()
             if self._checkpointer and state.thread_id:
                 await self._checkpointer.save(state.thread_id, state)
-                yield _trace(
+                yield collector.emit(
                     "checkpoint_saved",
                     duration_ms=_elapsed_ms(checkpoint_start),
                     threadId=thread_id,
@@ -887,7 +886,7 @@ class ReActExecutor:
             absorb_start = time.monotonic()
             if self._context:
                 await self._context.absorb(state)
-                yield _trace(
+                yield collector.emit(
                     "context_absorbed",
                     duration_ms=_elapsed_ms(absorb_start),
                     threadId=thread_id,
@@ -898,12 +897,12 @@ class ReActExecutor:
                 if self._sandbox:
                     release_start = time.monotonic()
                     await self._sandbox.release(state)
-                    yield _trace("sandbox_released", duration_ms=_elapsed_ms(release_start),
+                    yield collector.emit("sandbox_released", duration_ms=_elapsed_ms(release_start),
                                  status=state.sandbox.status if state.sandbox else None,
                                  threadId=thread_id, turn=turn)
-                yield _trace("end", next_action="end", threadId=thread_id,
+                yield collector.emit("end", next_action="end", threadId=thread_id,
                              turn=turn, durationMs=int(time.time() * 1000) - start_ms)
                 return
 
-        yield _trace("end", next_action=state.next_action.value, threadId=thread_id,
+        yield collector.emit("end", next_action=state.next_action.value, threadId=thread_id,
                      turn=turn, durationMs=int(time.time() * 1000) - start_ms)

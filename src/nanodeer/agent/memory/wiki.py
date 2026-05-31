@@ -1,10 +1,10 @@
 """WikiStore — structured wiki knowledge curated by the LLM.
 
 The LLM decides what to remember and how to organize it via save_memory.
-Middleware (MemoryStore) automatically maintains the index — the LLM never
+WikiStore automatically maintains the index — the LLM never
 touches index.json directly.
 
-Design principle: Agent 管内容，Middleware 管索引.
+Design principle: Agent controls content, WikiStore controls index.
 """
 
 import json

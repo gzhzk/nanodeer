@@ -167,6 +167,8 @@ class TestReActLoop:
         assert "tool_result" in names
         assert events[-1]["event"] == "end"
         assert all("schema_version" in event for event in events)
+        assert all(event["event"] == event["type"] for event in events)
+        assert all(event["threadId"] == "t1" for event in events)
 
         llm_end = next(event for event in events if event["event"] == "llm_end")
         assert llm_end["usage"] == usage
@@ -174,6 +176,9 @@ class TestReActLoop:
         tool_result = next(event for event in events if event["event"] == "tool_result")
         assert tool_result["success"] is True
         assert isinstance(tool_result["duration_ms"], int)
+        assert tool_result["id"] == "call-1"
+        assert tool_result["result_preview"] == "tool result"
+        assert tool_result["result_bytes"] == len("tool result")
 
     @pytest.mark.asyncio
     async def test_executor_uses_thread_id_for_exec_id(self):
@@ -237,6 +242,8 @@ class TestReActStreamingLoop:
 
         assert [event["event"] for event in events].count("end") == 1
         assert events[-1]["event"] == "end"
+        assert all("schema_version" in event for event in events)
+        assert all(event.get("threadId") == "t-stream" for event in events)
         assert sandbox.acquire_count == 1
         assert sandbox.release_count == 1
         assert context.absorb_count == 1

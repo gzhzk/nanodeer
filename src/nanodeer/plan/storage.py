@@ -13,14 +13,21 @@ from typing import Optional
 
 from .types import Plan
 
-PLANS_ROOT = Path.home() / ".nanodeer" / "plans"
+def _default_plans_root() -> Path:
+    override = os.getenv("NANODEER_PLANS_ROOT")
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".nanodeer" / "plans"
+
+
+PLANS_ROOT = _default_plans_root()
 
 
 class PlanStore:
     """File-based plan store. Each plan is a single JSON file with embedded steps."""
 
     def __init__(self, root: Optional[Path] = None):
-        self.root = root or PLANS_ROOT
+        self.root = root or _default_plans_root()
         self.root.mkdir(parents=True, exist_ok=True)
 
     def _plan_path(self, plan_id: str) -> Path:

@@ -1,5 +1,6 @@
 """Memory storage: USER.md (user preferences) + MEMORY.md (long-term facts) + episodic (session logs) + wiki (structured knowledge)."""
 
+import os
 import json
 import re
 import uuid
@@ -10,8 +11,15 @@ from typing import Any, Optional
 from .types import MemoryEntry, WikiEntry
 from .wiki import WikiStore
 
+def _default_memory_root() -> Path:
+    override = os.getenv("NANODEER_MEMORY_ROOT")
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".nanodeer" / "memory"
+
+
 # Memory directory root (single-user, no user_id)
-MEMORY_ROOT = Path.home() / ".nanodeer" / "memory"
+MEMORY_ROOT = _default_memory_root()
 
 EPISODIC_DIR = "episodic"
 USER_FILE = "USER.md"
@@ -25,7 +33,7 @@ class MemoryStore:
     """USER.md + MEMORY.md + episodic + wiki storage."""
 
     def __init__(self, root: Optional[Path] = None):
-        self.root = root or MEMORY_ROOT
+        self.root = root or _default_memory_root()
         self._wiki = WikiStore(root=self.root)
         self._ensure_root()
 
