@@ -44,6 +44,8 @@ class TestSandboxExecCommandConstruction:
         assert "test.txt" in cmd.cmd
         assert "hello world" not in cmd.cmd  # content should be base64
         assert base64.b64encode(b"hello world").decode() in cmd.cmd
+        assert "chr(46)" in cmd.cmd
+        assert "chr(119)+chr(98)" in cmd.cmd
 
     def test_ls_command(self):
         """ls uses path_vars."""

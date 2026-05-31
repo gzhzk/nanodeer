@@ -39,10 +39,10 @@ SANDBOX_TOOL_CONFIGS: dict[str, dict] = {
         # file_path: validated + translated to physical path (path_vars).
         # content: base64-encoded for safe transport.
         "template": (
-            'python3 -c "import base64,os,sys; '
+            'python3 -c "import base64,os,sys;'
             'p=sys.argv[1];'
-            'os.makedirs(os.path.dirname(p) or \".\",exist_ok=True);'
-            'open(p,\\\"wb\\\").write(base64.b64decode(sys.argv[2]))" '
+            'os.makedirs(os.path.dirname(p) or chr(46),exist_ok=True);'
+            'open(p,chr(119)+chr(98)).write(base64.b64decode(sys.argv[2]))" '
             "{file_path} {b64_content}"
         ),
         "path_vars": ["file_path"],

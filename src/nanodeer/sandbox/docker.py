@@ -131,7 +131,7 @@ class DockerSandboxProvider(SandboxProvider):
         await loop.run_in_executor(None, self._pull_image)
 
         # Volume mount: host {base_path}/{exec_id}/user-data → container /mnt/user-data
-        # This makes uploads written by UploadsMiddleware visible inside the container
+        # This makes uploads written by ContextManager visible inside the container
         # at the virtual path /mnt/user-data/uploads/.
         base_path = self._get_base_path()
         volumes = {

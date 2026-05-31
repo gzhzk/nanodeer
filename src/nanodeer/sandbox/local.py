@@ -121,6 +121,14 @@ class LocalSandboxProvider(SandboxProvider):
     async def release(self, sandbox: Sandbox) -> None:
         """Clean up thread workspace directory with path hardening."""
         t0 = time.monotonic()
+        if os.getenv("NANODEER_KEEP_LOCAL_SANDBOX") == "1":
+            logger.info(
+                "release exec_id=%s container=%s skipped cleanup duration=%.2fs",
+                sandbox.exec_id,
+                sandbox.container_id,
+                time.monotonic() - t0,
+            )
+            return
 
         def _cleanup():
             from ..config import get_config
