@@ -44,30 +44,34 @@ English | [中文](./README_zh.md)
 
 ```
 nanodeer/
-├── src/
-│   └── nanodeer/                 # Core package
-│       ├── cli/                  # Entry points
-│       │   ├── api.py            # FastAPI SSE server
-│       │   ├── cli/config.py     # AppConfig (HTTP/storage)
-│       │   └── repl.py           # CLI REPL (debug)
-│       ├── agent/                # ReActExecutor, ContextManager, State
-│       │   ├── react.py          # Native async ReAct loop (no LangGraph)
-│       │   ├── factory.py        # NanoDeerFactory — assembles executor + wraps tools
-│       │   ├── state.py          # ThreadState, TurnSignals, NextAction
-│       │   ├── messages.py       # HumanMessage, AIMessage, ToolMessage
-│       │   ├── prompt.py         # System prompt assembly
-│       │   ├── context.py        # Parallel context loader
-│       │   └── sandbox_manager.py # Sandbox lifecycle
-│       ├── sandbox/              # Docker + Local sandbox providers
-│       ├── tools/                # 19 built-in tools
-│       ├── subagent/             # SubagentCoordinator
-│       ├── skills/               # Skill workflow loader
-│       ├── engine.py             # NanoEngine entry point
-│       └── config.py             # HarnessConfig
-│
-├── frontend/                      # Next.js + assistant-ui chat UI
-├── config.yaml                   # Harness configuration
-└── tests/                        # 305 tests in the current suite
+├── pyproject.toml          # Entry points: nanodeer (API) / nanodeer-repl (REPL)
+├── config.yaml             # Runtime config (LLM, sandbox, memory, thread...)
+├── src/nanodeer/
+│   ├── cli/api.py          # Layer 5: FastAPI + SSE HTTP server
+│   ├── cli/repl.py         # Layer 5: Debug REPL
+│   ├── engine.py           # Layer 4: NanoEngine — Application scheduler
+│   ├── agent/
+│   │   ├── factory.py      # Layer 3-4 bridge: NanoDeerFactory assembler
+│   │   ├── react.py        # Layer 3: ReActExecutor — main loop (core)
+│   │   ├── state.py        # ThreadState / TurnSignals data models
+│   │   ├── context.py      # Layer 3: ContextManager — context assembly
+│   │   ├── prompt.py       # Layer 2: Static+dynamic dual-layer prompt builder
+│   │   ├── sandbox_manager.py # Layer 3: Sandbox lifecycle manager
+│   │   ├── compression.py  # Layer 4½: Conversation compression
+│   │   ├── trace.py        # Runtime observability
+│   │   ├── checkpoint/     # Layer 1: SQLite session persistence
+│   │   └── memory/         # Layer 1: File-based layered memory (L1-L4)
+│   ├── sandbox/
+│   │   ├── __init__.py     # SandboxProvider ABC + module-level context
+│   │   ├── docker.py       # Docker sandbox
+│   │   ├── local.py        # Local subprocess fallback
+│   │   ├── path.py         # Virtual→physical path translation + security
+│   │   └── tools.py        # SandboxExecTool — routes tools into container
+│   ├── tools/              # 20 built-in tool definitions
+│   ├── subagent/           # Semaphore-based subagent coordinator
+│   ├── plan/               # File-based JSON plan storage
+│   ├── skills/             # .md skill loading system
+│   └── config.py           # Pydantic config model + global singleton
 ```
 
 ---
@@ -376,9 +380,9 @@ NanoDeer uses two data carriers with distinct lifetimes:
 
 | Tool | Category | Sandbox |
 |------|----------|---------|
-| `read_file`, `write_file`, `ls`, `glob`, `grep` | File | ✅ Docker/Local |
+| `read_file`, `write_file`, `glob`, `grep`, `edit_file` | File | ✅ Docker/Local |
 | `bash`, `git`, `exec_python` | Shell | ✅ Docker/Local |
-| `web_search`, `read_image` | External | ✅ Docker/Local |
+| `web_search`, `web_fetch`, `read_image` | External | ✅ Docker/Local |
 | `save_memory` | Memory | ❌ Host (not in SANDBOX_TOOL_CONFIGS) |
 | `create_plan`, `add_step`, `update_step`, `list_plans` | Plan | ❌ Host (direct write) |
 | `spawn_subagent`, `get_subagent_results` | Subagent | ✅ Own sandbox container |
@@ -391,7 +395,7 @@ NanoDeer uses two data carriers with distinct lifetimes:
 **Current (v0.1.0)** — Core framework stable:
 - ✅ Native ReAct loop with inline orchestration
 - ✅ Docker + Local sandbox with path isolation
-- ✅ 19 built-in tools
+- ✅ 20 built-in tools
 - ✅ File-based memory, plan, checkpoint, conversation persistence
 - ✅ HTTP SSE API (FastAPI)
 - ✅ CLI REPL

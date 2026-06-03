@@ -44,31 +44,34 @@
 
 ```
 nanodeer/
-├── src/
-│   └── nanodeer/                 # 核心包
-│       ├── cli/                  # 入口点
-│       │   ├── api.py            # FastAPI SSE 服务器
-│       │   ├── cli/config.py     # AppConfig（HTTP/存储）
-│       │   └── repl.py           # CLI REPL（调试）
-│       ├── agent/                # ReActExecutor、ContextManager、SandboxManager
-│       │   ├── react.py          # 原生 async ReAct 循环 + 内联 bash 审计 + clarification
-│       │   ├── factory.py        # NanoDeerFactory — 组装 executor + 包装 tools
-│       │   ├── context.py        # ContextManager — 并行加载目录/记忆/计划/上传
-│       │   ├── sandbox_manager.py# SandboxManager — 幂等 acquire/release
-│       │   ├── compression.py    # 应用层消息压缩（NanoEngine 调用）
-│       │   ├── state.py          # ThreadState、TurnSignals、NextAction
-│       │   ├── messages.py       # HumanMessage、AIMessage、ToolMessage
-│       │   └── prompt.py         # 系统 prompt 组装
-│       ├── sandbox/              # Docker + Local 沙箱提供商
-│       ├── tools/                # 19 个内置工具
-│       ├── subagent/             # SubagentCoordinator
-│       ├── skills/               # 技能工作流加载器
-│       ├── engine.py             # NanoEngine 入口
-│       └── config.py             # HarnessConfig
-│
-├── frontend/                      # Next.js + assistant-ui 聊天界面
-├── config.yaml                   # 配置文件
-└── tests/                        # 当前套件共 305 个测试
+├── pyproject.toml          # 入口注册: nanodeer (API) / nanodeer-repl (REPL)
+├── config.yaml             # 运行时配置 (LLM, sandbox, memory, thread...)
+├── src/nanodeer/
+│   ├── cli/api.py          # Layer 5: FastAPI + SSE HTTP 服务
+│   ├── cli/repl.py         # Layer 5: 调试用 REPL
+│   ├── engine.py           # Layer 4: NanoEngine — 应用层调度器
+│   ├── agent/
+│   │   ├── factory.py      # Layer 3-4 桥梁: NanoDeerFactory 装配器
+│   │   ├── react.py        # Layer 3: ReActExecutor — 主循环 (核心)
+│   │   ├── state.py        # ThreadState / TurnSignals 数据模型
+│   │   ├── context.py      # Layer 3: ContextManager — 上下文装配
+│   │   ├── prompt.py       # Layer 2: 静态+动态 双层 prompt 构建
+│   │   ├── sandbox_manager.py # Layer 3: 沙箱生命周期管理
+│   │   ├── compression.py  # Layer 4½: 对话压缩
+│   │   ├── trace.py        # 运行时可观测性
+│   │   ├── checkpoint/     # Layer 1: SQLite 会话持久化
+│   │   └── memory/         # Layer 1: 文件式分层记忆 (L1-L4)
+│   ├── sandbox/
+│   │   ├── __init__.py     # SandboxProvider ABC + 模块级上下文
+│   │   ├── docker.py       # Docker 沙箱
+│   │   ├── local.py        # 本地子进程回退
+│   │   ├── path.py         # 虚拟→物理路径翻译 + 安全校验
+│   │   └── tools.py        # SandboxExecTool — tool 路由到容器内执行
+│   ├── tools/              # 20 个内置工具定义
+│   ├── subagent/           # 基于信号量的子代理协调器
+│   ├── plan/               # 文件式 JSON 计划存储
+│   ├── skills/             # .md 技能加载系统
+│   └── config.py           # Pydantic 配置模型 + 全局单例
 ```
 
 ---
@@ -367,9 +370,9 @@ NanoDeer 使用两个生命周期不同的数据载体：
 
 | 工具 | 分类 | 沙箱 |
 |------|------|------|
-| `read_file`、`write_file`、`ls`、`glob`、`grep` | 文件 | ✅ Docker/Local |
+| `read_file`、`write_file`、`glob`、`grep`、`edit_file` | 文件 | ✅ Docker/Local |
 | `bash`、`git`、`exec_python` | Shell | ✅ Docker/Local |
-| `web_search`、`read_image` | 外部 | ✅ Docker/Local |
+| `web_search`、`web_fetch`、`read_image` | 外部 | ✅ Docker/Local |
 | `save_memory` | 记忆 | ❌ 宿主机（不在 SANDBOX_TOOL_CONFIGS） |
 | `create_plan`、`add_step`、`update_step`、`list_plans` | 计划 | ❌ 宿主机（直接写入） |
 | `spawn_subagent`、`get_subagent_results` | 子 Agent | ✅ 独立沙箱容器 |
@@ -382,7 +385,7 @@ NanoDeer 使用两个生命周期不同的数据载体：
 **当前（v0.1.0）** — 核心框架稳定：
 - ✅ 原生 ReAct 循环（无 middleware 链）
 - ✅ Docker + Local 沙箱 + 路径隔离
-- ✅ 19 个内置工具
+- ✅ 20 个内置工具
 - ✅ 文件型记忆、计划、checkpoint、会话持久化
 - ✅ assistant-ui 前端（Next.js + assistant-ui）
 - ✅ SubagentCoordinator（spawn/stop/list 生命周期，最大 3 并发）
