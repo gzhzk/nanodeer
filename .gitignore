@@ -69,3 +69,6 @@ tmp/
 
 # Next.js build output
 .next/
+
+# Claude Code session data
+.claude/
