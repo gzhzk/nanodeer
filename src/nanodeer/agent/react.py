@@ -106,6 +106,27 @@ def _now_ms() -> int:
     return trace_now_ms()
 
 
+def _flatten_content(content: Any) -> str:
+    """Normalize LLM response content to string.
+
+    OpenAI-compatible APIs return a plain string.
+    Anthropic/Minimax return a list of content blocks like:
+      [{"type": "text", "text": "hi"}, {"type": "thinking", "thinking": "..."}]
+    Extract only the text parts.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(block.get("text", ""))
+            elif isinstance(block, str):
+                parts.append(block)
+        return "".join(parts)
+    return str(content or "")
+
+
 def _elapsed_ms(start: float) -> int:
     return int((time.monotonic() - start) * 1000)
 
@@ -168,7 +189,7 @@ def _recent_tool_calls(state: ThreadState, limit: int = 12) -> list[dict]:
 def _repeated_tool_completion(tool_calls: list[dict], tool_results: list[str] | None = None) -> str:
     """Final response when the model keeps asking for the same completed tool work."""
     if not tool_calls:
-        return "Completed."
+        return "Finished: no further action needed."
     preview = _preview([
         {
             "name": tc.get("name", ""),
@@ -181,10 +202,10 @@ def _repeated_tool_completion(tool_calls: list[dict], tool_results: list[str] | 
     if tool_results:
         results_preview = _preview(tool_results, 1000)
         return (
-            "Completed. Stopped after repeated identical tool calls: "
+            "Stopped after repeated identical tool calls: "
             f"{preview}.{marker_text} Last tool results: {results_preview}"
         )
-    return f"Completed. Stopped after repeated identical tool calls: {preview}.{marker_text}"
+    return f"Stopped after repeated identical tool calls: {preview}.{marker_text}"
 
 
 def _extract_usage(resp_or_chunk) -> dict[str, int]:
@@ -358,14 +379,26 @@ class ReActExecutor:
 
     @staticmethod
     def _to_lc_messages(state: ThreadState, prompt: str):
+        from langchain_core.messages import ToolMessage as LCToolMessage
+
         msgs = [LCSystemMessage(content=prompt)]
         for msg in state.messages:
             if isinstance(msg, HumanMessage):
                 msgs.append(LCHumanMessage(content=msg.content))
             elif isinstance(msg, AIMessage):
-                msgs.append(LAIMessage(content=msg.content))
+                kwargs: dict = {"content": msg.content}
+                if msg.tool_calls:
+                    kwargs["tool_calls"] = [
+                        {"name": tc.name, "args": tc.args, "id": tc.id or f"call_{i}"}
+                        for i, tc in enumerate(msg.tool_calls)
+                    ]
+                msgs.append(LAIMessage(**kwargs))
             elif isinstance(msg, ToolMessage):
-                msgs.append(LCHumanMessage(content=f"[tool: {msg.name}] {msg.content}"))
+                msgs.append(LCToolMessage(
+                    content=msg.content,
+                    tool_call_id=msg.tool_call_id or "",
+                    name=msg.name or "",
+                ))
         return msgs
 
     @staticmethod
@@ -415,7 +448,7 @@ class ReActExecutor:
             turn += 1
             state.next_action = NextAction.PROCESS
             signals = TurnSignals()
-            signals._uploaded_files = uploaded_files
+            signals.uploaded_files = uploaded_files
 
             # 1. Context loading
             collector.emit(
@@ -459,6 +492,7 @@ class ReActExecutor:
 
             # 3. Health check
             if state.sandbox and state.sandbox.status == "released":
+                state.finish_reason = "sandbox_released"
                 state.next_action = NextAction.END
                 break
 
@@ -487,7 +521,7 @@ class ReActExecutor:
             )
 
             raw_tcs, our_tcs = self._extract_tool_calls(resp)
-            state.messages.append(AIMessage(content=resp.content, tool_calls=our_tcs or None))
+            state.messages.append(AIMessage(content=_flatten_content(resp.content), tool_calls=our_tcs or None))
             llm_duration_ms = _elapsed_ms(llm_start)
             collector.emit(
                 "llm_end",
@@ -521,6 +555,7 @@ class ReActExecutor:
             # 6. Tool loop
             if not raw_tcs:
                 # LLM ended without tool calls → final answer
+                state.finish_reason = "completed"
                 state.next_action = NextAction.END
                 checkpoint_start = time.monotonic()
                 if self._checkpointer and state.thread_id:
@@ -575,6 +610,7 @@ class ReActExecutor:
                         success=False,
                         duration_ms=0,
                     )
+                    state.finish_reason = "bash_blocked"
                     state.next_action = NextAction.END
                     break
 
@@ -646,6 +682,7 @@ class ReActExecutor:
                     completion_calls = _recent_tool_calls(state)
                     final_text = _repeated_tool_completion(completion_calls, list(reversed(recent_results)))
                     state.messages.append(AIMessage(content=final_text))
+                    state.finish_reason = "repeated_tool_calls"
                     state.next_action = NextAction.END
                     collector.emit(
                         "tool_repeat_guard",
@@ -661,6 +698,7 @@ class ReActExecutor:
                     f"{_repeated_tool_completion(completion_calls)}"
                 )
                 state.messages.append(AIMessage(content=final_text))
+                state.finish_reason = "max_turns"
                 state.next_action = NextAction.END
                 collector.emit(
                     "turn_limit",
@@ -739,7 +777,7 @@ class ReActExecutor:
             turn += 1
             state.next_action = NextAction.PROCESS
             signals = TurnSignals()
-            signals._uploaded_files = uploaded_files
+            signals.uploaded_files = uploaded_files
 
             yield collector.emit("turn_start", model=self._model_name, threadId=thread_id,
                          turnMs=int(time.time() * 1000) - start_ms,
@@ -782,6 +820,7 @@ class ReActExecutor:
 
             # 3. Health check
             if state.sandbox and state.sandbox.status == "released":
+                state.finish_reason = "sandbox_released"
                 state.next_action = NextAction.END
                 yield collector.emit("end", next_action="end", threadId=thread_id, turn=turn,
                              durationMs=int(time.time() * 1000) - start_ms)
@@ -886,6 +925,7 @@ class ReActExecutor:
 
             # 6. Tool loop
             if not raw_tcs:
+                state.finish_reason = "completed"
                 state.next_action = NextAction.END
                 checkpoint_start = time.monotonic()
                 if self._checkpointer and state.thread_id:
@@ -932,6 +972,7 @@ class ReActExecutor:
 
                 # Bash audit
                 if not _bash_safe(tc["name"], tc.get("args", {})):
+                    state.finish_reason = "bash_blocked"
                     state.next_action = NextAction.END
                     yield collector.emit(
                         "tool_blocked",
@@ -1014,6 +1055,7 @@ class ReActExecutor:
                     completion_calls = _recent_tool_calls(state)
                     final_text = _repeated_tool_completion(completion_calls, list(reversed(recent_results)))
                     state.messages.append(AIMessage(content=final_text))
+                    state.finish_reason = "repeated_tool_calls"
                     state.next_action = NextAction.END
                     yield collector.emit(
                         "tool_repeat_guard",
@@ -1030,6 +1072,7 @@ class ReActExecutor:
                     f"{_repeated_tool_completion(completion_calls)}"
                 )
                 state.messages.append(AIMessage(content=final_text))
+                state.finish_reason = "max_turns"
                 state.next_action = NextAction.END
                 yield collector.emit(
                     "turn_limit",

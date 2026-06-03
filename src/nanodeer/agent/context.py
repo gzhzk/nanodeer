@@ -57,7 +57,7 @@ class ContextManager:
         memory_task = asyncio.create_task(self._load_memory(state, signals))
         plan_task = asyncio.create_task(self._load_plan(signals))
 
-        if signals._uploaded_files:
+        if signals.uploaded_files:
             await self._process_uploads(state, signals)
         await self._scan_uploads(state, signals)
 
@@ -138,7 +138,7 @@ class ContextManager:
         root = self._cfg.thread.storage_path / state.thread_id / "user-data" / "uploads"
         root.mkdir(parents=True, exist_ok=True)
 
-        for f in (signals._uploaded_files or []):
+        for f in (signals.uploaded_files or []):
             name = f.get("name", "unnamed")
             content = f.get("content", b"")
             mime_type = f.get("mime_type", "")
