@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import os
+import shutil
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -173,9 +174,31 @@ class DockerSandboxProvider(SandboxProvider):
             self.client.images.pull(self.image)
 
     async def release(self, sandbox: Sandbox) -> None:
-        """Stop and remove container."""
+        """Persist outputs from volume, then stop and remove container."""
         t0 = time.monotonic()
         loop = asyncio.get_event_loop()
+
+        # Persist outputs before container goes away
+        try:
+            base_path = self._get_base_path()
+            outputs_src = base_path / sandbox.exec_id / "user-data" / "outputs"
+            if outputs_src.is_dir():
+                from ..config import get_config
+                storage = get_config().thread.storage_path
+                outputs_dst = storage / sandbox.exec_id / "outputs"
+                outputs_dst.mkdir(parents=True, exist_ok=True)
+                for item in outputs_src.iterdir():
+                    try:
+                        dst = outputs_dst / item.name
+                        if item.is_file():
+                            shutil.copy2(item, dst)
+                        elif item.is_dir():
+                            shutil.copytree(item, dst, dirs_exist_ok=True)
+                    except Exception:
+                        pass
+        except Exception:
+            logger.warning("release: output persistence failed", exc_info=True)
+
         try:
             container = await loop.run_in_executor(
                 None,

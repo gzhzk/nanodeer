@@ -119,7 +119,7 @@ class LocalSandboxProvider(SandboxProvider):
         return cmd.replace("/mnt/user-data/", sandbox.working_dir + "/")
 
     async def release(self, sandbox: Sandbox) -> None:
-        """Clean up thread workspace directory with path hardening."""
+        """Persist outputs, then clean up workspace directory."""
         t0 = time.monotonic()
         if os.getenv("NANODEER_KEEP_LOCAL_SANDBOX") == "1":
             logger.info(
@@ -130,15 +130,35 @@ class LocalSandboxProvider(SandboxProvider):
             )
             return
 
-        def _cleanup():
+        def _persist_and_cleanup():
             from ..config import get_config
-            base = get_config().thread.storage_path
+            cfg = get_config()
+            base = cfg.thread.storage_path
             workspace = Path(sandbox.working_dir).resolve()
-            # Ensure workspace is actually under storage_path (symlink attack defense)
-            if workspace.exists() and base in workspace.parents:
-                shutil.rmtree(workspace, ignore_errors=True)
+
+            # Only operate on workspaces under storage_path (symlink attack defense)
+            if not (workspace.exists() and base in workspace.parents):
+                return
+
+            # Persist outputs/ to storage_path/{exec_id}/outputs/ before cleanup
+            outputs_src = workspace / "outputs"
+            if outputs_src.is_dir():
+                outputs_dst = base / sandbox.exec_id / "outputs"
+                outputs_dst.mkdir(parents=True, exist_ok=True)
+                for item in outputs_src.iterdir():
+                    try:
+                        dst = outputs_dst / item.name
+                        if item.is_file():
+                            shutil.copy2(item, dst)
+                        elif item.is_dir():
+                            shutil.copytree(item, dst, dirs_exist_ok=True)
+                    except Exception:
+                        pass
+
+            # Clean up workspace
+            shutil.rmtree(workspace, ignore_errors=True)
 
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, _cleanup)
+        await loop.run_in_executor(None, _persist_and_cleanup)
         logger.info("release exec_id=%s container=%s duration=%.2fs",
                     sandbox.exec_id, sandbox.container_id, time.monotonic() - t0)
