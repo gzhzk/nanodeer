@@ -49,8 +49,7 @@ nanodeer/
 │       ├── cli/                  # 入口点
 │       │   ├── api.py            # FastAPI SSE 服务器
 │       │   ├── cli/config.py     # AppConfig（HTTP/存储）
-│       │   ├── repl.py           # CLI REPL（调试）
-│       │   └── brain.py          # NDJSON stdio（旧版）
+│       │   └── repl.py           # CLI REPL（调试）
 │       ├── agent/                # ReActExecutor、ContextManager、SandboxManager
 │       │   ├── react.py          # 原生 async ReAct 循环 + 内联 bash 审计 + clarification
 │       │   ├── factory.py        # NanoDeerFactory — 组装 executor + 包装 tools
@@ -69,7 +68,7 @@ nanodeer/
 │
 ├── frontend/                      # Next.js + assistant-ui 聊天界面
 ├── config.yaml                   # 配置文件
-└── tests/                        # 当前套件共 283 个测试
+└── tests/                        # 当前套件共 305 个测试
 ```
 
 ---
@@ -178,6 +177,7 @@ ContextManager.load() → SandboxManager.acquire() → LLM.ainvoke()
 | 沙箱管理 | `SandboxManager.acquire()/release()` 幂等管理容器生命周期 |
 | bash 审计 | `_bash_safe()` 内联正则匹配，阻断高危命令 |
 | LLM 重试 | `_call_with_retry()` 指数退避处理 429/5xx/timeout |
+| 循环收敛 | 重复相同工具调用和最大轮数 guard 会合成最终回答，避免无限 ReAct |
 
 ### 3. HTTP SSE API
 
@@ -201,6 +201,8 @@ NanoDeer 提供 FastAPI 服务器，使用 Server-Sent Events 实现实时流式
 | **工具路由** | [sandbox/tools.py](src/nanodeer/sandbox/tools.py) | SandboxExecTool 在工厂组装时包装 9 个工具，透明路由到 Docker 或 Local |
 | **路径翻译** | [sandbox/path.py](src/nanodeer/sandbox/path.py) | 虚拟 `/mnt/user-data/...` ↔ 物理 `{base_path}/{exec_id}/user-data/...`，防路径穿越 |
 | **安全审计** | [react.py](src/nanodeer/agent/react.py) | `_bash_safe()` 内联函数审计 bash 命令，阻断高危模式 |
+
+`glob` 和 `grep` 的路径参数按 path 校验/翻译，pattern 用 base64 传输；这样 Docker 和 Local fallback 都能正确处理 `/mnt/user-data/...`。
 
 ### 5. 内联错误处理
 
@@ -355,7 +357,7 @@ NanoDeer 使用两个生命周期不同的数据载体：
 4. **Compression 在 App 层**：触发时机由 NanoEngine 决定，不在 ReAct 循环内部自动触发。
 5. **Prompt 按需渲染**：只在数据存在且功能开关打开时渲染对应 section。
 6. **Sandbox + Host 双路径**：敏感操作走容器，`save_memory`/`create_plan`/`add_step` 直连宿主机。
-7. **原生 ReAct 循环**：无 LangGraph 依赖。300 行 `while True` 代替图编译器。
+7. **原生 ReAct 循环**：无 LangGraph 依赖。直接 `while True` 串起重试、澄清、工具执行和收敛 guard。
 8. **混合持久化**：memory/plan 使用文件（可检查、可审计），checkpoint 使用 SQLite（高效查询）。
 
 ---
@@ -382,10 +384,10 @@ NanoDeer 使用两个生命周期不同的数据载体：
 - ✅ Docker + Local 沙箱 + 路径隔离
 - ✅ 19 个内置工具
 - ✅ 文件型记忆、计划、checkpoint、会话持久化
-- ✅ NDJSON brain/shell 协议
 - ✅ assistant-ui 前端（Next.js + assistant-ui）
 - ✅ SubagentCoordinator（spawn/stop/list 生命周期，最大 3 并发）
 - ✅ 技能工作流加载
+- ✅ Smoke benchmark：8/8 通过，使用 deterministic assertions
 
 **开发中 / 规划中：**
 

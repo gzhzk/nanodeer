@@ -228,12 +228,17 @@ create_nanodeer_agent(model, tools=None, features=None, ...)
 4. `wrapped_tools = _wrap_tools(tools, sandbox_provider)`
 5. 如果 `subagent_runner is not False`：
    - 过滤 read-only safe tools
+   - 原始 safe tools 作为 `tool_schemas`
+   - wrapped safe tools 作为 runtime `tools`
    - 创建 `SubagentCoordinator`
    - `set_executor(subagent_runner)`
 6. 创建 `ReActExecutor(llm, original_tools, prompt_config, ...)`
 7. 将 executor runtime tool map 替换为 wrapped tools
 
 关键点：
+
+- 主 Agent 和 Subagent 都是 schema/runtime split：LLM 绑定原始工具 schema，执行阶段走 sandbox wrapper。
+- Subagent 只拿 read-only safe tools，并拥有独立 sandbox。
 
 ```text
 LLM schema: original tools
@@ -329,6 +334,7 @@ while True:
 
   save checkpoint
   context.absorb(state)
+  check repeat/max-turn convergence guard
 
   if END:
       break
@@ -337,6 +343,12 @@ release sandbox
 emit end
 return state, events
 ```
+
+收敛保护：
+
+- `tool_repeat_guard`: 连续重复相同工具调用达到阈值时，合成包含最近工具 marker 的最终 assistant message，并结束。
+- `turn_limit`: ReAct turn 达到上限时结束，避免真实模型无限工具循环。
+- 这两个事件都会进入 trace，供 benchmark/debug 使用。
 
 ### 7.1 下一轮如何发生
 

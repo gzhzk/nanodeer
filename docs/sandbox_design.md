@@ -152,10 +152,10 @@ ReActExecutor END
 | 工具 | 模板策略 | 说明 |
 |------|---------|------|
 | `read_file` | `path_vars` | 路径直接替换 |
-| `write_file` | `b64_vars` | 路径+内容都 base64 |
+| `write_file` | `path_vars` + `b64_vars` | 路径校验/替换，内容 base64 |
 | `ls` | `path_vars` | 目录列表 |
-| `glob` | `b64_vars` | 模式匹配 |
-| `grep` | `b64_vars` | 正则搜索 |
+| `glob` | `path_vars` + `b64_vars` | 路径校验/替换，pattern base64 |
+| `grep` | `path_vars` + `b64_vars` | 路径校验/替换，pattern base64 |
 | `bash` | `b64_vars` | base64 解码执行 |
 | `git` | `translate_vars` | 提取+翻译虚拟路径，再 base64 |
 | `exec_python` | `b64_vars` | Python 代码执行 |

@@ -28,7 +28,6 @@ Layer 5: HTTP API / UI Interface
   frontend/                         -> Next.js + assistant-ui
   src/nanodeer/cli/api.py          -> FastAPI + SSE API
   src/nanodeer/cli/repl.py         -> async CLI REPL
-  src/nanodeer/cli/brain.py        -> legacy NDJSON stdio adapter
 
 Layer 4: Application Entry
   src/nanodeer/engine.py
@@ -124,6 +123,7 @@ POST /api/chat
   -> LLM.astream(...)
   -> clarification check / tool-call aggregation
   -> tool loop
+  -> repeat/max-turn convergence guard
   -> checkpoint save
   -> context absorb (episodic memory)
   -> next turn or end
@@ -183,6 +183,8 @@ Responsibilities:
 - stream tokens and aggregate tool calls
 - detect clarification requests
 - run tools and append `ToolMessage`s
+- stop repeated identical tool-call loops with `tool_repeat_guard`
+- stop runaway ReAct turns with `turn_limit`
 - set `NextAction` (`PROCESS`, `WAIT`, `END`)
 - save checkpoints
 
@@ -263,10 +265,12 @@ The execution model is:
 - LLM sees the original tool schema
 - `NanoDeerFactory` wraps sandbox-aware tools for runtime execution
 - wrapped tools route to Docker or Local sandbox transparently
+- subagents follow the same split: original safe tool schemas for `bind_tools()`, sandbox-wrapped safe tools for execution
 
 Important design detail:
 
 - many file/shell tools rely on sandbox wrappers for actual execution
+- `glob` and `grep` validate/translate `file_path` as a path and base64-encode only `pattern`
 - host-only tools, such as memory/plan/skills, execute directly outside sandbox
 
 ### Host-side tools
@@ -560,6 +564,8 @@ collector.emit("turn_start", turn=1, model=..., ...)
 | `tool_call` | tool invocation | name, args, id |
 | `tool_blocked` | bash audit block | name, reason |
 | `tool_result` | tool returns | name, success, duration_ms, result |
+| `tool_repeat_guard` | repeated identical tool-call loop stopped | repeated_count, tool_calls |
+| `turn_limit` | max ReAct turn guard stopped execution | max_turns |
 | `checkpoint_saved` | Checkpointer persists | duration_ms |
 | `context_absorbed` | turn absorption done | duration_ms |
 | `wait` | clarification triggered | question |
@@ -652,7 +658,6 @@ NanoEngine.run() ─── ReActExecutor ─── context / sandbox / LLM / too
 | `frontend/components/nanodeer-adapter.ts` | frontend adapter for NanoDeer SSE |
 | `src/nanodeer/cli/api.py` | FastAPI app, SSE chat, conversation APIs |
 | `src/nanodeer/cli/repl.py` | async CLI REPL |
-| `src/nanodeer/cli/brain.py` | legacy stdio adapter |
 
 ### Layer 4: Application Entry
 
@@ -714,7 +719,7 @@ NanoEngine.run() ─── ReActExecutor ─── context / sandbox / LLM / too
    The frontend is built around SSE from `run_streaming()`.
 
 5. **Tools are schema/runtime split**
-   LLM-facing tool schemas are original tools; runtime execution may be sandbox-wrapped.
+   LLM-facing tool schemas are original tools; runtime execution may be sandbox-wrapped. Subagents use the same split for their read-only safe tool subset.
 
 6. **Sandbox lifecycle is turn-aware**
    Sandboxes are reused across turns and released on end.
@@ -726,7 +731,7 @@ NanoEngine.run() ─── ReActExecutor ─── context / sandbox / LLM / too
    Current runtime uses plans and steps, not `write_todo` / `list_todos`.
 
 9. **Subagents are intentionally constrained**
-   They get a read-only safe subset and their own sandbox.
+   They get a read-only safe subset and their own sandbox. Pending/active subagent polling is not treated as a tool error; failed/timeout/cancelled worker results are.
 
 10. **Docker is preferred, not mandatory**
     Local fallback exists when Docker is unavailable.

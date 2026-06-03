@@ -95,7 +95,8 @@ class WorkerTask:
 ```python
 class SubagentCoordinator:
     def __init__(self, llm, tools, sandbox_provider,
-                 max_concurrent=3, timeout_seconds=900):
+                 max_concurrent=3, timeout_seconds=900,
+                 tool_schemas=None):
 ```
 
 内部维护三个集合：
@@ -109,13 +110,20 @@ class SubagentCoordinator:
 # factory.py NanoDeerFactory.build()
 subagent_runner = SubagentCoordinator(
     llm=llm,
-    tools=wrapped_tools,        # sandbox-wrapped tools（子 Agent 也走 sandbox）
+    tools=wrapped_safe_tools,          # runtime 执行用，走 sandbox wrapper
+    tool_schemas=original_safe_tools,  # LLM bind_tools 用，保持原始 schema
     sandbox_provider=sandbox,
     max_concurrent=max_concurrent,
     timeout_seconds=timeout_seconds,
 )
 set_executor(subagent_runner)
 ```
+
+这里和主 Agent 一样遵循 schema/runtime 分离：
+
+- LLM 只看原始 read-only safe tool schema。
+- Worker 真正执行时使用 sandbox-wrapped safe tools。
+- 这样避免 LangChain 将 `SandboxExecTool` wrapper 当成 unsupported function。
 
 工具函数通过 `get_executor()` 获取全局实例，不依赖构造函数注入。
 
@@ -195,7 +203,7 @@ _run_worker():
 | 中间件链 | 完整 10+ middleware | 无（直接 ReAct，无 middleware） |
 | Checkpoint | SqliteCheckpointer 每轮保存 | 无 |
 | Sandbox | Middleware 管理 | `_run_worker` 内直接 acquire/release |
-| 工具 | 16 个工具（sandbox-wrapped） | 共享同一个 wrapped_tools 列表 |
+| 工具 | 19 个工具；schema/runtime 分离 | 只读 safe tool 子集；schema/runtime 分离 |
 
 Worker 不需要 middleware 链，因为：
 - 不需要 plan/memory 上下文注入（任务描述已在 prompt 中）
@@ -254,9 +262,17 @@ async def get_subagent_results(sub_id: str) -> str:
     coordinator = get_executor()
     result = coordinator.get_result(sub_id)
     if result is None:
-        return f"Subagent {sub_id} is still running or not found."
+        if sub_id in pending_or_active_ids:
+            return f"Subagent {sub_id} is still running."
+        return f"Error: Subagent {sub_id} not found."
     return format_result(result)
 ```
+
+语义约定：
+
+- pending/active worker 返回 running 文案，不算工具错误。
+- unknown worker 返回 `Error:`，会被工具结果标记为失败。
+- failed/timeout/cancelled worker 会通过 `<subagent_result>` 暴露状态，并被 `no_tool_errors` benchmark 捕捉。
 
 format_result 的输出格式：
 

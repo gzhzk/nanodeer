@@ -81,6 +81,7 @@ executor._tool_map = {t.name: t for t in wrapped_tools}
 - `executor._tool_map` 用运行时工具。
 - 如果工具是 sandbox-aware，它会被替换成 `SandboxExecTool`。
 - 如果工具不是 sandbox-aware，就直接保留原始工具。
+- Subagent 也遵循同一原则：LLM 绑定原始 safe tool schema，worker 执行 sandbox-wrapped safe tools。
 
 这是当前工具系统最重要的设计点。
 
@@ -113,8 +114,8 @@ wrap_tool_for_sandbox(tool, provider)
 | `read_file` | `file_path` 走 path validation |
 | `write_file` | `file_path` validation，`content` base64 |
 | `ls` | `file_path` validation |
-| `glob` | `file_path`/`pattern` base64 |
-| `grep` | `file_path`/`pattern` base64 |
+| `glob` | `file_path` validation，`pattern` base64 |
+| `grep` | `file_path` validation，`pattern` base64 |
 | `bash` | `command` base64 |
 | `git` | `command` 内虚拟路径先翻译再 base64 |
 | `exec_python` | `code` base64 |
@@ -225,8 +226,11 @@ LLM response
        state.messages.append(ToolMessage(...))
   -> checkpoint save
   -> context absorb
+  -> repeat/max-turn convergence guard
   -> next ReAct turn
 ```
+
+如果模型反复发出相同工具调用，executor 会触发 `tool_repeat_guard`，合成一个包含最近工具 marker 的最终 assistant message 并结束。若超过最大 ReAct 轮数，则触发 `turn_limit` 后结束。这两个 guard 是为了防止真实模型在已经完成写文件/查询后继续空转。
 
 流式路径：
 
@@ -357,6 +361,19 @@ read_image
 - spawn_subagent
 
 这样子代理是“只读调查员”，不是完整主 agent 的复制品。
+
+实现上有两个工具列表：
+
+- `tool_schemas`: 原始 safe tools，传给 `llm.bind_tools()`。
+- `tools`: sandbox-wrapped safe tools，worker 运行时实际执行。
+
+这样子代理既能给 LLM 稳定 schema，又能保持独立 sandbox 路由。
+
+`get_subagent_results` 会区分：
+
+- pending/active worker: 返回 `Subagent <id> is still running.`，不算工具错误。
+- unknown worker: 返回 `Error: Subagent <id> not found.`，算工具错误。
+- completed/failed worker: 返回 `<subagent_result>`；failed/timeout/cancelled 会被 trace 标记为失败工具结果。
 
 ---
 

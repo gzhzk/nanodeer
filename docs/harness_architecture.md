@@ -64,7 +64,7 @@ NanoDeer 当前版本的设计取向很明确：
 
 - Web UI: Next.js + assistant-ui
 - API: FastAPI + SSE
-- CLI: REPL / legacy brain
+- CLI: REPL
 
 职责：
 - 接受用户输入
@@ -222,7 +222,8 @@ NanoDeer 当前版本的设计取向很明确：
 6. 如果有 tool calls，逐个执行
 7. `checkpointer.save(...)`
 8. `context.absorb(state)`
-9. 如果结束则 release sandbox
+9. 检查重复工具调用 / 最大轮数 guard
+10. 如果结束则 release sandbox
 
 对应代码：
 - [src/nanodeer/agent/react.py](/home/kai/workspace/nanodeer/src/nanodeer/agent/react.py:243)
@@ -591,6 +592,7 @@ Subagent 的设计目标很务实：
 - 没有 memory/plan 注入
 - prompt 更简
 - 只给安全的只读工具子集
+- 也做 schema/runtime 分离：LLM 看原始 safe tool schema，执行走 sandbox-wrapped safe tools
 
 这说明 NanoDeer 的 subagent 设计偏工程保守：
 

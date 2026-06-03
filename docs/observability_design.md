@@ -107,12 +107,14 @@ executor.run_streaming()
 | `tool_call` | 工具调用开始 |
 | `tool_blocked` | 工具被安全策略阻断 |
 | `tool_result` | 工具调用结果 |
+| `tool_repeat_guard` | 重复相同工具调用被收敛终止 |
+| `turn_limit` | ReAct 最大轮数 guard 触发 |
 | `checkpoint_saved` | checkpoint 保存完成 |
 | `context_absorbed` | episodic absorb 完成 |
 | `wait` | 进入 clarification 等待 |
 | `end` | 执行结束 |
 | `cancelled` | HTTP task cancelled |
-| `error` | API 或 legacy adapter 错误 |
+| `error` | API 或 runtime 错误 |
 
 ---
 

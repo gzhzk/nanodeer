@@ -49,8 +49,7 @@ nanodeer/
 │       ├── cli/                  # Entry points
 │       │   ├── api.py            # FastAPI SSE server
 │       │   ├── cli/config.py     # AppConfig (HTTP/storage)
-│       │   ├── repl.py           # CLI REPL (debug)
-│       │   └── brain.py          # NDJSON stdio (legacy)
+│       │   └── repl.py           # CLI REPL (debug)
 │       ├── agent/                # ReActExecutor, ContextManager, State
 │       │   ├── react.py          # Native async ReAct loop (no LangGraph)
 │       │   ├── factory.py        # NanoDeerFactory — assembles executor + wraps tools
@@ -68,7 +67,7 @@ nanodeer/
 │
 ├── frontend/                      # Next.js + assistant-ui chat UI
 ├── config.yaml                   # Harness configuration
-└── tests/                        # 283 tests in the current suite
+└── tests/                        # 305 tests in the current suite
 ```
 
 ---
@@ -176,6 +175,7 @@ Most Agent frameworks route middleware as pre/post hooks around the LLM call. Na
 | Sandbox lifecycle | `SandboxManager.acquire()/release()` idempotent container lifecycle management |
 | Bash audit | `_bash_safe()` inline regex, blocks dangerous patterns |
 | LLM retry | `_call_with_retry()` exponential backoff for 429/5xx/timeout |
+| Loop convergence | repeated identical tool calls and max-turn guard synthesize a final answer instead of spinning forever |
 
 ### 3. HTTP SSE API
 
@@ -199,6 +199,8 @@ Three design layers, not one:
 | **Tool Routing** | [sandbox/tools.py](src/nanodeer/sandbox/tools.py) | SandboxExecTool wraps 9 tools at factory assembly, routes to Docker or Local transparently |
 | **Path Translation** | [sandbox/path.py](src/nanodeer/sandbox/path.py) | Virtual `/mnt/user-data/...` ↔ physical `{base_path}/{exec_id}/user-data/...`, traversal-protected |
 | **Security Audit** | [react.py](src/nanodeer/agent/react.py) | `_bash_safe()` inline regex audits commands, blocks dangerous patterns |
+
+For `glob` and `grep`, paths are validated/transformed as paths while patterns are base64-encoded. This keeps Docker and Local fallback behavior aligned for `/mnt/user-data/...`.
 
 ---
 
@@ -364,7 +366,7 @@ NanoDeer uses two data carriers with distinct lifetimes:
 4. **Compression is app-layer**: Timing decided by NanoEngine, not auto-triggered in the ReAct loop.
 5. **Prompt auto-detection**: Sections render only when data is present AND feature flag is True.
 6. **Sandbox + Host dual paths**: Sensitive ops through containers, `save_memory`/plan tools directly on host.
-7. **Native ReAct loop**: No LangGraph dependency. 300 lines of `while True` instead of a graph compiler.
+7. **Native ReAct loop**: No LangGraph dependency. A direct `while True` loop with retry, clarification, tool execution, and convergence guards instead of a graph compiler.
 8. **Hybrid persistence**: Memory/plan uses files (inspectable, auditable). Checkpoint uses SQLite (efficient queries).
 
 ---
@@ -396,6 +398,7 @@ NanoDeer uses two data carriers with distinct lifetimes:
 - ✅ SubagentCoordinator with spawn/stop/list lifecycle (max 3 concurrent)
 - ✅ Skill workflow loader
 - ✅ assistant-ui frontend (Next.js + assistant-ui)
+- ✅ Smoke benchmark suite: 8/8 passed with deterministic assertions
 
 **In progress / planned:**
 
