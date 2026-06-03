@@ -90,6 +90,7 @@ class SqliteCheckpointer(Checkpointer):
         self.db_path = Path(db_path).expanduser().resolve()
         self.db_path.mkdir(parents=True, exist_ok=True)
         self._conn: sqlite3.Connection | None = None
+        self._lock = asyncio.Lock()
         self._init_db()
 
     # ------------------------------------------------------------------
@@ -249,12 +250,14 @@ class SqliteCheckpointer(Checkpointer):
     # ------------------------------------------------------------------
 
     async def save(self, thread_id: str, state: ThreadState) -> None:
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, self._sync_save, thread_id, state)
+        async with self._lock:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, self._sync_save, thread_id, state)
 
     async def load(self, thread_id: str) -> ThreadState | None:
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self._sync_load, thread_id)
+        async with self._lock:
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(None, self._sync_load, thread_id)
 
     async def load_meta(self, thread_id: str) -> dict | None:
         """Load thread metadata without fetching messages."""
