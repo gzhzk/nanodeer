@@ -34,6 +34,7 @@ class RunResult:
     thread_id: str
     message: str
     next_action: NextAction = NextAction.PROCESS
+    finish_reason: str = "running"  # completed / repeated_tool_calls / max_turns / bash_blocked / sandbox_released
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     duration_ms: int = 0
     events: list = field(default_factory=list)  # JSON events from --json-events mode
@@ -175,8 +176,8 @@ class NanoEngine:
 
         # Resume from checkpoint if thread_id provided and checkpoint exists
         state = None
-        if thread_id and executor._checkpointer:
-            saved = await executor._checkpointer.load(thread_id)
+        if thread_id and self._checkpointer:
+            saved = await self._checkpointer.load(thread_id)
             if saved:
                 state = saved
 
@@ -244,6 +245,7 @@ class NanoEngine:
             thread_id=thread_id,
             message=final_message,
             next_action=state.next_action,
+            finish_reason=state.finish_reason,
             tool_calls=tool_calls,
             duration_ms=duration_ms,
             events=events,
@@ -351,8 +353,8 @@ class NanoEngine:
 
         # Resume from checkpoint if thread_id provided and checkpoint exists
         state = None
-        if thread_id and executor._checkpointer:
-            saved = await executor._checkpointer.load(thread_id)
+        if thread_id and self._checkpointer:
+            saved = await self._checkpointer.load(thread_id)
             if saved:
                 state = saved
 

@@ -22,7 +22,7 @@ class TurnSignals:
     plan_context: str | None = None
     events: list = field(default_factory=list)
     uploaded_files_list: str | None = None
-    _uploaded_files: list[dict] | None = None
+    uploaded_files: list[dict] | None = None
 
 
 class SandboxState(BaseModel):
@@ -37,6 +37,7 @@ class ThreadState(BaseModel):
     thread_id: str | None = None
     messages: list[BaseMessage] = Field(default_factory=list)
     next_action: NextAction = NextAction.PROCESS
+    finish_reason: str = "running"  # why the last turn ended: completed/repeated_tool_calls/max_turns/bash_blocked/sandbox_released
     title: str | None = None
     sandbox: SandboxState | None = None
     system_prompt: str | None = None  # cached static system prompt (built once, reused every turn)
