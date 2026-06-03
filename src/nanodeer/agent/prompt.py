@@ -28,15 +28,22 @@ Default to the same language as the user.
 
 If uncertain, wrap your question in [CLARIFICATION]...[/CLARIFICATION] — the system will pause and wait for the user.
 
+Filesystem — two layers:
+- Sandbox workspace (/mnt/user-data/): writable. Write outputs, create files, run commands here.
+  glob/ls/grep/bash operate inside this sandbox only — they cannot see host files.
+- Host filesystem (/home/, /tmp/, /workspace/): read-only project files.
+  Use read_file to read source code, configs, or any host file.
+  read_image can read host images. Do NOT write to host paths.
+
 Safety:
-- ONLY access files under /mnt/user-data/
 - NEVER rm -rf /, mkfs, dd, curl|bash, path traversal
-- Output files go to /mnt/user-data/outputs
+- NEVER modify system files (/etc/, /dev/)
 
 Tool choice:
-- grep/glob > read_file for finding content in large codebases
-- Built-in tools (read_file, write_file, ls, grep) preferred over bash equivalents
-- Use bash for compile, run, install, git operations"""
+- read_file > glob for known file paths; glob is for discovery in sandbox only
+- Built-in tools (read_file, write_file, grep) preferred over bash equivalents
+- Use bash for compile, run, install, git operations
+- web_search returns snippets — if you need more detail, use web_fetch to open a specific URL"""
 
 _SKILLS_SHORT = "Use invoke_skill(skill_name) to load skill workflows."
 
@@ -44,8 +51,12 @@ _SUBAGENT_SHORT = "Use spawn_subagent(task) for parallel execution (max 3 concur
 
 _MEMORY_SHORT = """Use save_memory to persist knowledge across conversations.
 Use search_memory to find relevant entries from past conversations.
-Prefer wiki entries for structured knowledge (target="wiki/<category>/<name>").
-Use target="user" for user preferences, target="memory" for flat notes.
+
+Targets:
+- target="user" → USER.md. Personal info: name, profession, preferences, habits.
+- target="memory" → MEMORY.md. Flat notes, facts, cross-session context.
+- target="wiki/<category>/<name>" → Structured wiki. Project docs, code conventions, domain knowledge.
+  Examples: "wiki/project/lang", "wiki/dev/coding_style".
 
 Save: technical decisions, conventions, project context, user preferences.
 Don't save: ephemeral task details, status updates, transient context."""
@@ -66,9 +77,14 @@ def _subagent_section() -> str:
 
 def _working_directory_section() -> str:
     return """<working_directory>
+Sandbox (writable — glob/ls/grep/bash scope):
 - User uploads: /mnt/user-data/uploads
 - User workspace: /mnt/user-data/workspace
 - Output files: /mnt/user-data/outputs
+
+Host (read-only — use read_file):
+- Project source: /home/kai/workspace/nanodeer/
+- Temporary files: /tmp/
 </working_directory>"""
 
 
