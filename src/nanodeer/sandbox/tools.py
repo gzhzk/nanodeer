@@ -49,6 +49,28 @@ SANDBOX_TOOL_CONFIGS: dict[str, dict] = {
         "b64_vars": ["content"],
         "timeout": 60,
     },
+    "edit_file": {
+        # file_path: validated + translated to physical path (path_vars).
+        # old_string / new_string: base64-encoded for safe transport.
+        "template": (
+            'python3 -c "import base64,sys\n'
+            'p=sys.argv[1]\n'
+            'o=base64.b64decode(sys.argv[2]).decode()\n'
+            'n=base64.b64decode(sys.argv[3]).decode()\n'
+            'with open(p) as f: c=f.read()\n'
+            'cnt=c.count(o)\n'
+            'if cnt==0: print(chr(69)+chr(114)+chr(114)+chr(111)+chr(114)+chr(58)+chr(32)+chr(115)+chr(116)+chr(114)+chr(105)+chr(110)+chr(103)+chr(32)+chr(110)+chr(111)+chr(116)+chr(32)+chr(102)+chr(111)+chr(117)+chr(110)+chr(100))\n'
+            'elif cnt>1: print(chr(69)+chr(114)+chr(114)+chr(111)+chr(114)+chr(58)+chr(32)+chr(102)+chr(111)+chr(117)+chr(110)+chr(100)+chr(32)+str(cnt)+chr(32)+chr(111)+chr(99)+chr(99)+chr(117)+chr(114)+chr(114)+chr(101)+chr(110)+chr(99)+chr(101)+chr(115))\n'
+            'else:\n'
+            '  c=c.replace(o,n)\n'
+            '  open(p,chr(119)).write(c)\n'
+            '  print(chr(79)+chr(75))" '
+            '{file_path} {b64_old_string} {b64_new_string}'
+        ),
+        "path_vars": ["file_path"],
+        "b64_vars": ["old_string", "new_string"],
+        "timeout": 30,
+    },
     "ls": {
         "template": 'python3 -c "import os,sys; [print(f) for f in os.listdir(sys.argv[1])]" {file_path}',
         "path_vars": ["file_path"],
