@@ -1,8 +1,7 @@
 """NanoDeer HTTP API — FastAPI + SSE streaming.
 
-Replaces the stdio-based brain.py + TS SDK as the primary
-frontend-facing interface. Frontend (assistant-ui) connects
-here directly via SSE.
+Primary frontend-facing interface. Frontend (assistant-ui)
+connects here directly via SSE.
 
 Usage:
     python -m nanodeer.cli.api     # start server
