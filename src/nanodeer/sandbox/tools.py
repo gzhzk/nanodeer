@@ -58,34 +58,43 @@ SANDBOX_TOOL_CONFIGS: dict[str, dict] = {
     "glob": {
         "template": (
             'python3 -c "import base64,os,fnmatch,sys; '
-            'p=base64.b64decode(sys.argv[1]).decode();'
+            'p=sys.argv[1];'
             'pat=base64.b64decode(sys.argv[2]).decode();'
             '[print(os.path.join(r,f)) for r,_,fs in os.walk(p) '
             'for f in fs if fnmatch.fnmatch(f,pat)]" '
-            "{b64_file_path} {b64_pattern}"
+            "{file_path} {b64_pattern}"
         ),
-        "path_vars": [],
-        "b64_vars": ["file_path", "pattern"],
+        "path_vars": ["file_path"],
+        "b64_vars": ["pattern"],
         "timeout": 30,
     },
     "grep": {
         "template": (
-            'python3 -c "import base64,os,re,sys; '
-            'p=base64.b64decode(sys.argv[1]).decode();'
-            'pat=base64.b64decode(sys.argv[2]).decode();'
-            'rec=sys.argv[3]==\\\"True\\\"; '
-            'for root,_,fs in os.walk(p): '
-            '  for f in fs: '
-            '    fpath=os.path.join(root,f); '
-            '    try: '
-            '      for i,line in enumerate(open(fpath),1): '
-            '        if re.search(pat,line): print(f\\\"{{fpath}}:{{i}}:{{line.rstrip()}}\\\") '
-            '    except: pass; '
-            '  if not rec: break" '
-            "{b64_file_path} {b64_pattern} {rec_flag}"
+            'python3 -c "import base64,os,re,sys\n'
+            'p=sys.argv[1]\n'
+            'pat=base64.b64decode(sys.argv[2]).decode()\n'
+            'rec=sys.argv[3].lower()==chr(116)+chr(114)+chr(117)+chr(101)\n'
+            'paths=[]\n'
+            'if os.path.isdir(p):\n'
+            '    for root,_,fs in os.walk(p):\n'
+            '        for f in fs:\n'
+            '            paths.append(os.path.join(root,f))\n'
+            '        if not rec:\n'
+            '            break\n'
+            'else:\n'
+            '    paths.append(p)\n'
+            'for fpath in paths:\n'
+            '    try:\n'
+            '        with open(fpath,encoding=chr(117)+chr(116)+chr(102)+chr(45)+chr(56),errors=chr(114)+chr(101)+chr(112)+chr(108)+chr(97)+chr(99)+chr(101)) as fh:\n'
+            '            for i,line in enumerate(fh,1):\n'
+            '                if re.search(pat,line):\n'
+            '                    print(fpath+chr(58)+str(i)+chr(58)+line.rstrip())\n'
+            '    except OSError:\n'
+            '        pass" '
+            "{file_path} {b64_pattern} {recursive}"
         ),
-        "path_vars": [],
-        "b64_vars": ["file_path", "pattern"],
+        "path_vars": ["file_path"],
+        "b64_vars": ["pattern"],
         "timeout": 30,
     },
     "bash": {

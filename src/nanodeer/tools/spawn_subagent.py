@@ -44,6 +44,12 @@ async def get_subagent_results(sub_id: str) -> str:
     result = coordinator.get_result(sub_id)
 
     if result is None:
-        return f"Subagent {sub_id} is still running or not found."
+        known_ids = {
+            task.worker_id
+            for task in coordinator.list_pending() + coordinator.list_active()
+        }
+        if sub_id in known_ids:
+            return f"Subagent {sub_id} is still running."
+        return f"Error: Subagent {sub_id} not found."
 
     return format_result(result)

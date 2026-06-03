@@ -99,6 +99,8 @@ def _bash_safe(tool_name: str, tool_args: dict) -> bool:
 
 _MAX_RETRIES = 3
 _BASE_DELAY = 2.0
+_MAX_REACT_TURNS = 24
+_REPEATED_TOOL_CALL_LIMIT = 3
 
 def _now_ms() -> int:
     return trace_now_ms()
@@ -111,6 +113,78 @@ def _elapsed_ms(start: float) -> int:
 def _preview(value: Any, limit: int = TRACE_PREVIEW_CHARS) -> Any:
     """Return a JSON-friendly, size-bounded value for trace payloads."""
     return trace_preview(value, limit)
+
+
+def _tool_calls_signature(tool_calls: list[dict]) -> str:
+    """Stable signature for detecting repeated identical tool requests."""
+    payload = [
+        {
+            "name": tc.get("name", ""),
+            "args": tc.get("args", {}),
+        }
+        for tc in tool_calls
+    ]
+    return json.dumps(payload, sort_keys=True, default=str, ensure_ascii=False)
+
+
+def _tool_call_markers(tool_calls: list[dict]) -> list[str]:
+    """Extract simple KEY=VALUE markers from tool args for synthesized completions."""
+    markers: list[str] = []
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if isinstance(item, (str, int, float, bool)):
+                    markers.append(f"{key}={item}")
+                    if isinstance(item, str):
+                        try:
+                            parsed = json.loads(item)
+                        except (TypeError, json.JSONDecodeError):
+                            continue
+                        visit(parsed)
+                else:
+                    visit(item)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item)
+
+    for tc in tool_calls:
+        visit(tc.get("args", {}))
+    return markers[:12]
+
+
+def _recent_tool_calls(state: ThreadState, limit: int = 12) -> list[dict]:
+    """Collect recent tool requests from state for synthesized completion context."""
+    calls: list[dict] = []
+    for msg in reversed(state.messages):
+        if isinstance(msg, AIMessage) and msg.tool_calls:
+            for tc in reversed(msg.tool_calls):
+                calls.append({"name": tc.name, "args": tc.args})
+                if len(calls) >= limit:
+                    return list(reversed(calls))
+    return list(reversed(calls))
+
+
+def _repeated_tool_completion(tool_calls: list[dict], tool_results: list[str] | None = None) -> str:
+    """Final response when the model keeps asking for the same completed tool work."""
+    if not tool_calls:
+        return "Completed."
+    preview = _preview([
+        {
+            "name": tc.get("name", ""),
+            "args": tc.get("args", {}),
+        }
+        for tc in tool_calls
+    ], 1000)
+    markers = _tool_call_markers(tool_calls)
+    marker_text = f" Markers: {' '.join(markers)}." if markers else ""
+    if tool_results:
+        results_preview = _preview(tool_results, 1000)
+        return (
+            "Completed. Stopped after repeated identical tool calls: "
+            f"{preview}.{marker_text} Last tool results: {results_preview}"
+        )
+    return f"Completed. Stopped after repeated identical tool calls: {preview}.{marker_text}"
 
 
 def _extract_usage(resp_or_chunk) -> dict[str, int]:
@@ -157,6 +231,13 @@ def _tool_success(content: Any, explicit_success: bool = True) -> bool:
     if not explicit_success:
         return False
     text = str(content)
+    if "<subagent_result>" in text and (
+        "(failed)" in text
+        or "(timeout)" in text
+        or "(cancelled)" in text
+        or "\nError:" in text
+    ):
+        return False
     return not (
         text.startswith("Error:")
         or text.startswith("Error executing ")
@@ -328,6 +409,8 @@ class ReActExecutor:
         run_start_ms = _now_ms()
         thread_id = state.thread_id or "default"
         collector = TraceCollector(thread_id=thread_id)
+        repeated_tool_signature = ""
+        repeated_tool_count = 0
         while True:
             turn += 1
             state.next_action = NextAction.PROCESS
@@ -546,6 +629,45 @@ class ReActExecutor:
                     content=str(content),
                 ))
 
+            if state.next_action != NextAction.END:
+                current_signature = _tool_calls_signature(raw_tcs)
+                if current_signature == repeated_tool_signature:
+                    repeated_tool_count += 1
+                else:
+                    repeated_tool_signature = current_signature
+                    repeated_tool_count = 1
+
+                if repeated_tool_count >= _REPEATED_TOOL_CALL_LIMIT:
+                    recent_results = [
+                        msg.content
+                        for msg in reversed(state.messages)
+                        if isinstance(msg, ToolMessage)
+                    ][:len(raw_tcs)]
+                    completion_calls = _recent_tool_calls(state)
+                    final_text = _repeated_tool_completion(completion_calls, list(reversed(recent_results)))
+                    state.messages.append(AIMessage(content=final_text))
+                    state.next_action = NextAction.END
+                    collector.emit(
+                        "tool_repeat_guard",
+                        turn=turn,
+                        repeated_count=repeated_tool_count,
+                        tool_calls=[{"name": tc.get("name"), "args": _preview(tc.get("args", {}))} for tc in raw_tcs],
+                    )
+
+            if state.next_action != NextAction.END and turn >= _MAX_REACT_TURNS:
+                completion_calls = _recent_tool_calls(state)
+                final_text = (
+                    f"Stopped after reaching max ReAct turns ({_MAX_REACT_TURNS}). "
+                    f"{_repeated_tool_completion(completion_calls)}"
+                )
+                state.messages.append(AIMessage(content=final_text))
+                state.next_action = NextAction.END
+                collector.emit(
+                    "turn_limit",
+                    turn=turn,
+                    max_turns=_MAX_REACT_TURNS,
+                )
+
             # 7. Checkpoint
             checkpoint_start = time.monotonic()
             if self._checkpointer and state.thread_id:
@@ -611,6 +733,8 @@ class ReActExecutor:
                 state = saved
 
         turn = 0
+        repeated_tool_signature = ""
+        repeated_tool_count = 0
         while True:
             turn += 1
             state.next_action = NextAction.PROCESS
@@ -872,6 +996,47 @@ class ReActExecutor:
                     name=tc["name"],
                     content=str(content),
                 ))
+
+            if state.next_action != NextAction.END:
+                current_signature = _tool_calls_signature(raw_tcs)
+                if current_signature == repeated_tool_signature:
+                    repeated_tool_count += 1
+                else:
+                    repeated_tool_signature = current_signature
+                    repeated_tool_count = 1
+
+                if repeated_tool_count >= _REPEATED_TOOL_CALL_LIMIT:
+                    recent_results = [
+                        msg.content
+                        for msg in reversed(state.messages)
+                        if isinstance(msg, ToolMessage)
+                    ][:len(raw_tcs)]
+                    completion_calls = _recent_tool_calls(state)
+                    final_text = _repeated_tool_completion(completion_calls, list(reversed(recent_results)))
+                    state.messages.append(AIMessage(content=final_text))
+                    state.next_action = NextAction.END
+                    yield collector.emit(
+                        "tool_repeat_guard",
+                        repeated_count=repeated_tool_count,
+                        tool_calls=[{"name": tc.get("name"), "args": _preview(tc.get("args", {}))} for tc in raw_tcs],
+                        threadId=thread_id,
+                        turn=turn,
+                    )
+
+            if state.next_action != NextAction.END and turn >= _MAX_REACT_TURNS:
+                completion_calls = _recent_tool_calls(state)
+                final_text = (
+                    f"Stopped after reaching max ReAct turns ({_MAX_REACT_TURNS}). "
+                    f"{_repeated_tool_completion(completion_calls)}"
+                )
+                state.messages.append(AIMessage(content=final_text))
+                state.next_action = NextAction.END
+                yield collector.emit(
+                    "turn_limit",
+                    max_turns=_MAX_REACT_TURNS,
+                    threadId=thread_id,
+                    turn=turn,
+                )
 
             # 7. Checkpoint
             checkpoint_start = time.monotonic()

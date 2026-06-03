@@ -57,6 +57,7 @@ class MockLLMWithTools:
             return response
 
     def bind_tools(self, tools):
+        self.bound_tools = tools
         return self
 
 
@@ -111,6 +112,25 @@ class TestSubagentCoordinatorRun:
         result = await coord.run("Task requiring tool")
         assert result["status"] == "completed"
         assert llm.call_count >= 1
+
+    @pytest.mark.asyncio
+    async def test_binds_schema_tools_but_executes_runtime_tools(self):
+        """Subagents bind original schemas while executing wrapped/runtime tools."""
+        llm = MockLLMWithTools(tool_name="mock_tool")
+        schema_tool = MockTool("mock_tool")
+        runtime_tool = MockTool("mock_tool")
+        provider = MockSandboxProvider()
+        coord = SubagentCoordinator(
+            llm=llm,
+            tools=[runtime_tool],
+            tool_schemas=[schema_tool],
+            sandbox_provider=provider,
+        )
+
+        result = await coord.run("Task requiring tool")
+
+        assert result["status"] == "completed"
+        assert llm.bound_tools == [schema_tool]
 
     @pytest.mark.asyncio
     async def test_generates_sub_id(self, coordinator):

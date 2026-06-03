@@ -24,10 +24,18 @@ class SubagentCoordinator:
     stop, and list methods for full lifecycle management.
     """
 
-    def __init__(self, llm: BaseChatModel, tools: list[BaseTool],
-                 sandbox_provider, max_concurrent: int = 3, timeout_seconds: int = 900):
+    def __init__(
+        self,
+        llm: BaseChatModel,
+        tools: list[BaseTool],
+        sandbox_provider,
+        max_concurrent: int = 3,
+        timeout_seconds: int = 900,
+        tool_schemas: list[BaseTool] | None = None,
+    ):
         self.llm = llm
         self.tools = tools
+        self.tool_schemas = tool_schemas or tools
         self.sandbox_provider = sandbox_provider
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._timeout_seconds = timeout_seconds
@@ -165,7 +173,7 @@ class SubagentCoordinator:
                 SystemMessage(content=f"You are a helpful assistant.\n\nTask: {worker.task}"),
                 HumanMessage(content=worker.task),
             ]
-            llm_bound = self.llm.bind_tools(self.tools)
+            llm_bound = self.llm.bind_tools(self.tool_schemas)
 
             for _ in range(spec.max_iterations):
                 response = await llm_bound.ainvoke(messages)

@@ -61,7 +61,7 @@ class TestSandboxExecCommandConstruction:
         assert "workspace" in cmd.cmd
 
     def test_glob_command(self):
-        """glob b64-encodes both file_path and pattern."""
+        """glob substitutes file_path and b64-encodes pattern."""
         tool = _mock_tool("glob")
         exec_tool = SandboxExecTool(tool, provider=None)
 
@@ -71,11 +71,12 @@ class TestSandboxExecCommandConstruction:
         )
 
         assert cmd is not None
+        assert "workspace" in cmd.cmd
         assert "*.py" not in cmd.cmd  # pattern is b64 encoded
         assert base64.b64encode(b"*.py").decode() in cmd.cmd
 
     def test_grep_command(self):
-        """grep b64-encodes file_path and pattern."""
+        """grep substitutes file_path and b64-encodes pattern."""
         tool = _mock_tool("grep")
         exec_tool = SandboxExecTool(tool, provider=None)
 
@@ -85,6 +86,7 @@ class TestSandboxExecCommandConstruction:
         )
 
         assert cmd is not None
+        assert "workspace" in cmd.cmd
         assert "def.*" not in cmd.cmd  # pattern is b64 encoded
         assert base64.b64encode(b"def.*").decode() in cmd.cmd
 
