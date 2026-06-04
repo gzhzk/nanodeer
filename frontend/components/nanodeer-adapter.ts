@@ -1,7 +1,7 @@
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import { createChatStream, cancelChat } from "@/lib/api";
 import { parseSSEStream } from "@/lib/stream-utils";
-import type { NanoDeerEvent } from "@/lib/types";
+import type { NanoDeerEvent, UploadedFilePayload } from "@/lib/types";
 
 const STORAGE_KEY = "nanodeer_thread_id";
 
@@ -35,6 +35,91 @@ type ContentPart =
   | { type: "text"; text: string }
   | { type: "reasoning"; text: string; details?: Array<{ type: "text"; text: string }> };
 
+type TextLikeContentPart = {
+  text?: string;
+};
+
+type ImageContentPart = {
+  type: "image";
+  image: string;
+  filename?: string;
+};
+
+function hasText(part: unknown): part is TextLikeContentPart {
+  return typeof part === "object" && part !== null && "text" in part;
+}
+
+function isImageContentPart(part: unknown): part is ImageContentPart {
+  return (
+    typeof part === "object" &&
+    part !== null &&
+    "type" in part &&
+    (part as { type?: unknown }).type === "image" &&
+    "image" in part &&
+    typeof (part as { image?: unknown }).image === "string"
+  );
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, i + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
+}
+
+async function fileToUpload(file: File, fallbackName?: string): Promise<UploadedFilePayload> {
+  return {
+    name: fallbackName || file.name || "upload",
+    content: arrayBufferToBase64(await file.arrayBuffer()),
+    mime_type: file.type || "application/octet-stream",
+    encoding: "base64",
+  };
+}
+
+function dataUrlToUpload(
+  dataUrl: string,
+  fallbackName: string,
+  fallbackMimeType?: string,
+): UploadedFilePayload | null {
+  const match = dataUrl.match(/^data:([^;,]+)?;base64,(.*)$/);
+  if (!match) return null;
+  return {
+    name: fallbackName,
+    content: match[2] ?? "",
+    mime_type: match[1] || fallbackMimeType || "application/octet-stream",
+    encoding: "base64",
+  };
+}
+
+async function extractUploadedFiles(
+  attachments: readonly NonNullable<Parameters<ChatModelAdapter["run"]>[0]["messages"][number]["attachments"]>[number][],
+): Promise<UploadedFilePayload[]> {
+  const uploads: UploadedFilePayload[] = [];
+
+  for (const attachment of attachments) {
+    if (attachment.file) {
+      uploads.push(await fileToUpload(attachment.file, attachment.name));
+      continue;
+    }
+
+    const imagePart = attachment.content?.find(isImageContentPart);
+    if (!imagePart) continue;
+
+    const upload = dataUrlToUpload(
+      imagePart.image,
+      imagePart.filename || attachment.name || "image",
+      attachment.contentType,
+    );
+    if (upload) uploads.push(upload);
+  }
+
+  return uploads;
+}
+
 function buildContent(
   accumulatedReasoning: string,
   accumulatedContent: string,
@@ -61,7 +146,9 @@ export const nanodeerAdapter: ChatModelAdapter = {
     const prompt =
       typeof lastMessage.content === "string"
         ? lastMessage.content
-        : lastMessage.content.map((c: any) => c.text ?? "").join("");
+        : lastMessage.content
+            .map((part) => (hasText(part) ? part.text ?? "" : ""))
+            .join("");
 
     const threadId = getSavedThreadId() || crypto.randomUUID();
     if (!getSavedThreadId()) saveThreadId(threadId);
@@ -71,7 +158,8 @@ export const nanodeerAdapter: ChatModelAdapter = {
     let hasReasoning = false;
 
     try {
-      const response = await createChatStream(prompt, threadId, abortSignal);
+      const uploadedFiles = await extractUploadedFiles(lastMessage.attachments ?? []);
+      const response = await createChatStream(prompt, threadId, uploadedFiles, abortSignal);
       if (!response.ok) {
         throw new Error(`Chat request failed: HTTP ${response.status}`);
       }

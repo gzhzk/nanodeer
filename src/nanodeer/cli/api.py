@@ -9,9 +9,12 @@ Usage:
 """
 
 import asyncio
+import base64
+import binascii
 import json
 import logging
 import uuid
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,6 +28,9 @@ logger = logging.getLogger(__name__)
 
 # Track running tasks per thread_id for cancellation
 _running_tasks: dict[str, asyncio.Task] = {}
+
+_MAX_UPLOADS = 8
+_MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 
 app = FastAPI(title="NanoDeer API")
 
@@ -45,6 +51,51 @@ def _make_checkpointer():
     """Create SqliteCheckpointer from config."""
     from nanodeer.agent.checkpoint.sqlite import SqliteCheckpointer
     return SqliteCheckpointer(str(get_config().thread.db_path.expanduser().resolve()))
+
+
+def _parse_uploaded_files(raw_files):
+    """Decode JSON upload payloads into engine-ready uploaded_files."""
+    if raw_files is None:
+        return [], None
+    if not isinstance(raw_files, list):
+        return [], "uploaded_files must be a list"
+    if len(raw_files) > _MAX_UPLOADS:
+        return [], f"at most {_MAX_UPLOADS} uploaded files are allowed"
+
+    decoded = []
+    total_size = 0
+    for index, raw_file in enumerate(raw_files):
+        if not isinstance(raw_file, dict):
+            return [], f"uploaded_files[{index}] must be an object"
+
+        encoding = raw_file.get("encoding", "base64")
+        content = raw_file.get("content", "")
+        if encoding != "base64" or not isinstance(content, str):
+            return [], f"uploaded_files[{index}] must use base64 string content"
+
+        try:
+            data = base64.b64decode(content, validate=True)
+        except (binascii.Error, ValueError):
+            return [], f"uploaded_files[{index}] has invalid base64 content"
+
+        if len(data) > _MAX_UPLOAD_BYTES:
+            size_mb = _MAX_UPLOAD_BYTES // 1024 // 1024
+            return [], f"uploaded_files[{index}] exceeds {size_mb}MB"
+
+        total_size += len(data)
+        if total_size > _MAX_UPLOAD_BYTES * _MAX_UPLOADS:
+            return [], "uploaded files exceed total size limit"
+
+        raw_name = str(raw_file.get("name") or f"upload-{index + 1}")
+        name = Path(raw_name).name or f"upload-{index + 1}"
+        mime_type = str(raw_file.get("mime_type") or raw_file.get("content_type") or "")
+        decoded.append({
+            "name": name,
+            "content": data,
+            "mime_type": mime_type,
+        })
+
+    return decoded, None
 
 
 # ---------------------------------------------------------------------------
@@ -72,7 +123,7 @@ async def chat(request: Request):
     """Streaming chat endpoint.
 
     Request (JSON)::
-        {"prompt": "...", "thread_id": "..."}
+        {"prompt": "...", "thread_id": "...", "uploaded_files": [...]}
 
     Response: SSE stream of events matching ``NanoEngine.run_streaming()``::
 
@@ -86,9 +137,15 @@ async def chat(request: Request):
     body = await request.json()
     prompt = body.get("prompt", "").strip()
     thread_id = body.get("thread_id", "") or uuid.uuid4().hex
+    uploaded_files, upload_error = _parse_uploaded_files(body.get("uploaded_files"))
 
-    if not prompt:
+    if upload_error:
+        return JSONResponse({"error": upload_error}, status_code=400)
+
+    if not prompt and not uploaded_files:
         return JSONResponse({"error": "prompt is required"}, status_code=400)
+    if not prompt:
+        prompt = "Please inspect the uploaded file(s)."
 
     engine = NanoEngine(get_config())
 
@@ -96,7 +153,11 @@ async def chat(request: Request):
         task = asyncio.current_task()
         _running_tasks[thread_id] = task
         try:
-            async for event in engine.run_streaming(prompt=prompt, thread_id=thread_id):
+            async for event in engine.run_streaming(
+                prompt=prompt,
+                thread_id=thread_id,
+                uploaded_files=uploaded_files,
+            ):
                 yield {"event": "message", "data": json.dumps(event)}
         except asyncio.CancelledError:
             yield {"event": "cancelled", "data": json.dumps({"event": "cancelled", "threadId": thread_id})}

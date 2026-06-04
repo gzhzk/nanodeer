@@ -139,7 +139,7 @@ class ContextManager:
         root.mkdir(parents=True, exist_ok=True)
 
         for f in (signals.uploaded_files or []):
-            name = f.get("name", "unnamed")
+            name = Path(str(f.get("name", "unnamed"))).name or "unnamed"
             content = f.get("content", b"")
             mime_type = f.get("mime_type", "")
             dest = root / name
@@ -168,6 +168,7 @@ class ContextManager:
         lines = []
         for f in files:
             size = f.stat().st_size if f.is_file() else 0
-            lines.append(f"- {f.name}" + (f" ({size} bytes)" if size else ""))
+            size_label = f" ({size} bytes)" if size else ""
+            lines.append(f"- {f.name} -> {f.resolve()}{size_label}")
 
         signals.uploaded_files_list = "\n".join(lines)
