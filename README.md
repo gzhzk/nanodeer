@@ -53,42 +53,131 @@ Current product surface:
 
 ```
 nanodeer/
-├── pyproject.toml          # Entry points: nanodeer (API) / nanodeer-repl (REPL)
-├── config.yaml             # Runtime config (LLM, sandbox, memory, thread...)
-├── src/nanodeer/
-│   ├── cli/api.py          # Layer 5: FastAPI + SSE HTTP server
-│   ├── cli/repl.py         # Layer 5: Debug REPL
-│   ├── engine.py           # Layer 4: NanoEngine — Application scheduler
+├── pyproject.toml           # Build config, entry points, dependencies
+├── config.yaml              # Runtime config (LLM, sandbox, memory, thread…)
+├── config.yaml.example      # Template — copy to config.yaml and edit
+├── .env.example             # Template for API keys — copy to .env and fill in
+├── .gitignore               # Git ignore rules
+├── LICENSE                  # MIT License
+├── AGENTS.md                # Agent workflow documentation
+├── README.md                # This file (English)
+├── README_zh.md             # 中文版文档
+│
+├── scripts/
+│   ├── dev.sh               # One-command launch: backend + frontend
+│   └── check.sh             # Run tests + lint
+│
+├── src/nanodeer/            # Backend source (Python)
+│   ├── cli/
+│   │   ├── api.py           # Layer 5: FastAPI + SSE HTTP server
+│   │   └── repl.py          # Layer 5: Debug REPL
+│   ├── engine.py            # Layer 4: NanoEngine — Application scheduler
 │   ├── agent/
-│   │   ├── factory.py      # Layer 3-4 bridge: NanoDeerFactory assembler
-│   │   ├── react.py        # Layer 3: ReActExecutor — main loop (core)
-│   │   ├── state.py        # ThreadState / TurnSignals data models
-│   │   ├── context.py      # Layer 3: ContextManager — context assembly
-│   │   ├── prompt.py       # Layer 2: Static+dynamic dual-layer prompt builder
+│   │   ├── factory.py       # Layer 3-4 bridge: NanoDeerFactory assembler
+│   │   ├── react.py         # Layer 3: ReActExecutor — main loop (core)
+│   │   ├── state.py         # ThreadState / TurnSignals data models
+│   │   ├── context.py       # Layer 3: ContextManager — context assembly
+│   │   ├── prompt.py        # Layer 2: Static+dynamic dual-layer prompt builder
 │   │   ├── sandbox_manager.py # Layer 3: Sandbox lifecycle manager
-│   │   ├── compression.py  # Layer 4½: Conversation compression
-│   │   ├── trace.py        # Runtime observability
-│   │   ├── checkpoint/     # Layer 1: SQLite session persistence
-│   │   └── memory/         # Layer 1: File-based layered memory (L1-L4)
+│   │   ├── compression.py   # Layer 4½: Conversation compression
+│   │   ├── trace.py         # Runtime observability (structured events)
+│   │   ├── checkpoint/      # Layer 1: SQLite session persistence
+│   │   └── memory/          # Layer 1: File-based layered memory (L1-L4)
 │   ├── sandbox/
-│   │   ├── __init__.py     # SandboxProvider ABC + module-level context
-│   │   ├── docker.py       # Docker sandbox
-│   │   ├── local.py        # Local subprocess fallback
-│   │   ├── path.py         # Virtual→physical path translation + security
-│   │   └── tools.py        # SandboxExecTool — routes tools into container
-│   ├── tools/              # 20 built-in tool definitions
-│   ├── subagent/           # Semaphore-based subagent coordinator
-│   ├── plan/               # File-based JSON plan storage
-│   ├── skills/             # .md skill loading system
-│   └── config.py           # Pydantic config model + global singleton
+│   │   ├── __init__.py      # SandboxProvider ABC + module-level context
+│   │   ├── docker.py        # Docker sandbox provider
+│   │   ├── local.py         # Local subprocess fallback
+│   │   ├── path.py          # Virtual→physical path translation + security
+│   │   └── tools.py         # SandboxExecTool — routes tools into container
+│   ├── tools/               # Built-in tool definitions (20 tools)
+│   ├── subagent/            # Semaphore-based subagent coordinator
+│   ├── plan/                # File-based JSON plan storage
+│   ├── skills/              # .md skill loading system
+│   └── config.py            # Pydantic config model + global singleton
+│
+├── frontend/                # Web UI (Next.js + assistant-ui)
+│   ├── app/                 # Next.js App Router pages
+│   ├── components/          # React components (chat, sidebar, settings)
+│   ├── lib/                 # Frontend utilities and API client
+│   ├── hooks/               # Custom React hooks
+│   ├── package.json         # Node dependencies
+│   ├── next.config.ts       # Next.js configuration
+│   ├── tsconfig.json        # TypeScript configuration
+│   ├── biome.json           # Linter/formatter config
+│   ├── postcss.config.mjs   # PostCSS configuration
+│   ├── components.json      # shadcn/ui component registry
+│   └── .env.example         # Frontend environment template
+│
+├── sandbox/                 # Docker sandbox image build
+│   ├── Dockerfile           # Minimal Python 3.11 sandbox image
+│   ├── build.sh             # Image build script
+│   └── README.md            # Sandbox setup guide (Chinese)
+│
+├── tests/                   # Python test suite
+│   ├── conftest.py          # Shared pytest fixtures
+│   ├── test_agent/          # ReAct executor & state tests
+│   ├── test_agent_memory/   # Memory system tests
+│   ├── test_cli/            # API endpoint & REPL tests
+│   ├── test_integration/    # End-to-end integration tests
+│   ├── test_plan/           # Plan storage tests
+│   ├── test_sandbox/        # Sandbox provider tests
+│   ├── test_skills/         # Skill loader tests
+│   ├── test_subagents/      # Subagent coordinator tests
+│   ├── test_benchmarks/     # Benchmark task tests
+│   └── test_tools_integration/ # Tool execution integration tests
+│
+├── benchmarks/              # Performance benchmarks
+│   ├── runner.py            # Benchmark runner
+│   ├── tasks/smoke.yaml     # Smoke test task definitions
+│   ├── judges.py            # LLM-as-judge evaluation
+│   ├── reporters/           # Output reporters (JSON, etc.)
+│   └── fixtures/            # Benchmark data fixtures
+│
+├── docs/                    # Design documentation (Chinese)
+│   ├── nanodeer_blueprint_20260401.md  # Project blueprint
+│   ├── runtime_architecture.md        # Runtime architecture
+│   ├── harness_architecture.md        # Harness architecture
+│   ├── memory_design.md               # Memory system design
+│   ├── sandbox_design.md              # Sandbox design
+│   ├── subagent_design.md             # Subagent design
+│   ├── plan_design.md                 # Plan system design
+│   ├── tools_design.md                # Tools design
+│   ├── skills_design.md               # Skills design
+│   ├── prompt_design.md               # Prompt engineering design
+│   ├── observability_design.md        # Observability & tracing
+│   ├── evaluation_plan.md             # Evaluation plan
+│   ├── long_horizon_design.md         # Long-horizon task design
+│   ├── refactoring_journey.md         # Refactoring journey notes
+│   └── ref/                           # Reference architecture reports
+│
+├── examples/                # Usage examples (coming soon)
+│
+├── .agents/                 # Agent orchestration configs (internal)
+├── .codex/                  # Codex metadata (internal)
+└── .claude/                 # Claude Code project settings (internal)
 ```
 
 ---
 
 ## Quick Start
 
-### Prerequisites
-- Python 3.10+
+### Environment Requirements
+
+| Dependency        | Version         | Required | Notes                                                  |
+|-------------------|-----------------|----------|--------------------------------------------------------|
+| **OS**            | Linux / macOS   | ✅       | WSL2 recommended on Windows                            |
+| **Python**        | ≥ 3.10          | ✅       | 3.11+ preferred; sandbox Docker image uses 3.11        |
+| **Node.js**       | ≥ 18            | ⚠️       | Only needed for frontend development                   |
+| **npm**           | (comes w/ Node) | ⚠️       | Frontend dependency management                         |
+| **Docker**        | ≥ 24.0          | ⚠️       | Required for sandbox isolation; Local fallback works without |
+| **curl**          | any             | ⚠️       | Required by dev/check scripts                          |
+| **LLM API Key**   | —               | ✅       | At least one provider (Anthropic, OpenAI, MiniMax, DeepSeek…) |
+| **RAM**           | ≥ 4 GB          | —        | 8 GB+ recommended when running frontend + backend      |
+| **Disk**          | ≥ 1 GB free     | —        | For .venv, node_modules, and runtime data              |
+
+✅ Required &emsp; ⚠️ Optional (missing features degrade gracefully) &emsp; — Informational
+
+**Supported LLM Providers:** Anthropic, OpenAI, DeepSeek, MiniMax, SiliconFlow, Zhipu (GLM), DashScope (Qwen), Moonshot (Kimi), Google Gemini, Groq, OpenRouter, Ollama (local).
 
 ### Install
 

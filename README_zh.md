@@ -53,34 +53,108 @@ NanoDeer 是一个轻量级 Agent harness：原生 async ReAct 循环、显式 r
 
 ```
 nanodeer/
-├── pyproject.toml          # 入口注册: nanodeer (API) / nanodeer-repl (REPL)
-├── config.yaml             # 运行时配置 (LLM, sandbox, memory, thread...)
-├── src/nanodeer/
-│   ├── cli/api.py          # Layer 5: FastAPI + SSE HTTP 服务
-│   ├── cli/repl.py         # Layer 5: 调试用 REPL
-│   ├── engine.py           # Layer 4: NanoEngine — 应用层调度器
+├── pyproject.toml           # 构建配置、入口注册、依赖声明
+├── config.yaml              # 运行时配置 (LLM、sandbox、memory、thread…)
+├── config.yaml.example      # 配置模板 — 复制为 config.yaml 后编辑
+├── .env.example             # API Key 模板 — 复制为 .env 后填入密钥
+├── .gitignore               # Git 忽略规则
+├── LICENSE                  # MIT 许可证
+├── AGENTS.md                # Agent 工作流文档
+├── README.md                # 英文文档
+├── README_zh.md             # 本文档
+│
+├── scripts/
+│   ├── dev.sh               # 一键启动后端 + 前端
+│   └── check.sh             # 运行测试 + 代码检查
+│
+├── src/nanodeer/            # 后端源码 (Python)
+│   ├── cli/
+│   │   ├── api.py           # Layer 5: FastAPI + SSE HTTP 服务
+│   │   └── repl.py          # Layer 5: 调试用 REPL
+│   ├── engine.py            # Layer 4: NanoEngine — 应用层调度器
 │   ├── agent/
-│   │   ├── factory.py      # Layer 3-4 桥梁: NanoDeerFactory 装配器
-│   │   ├── react.py        # Layer 3: ReActExecutor — 主循环 (核心)
-│   │   ├── state.py        # ThreadState / TurnSignals 数据模型
-│   │   ├── context.py      # Layer 3: ContextManager — 上下文装配
-│   │   ├── prompt.py       # Layer 2: 静态+动态 双层 prompt 构建
+│   │   ├── factory.py       # Layer 3-4 桥梁: NanoDeerFactory 装配器
+│   │   ├── react.py         # Layer 3: ReActExecutor — 主循环 (核心)
+│   │   ├── state.py         # ThreadState / TurnSignals 数据模型
+│   │   ├── context.py       # Layer 3: ContextManager — 上下文装配
+│   │   ├── prompt.py        # Layer 2: 静态+动态 双层 prompt 构建
 │   │   ├── sandbox_manager.py # Layer 3: 沙箱生命周期管理
-│   │   ├── compression.py  # Layer 4½: 对话压缩
-│   │   ├── trace.py        # 运行时可观测性
-│   │   ├── checkpoint/     # Layer 1: SQLite 会话持久化
-│   │   └── memory/         # Layer 1: 文件式分层记忆 (L1-L4)
+│   │   ├── compression.py   # Layer 4½: 对话压缩
+│   │   ├── trace.py         # 运行时可观测性 (结构化事件)
+│   │   ├── checkpoint/      # Layer 1: SQLite 会话持久化
+│   │   └── memory/          # Layer 1: 文件式分层记忆 (L1-L4)
 │   ├── sandbox/
-│   │   ├── __init__.py     # SandboxProvider ABC + 模块级上下文
-│   │   ├── docker.py       # Docker 沙箱
-│   │   ├── local.py        # 本地子进程回退
-│   │   ├── path.py         # 虚拟→物理路径翻译 + 安全校验
-│   │   └── tools.py        # SandboxExecTool — tool 路由到容器内执行
-│   ├── tools/              # 20 个内置工具定义
-│   ├── subagent/           # 基于信号量的子代理协调器
-│   ├── plan/               # 文件式 JSON 计划存储
-│   ├── skills/             # .md 技能加载系统
-│   └── config.py           # Pydantic 配置模型 + 全局单例
+│   │   ├── __init__.py      # SandboxProvider ABC + 模块级上下文
+│   │   ├── docker.py        # Docker 沙箱
+│   │   ├── local.py         # 本地子进程回退
+│   │   ├── path.py          # 虚拟→物理路径翻译 + 安全校验
+│   │   └── tools.py         # SandboxExecTool — tool 路由到容器内执行
+│   ├── tools/               # 内置工具定义 (20 个)
+│   ├── subagent/            # 基于信号量的子代理协调器
+│   ├── plan/                # 文件式 JSON 计划存储
+│   ├── skills/              # .md 技能加载系统
+│   └── config.py            # Pydantic 配置模型 + 全局单例
+│
+├── frontend/                # Web 前端 (Next.js + assistant-ui)
+│   ├── app/                 # Next.js App Router 页面
+│   ├── components/          # React 组件 (聊天、侧边栏、设置)
+│   ├── lib/                 # 前端工具库和 API 客户端
+│   ├── hooks/               # 自定义 React Hooks
+│   ├── package.json         # Node 依赖
+│   ├── next.config.ts       # Next.js 配置
+│   ├── tsconfig.json        # TypeScript 配置
+│   ├── biome.json           # Linter/格式化 配置
+│   ├── postcss.config.mjs   # PostCSS 配置
+│   ├── components.json      # shadcn/ui 组件注册表
+│   └── .env.example         # 前端环境模板
+│
+├── sandbox/                 # Docker 沙箱镜像构建
+│   ├── Dockerfile           # 基于 Python 3.11-slim 的极简沙箱镜像
+│   ├── build.sh             # 镜像构建脚本
+│   └── README.md            # 沙箱设置指南
+│
+├── tests/                   # Python 测试套件
+│   ├── conftest.py          # 共享 pytest fixtures
+│   ├── test_agent/          # ReAct 执行器 & 状态测试
+│   ├── test_agent_memory/   # 记忆系统测试
+│   ├── test_cli/            # API 端点 & REPL 测试
+│   ├── test_integration/    # 端到端集成测试
+│   ├── test_plan/           # Plan 存储测试
+│   ├── test_sandbox/        # 沙箱提供者测试
+│   ├── test_skills/         # 技能加载测试
+│   ├── test_subagents/      # 子代理协调器测试
+│   ├── test_benchmarks/     # 基准测试
+│   └── test_tools_integration/ # 工具执行集成测试
+│
+├── benchmarks/              # 性能基准测试
+│   ├── runner.py            # 基准测试运行器
+│   ├── tasks/smoke.yaml     # 冒烟测试任务定义
+│   ├── judges.py            # LLM-as-judge 评估
+│   ├── reporters/           # 输出报告 (JSON 等)
+│   └── fixtures/            # 测试数据
+│
+├── docs/                    # 设计文档
+│   ├── nanodeer_blueprint_20260401.md  # 项目蓝图
+│   ├── runtime_architecture.md        # 运行时架构
+│   ├── harness_architecture.md        # Harness 架构
+│   ├── memory_design.md               # 记忆系统设计
+│   ├── sandbox_design.md              # 沙箱设计
+│   ├── subagent_design.md             # 子代理设计
+│   ├── plan_design.md                 # 计划系统设计
+│   ├── tools_design.md                # 工具设计
+│   ├── skills_design.md               # 技能设计
+│   ├── prompt_design.md               # Prompt 工程设计
+│   ├── observability_design.md        # 可观测性与追踪
+│   ├── evaluation_plan.md             # 评估计划
+│   ├── long_horizon_design.md         # 长程任务设计
+│   ├── refactoring_journey.md         # 重构历程笔记
+│   └── ref/                           # 参考架构报告
+│
+├── examples/                # 使用示例 (待补充)
+│
+├── .agents/                 # Agent 编排配置 (内部)
+├── .codex/                  # Codex 元数据 (内部)
+└── .claude/                 # Claude Code 项目设置 (内部)
 ```
 
 ---
@@ -88,7 +162,22 @@ nanodeer/
 ## 快速开始
 
 ### 环境要求
-- Python 3.10+
+
+| 依赖               | 版本             | 必需   | 说明                                                   |
+|--------------------|------------------|--------|--------------------------------------------------------|
+| **操作系统**       | Linux / macOS    | ✅     | Windows 建议使用 WSL2                                    |
+| **Python**         | ≥ 3.10           | ✅     | 推荐 3.11+；沙箱 Docker 镜像使用 3.11                    |
+| **Node.js**        | ≥ 18             | ⚠️     | 仅前端开发需要                                          |
+| **npm**            | (随 Node 安装)    | ⚠️     | 前端依赖管理                                            |
+| **Docker**         | ≥ 24.0           | ⚠️     | 沙箱隔离需要；无 Docker 时自动使用 Local 回退            |
+| **curl**           | 任意版本          | ⚠️     | dev.sh/check.sh 脚本需要                                |
+| **LLM API 密钥**   | —                | ✅     | 至少一个 Provider（Anthropic、OpenAI、MiniMax、DeepSeek…） |
+| **内存**           | ≥ 4 GB           | —      | 同时运行前端+后端建议 8 GB+                              |
+| **磁盘空间**       | ≥ 1 GB 空闲      | —      | 用于 .venv、node_modules 和运行时数据                   |
+
+✅ 必需 &emsp; ⚠️ 可选（缺失时功能降级） &emsp; — 仅供参考
+
+**支持 LLM Provider：** Anthropic、OpenAI、DeepSeek、MiniMax、SiliconFlow、智谱 GLM、阿里百炼 Qwen、Moonshot (Kimi)、Google Gemini、Groq、OpenRouter、Ollama (本地)。
 
 ### 安装
 
