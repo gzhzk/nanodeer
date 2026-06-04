@@ -85,6 +85,19 @@ class MockTool:
         return self._result
 
 
+class SyncInvokeTool:
+    """LangChain-like sync tool exposing invoke() but not a native async body."""
+
+    def __init__(self, name="sync_tool", result="sync result"):
+        self.name = name
+        self._result = result
+        self.invoked = False
+
+    def invoke(self, args):
+        self.invoked = True
+        return self._result
+
+
 class MockStreamChunk:
     """Minimal LangChain-like streaming chunk."""
 
@@ -185,6 +198,21 @@ class TestReActLoop:
         assert len(final.messages) == 4
         tool_msg = final.messages[-2]  # Second-to-last is the ToolMessage
         assert tool_msg.content == "tool result"
+
+    @pytest.mark.asyncio
+    async def test_executes_sync_invoke_tools_without_ainvoke(self):
+        """Sync host tools should not be forced through StructuredTool.ainvoke."""
+        tc = {"name": "sync_tool", "args": {"arg1": "value1"}, "id": "call-1"}
+
+        llm = MockLLM(response_content="Thinking...", tool_calls=[tc])
+        tool = SyncInvokeTool(name="sync_tool", result="sync result")
+        executor = ReActExecutor(llm, [tool], context_manager=MockContext())
+
+        state = ThreadState(thread_id="t1", messages=[HumanMessage(content="Hi")])
+        final, _events = await executor.run(state)
+
+        assert tool.invoked is True
+        assert final.messages[-2].content == "sync result"
 
     @pytest.mark.asyncio
     async def test_repeated_identical_tool_calls_stop_loop(self):

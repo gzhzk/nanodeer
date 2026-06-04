@@ -13,6 +13,7 @@ Loop:
 """
 
 import asyncio
+import inspect
 import json
 import logging
 import re
@@ -265,6 +266,27 @@ def _tool_success(content: Any, explicit_success: bool = True) -> bool:
         or " not found" in text[:120]
         or "requires parameters:" in text[:160]
     )
+
+
+async def _invoke_tool(tool, args: dict, exec_id: str | None = None):
+    """Invoke tools without forcing sync LangChain tools through ainvoke().
+
+    In restricted runtimes, StructuredTool.ainvoke() may rely on worker threads
+    that are unavailable. Native async tools and sandbox wrappers still use
+    their async path; plain sync tools use invoke() directly.
+    """
+    if hasattr(tool, "get_sandbox_command"):
+        result = tool.ainvoke(args, exec_id=exec_id)
+    elif getattr(tool, "coroutine", None) is not None:
+        result = tool.ainvoke(args)
+    elif hasattr(tool, "invoke"):
+        result = tool.invoke(args)
+    else:
+        result = tool.ainvoke(args, exec_id=exec_id)
+
+    if inspect.isawaitable(result):
+        return await result
+    return result
 
 
 def _extract_status(exc: Exception) -> int | None:
@@ -619,7 +641,7 @@ class ReActExecutor:
                 explicit_success = True
                 try:
                     if tool:
-                        content = await tool.ainvoke(tc.get("args", {}), exec_id=exec_id)
+                        content = await _invoke_tool(tool, tc.get("args", {}), exec_id=exec_id)
                     else:
                         explicit_success = False
                         content = f"Tool {tc['name']} not found"
@@ -1002,7 +1024,7 @@ class ReActExecutor:
                 explicit_success = True
                 try:
                     if tool:
-                        content = await tool.ainvoke(tc.get("args", {}), exec_id=exec_id)
+                        content = await _invoke_tool(tool, tc.get("args", {}), exec_id=exec_id)
                     else:
                         explicit_success = False
                         content = f"Tool {tc['name']} not found"

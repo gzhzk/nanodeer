@@ -159,26 +159,30 @@ class SandboxToolWrapper:
         sandbox = get_sandbox(exec_id) if exec_id else None
 
         if sandbox is None or self._provider is None:
-            result = self._tool.ainvoke(args)
-            if inspect.iscoroutine(result):
-                result = await result
-            if hasattr(result, 'returncode') and result.returncode != 0:
-                return f"Error: {getattr(result, 'stderr', '') or getattr(result, 'stdout', '')}"
-            return str(result)
+            return await self._invoke_underlying(args)
 
         cmd = self.get_sandbox_command(args, exec_id)
         if cmd is None:
-            result = self._tool.ainvoke(args)
-            if inspect.iscoroutine(result):
-                result = await result
-            if hasattr(result, 'returncode') and result.returncode != 0:
-                return f"Error: {getattr(result, 'stderr', '') or getattr(result, 'stdout', '')}"
-            return str(result)
+            return await self._invoke_underlying(args)
 
         result = await self._provider.run(sandbox, cmd.cmd, timeout=cmd.timeout)
         if result.returncode != 0:
             return f"Error: {result.stderr or result.stdout}"
         return result.stdout
+
+    async def _invoke_underlying(self, args: dict) -> str:
+        if getattr(self._tool, "coroutine", None) is not None:
+            result = self._tool.ainvoke(args)
+        elif hasattr(self._tool, "invoke"):
+            result = self._tool.invoke(args)
+        else:
+            result = self._tool.ainvoke(args)
+
+        if inspect.isawaitable(result):
+            result = await result
+        if hasattr(result, 'returncode') and result.returncode != 0:
+            return f"Error: {getattr(result, 'stderr', '') or getattr(result, 'stdout', '')}"
+        return str(result)
 
     def get_sandbox_command(self, args: dict, exec_id: str) -> SandboxCommand | None:
         raise NotImplementedError

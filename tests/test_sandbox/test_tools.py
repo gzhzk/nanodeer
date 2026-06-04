@@ -157,6 +157,30 @@ class TestWrapToolForSandbox:
         assert wrapper is None
 
 
+class TestSandboxFallbackInvocation:
+    """Fallback path should support sync host tools without ainvoke()."""
+
+    @pytest.mark.asyncio
+    async def test_provider_none_uses_sync_invoke(self):
+        class SyncTool:
+            name = "bash"
+
+            def __init__(self):
+                self.invoked = False
+
+            def invoke(self, args):
+                self.invoked = True
+                return "fallback ok"
+
+        tool = SyncTool()
+        wrapper = SandboxExecTool(tool, provider=None)
+
+        result = await wrapper.ainvoke({"command": "noop"}, exec_id="thread-1")
+
+        assert result == "fallback ok"
+        assert tool.invoked is True
+
+
 class TestGitToolConfig:
     """git uses translate_vars, not b64_vars directly."""
 
