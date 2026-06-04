@@ -100,6 +100,17 @@ async def chat(request: Request):
                 yield {"event": "message", "data": json.dumps(event)}
         except asyncio.CancelledError:
             yield {"event": "cancelled", "data": json.dumps({"event": "cancelled", "threadId": thread_id})}
+        except Exception as exc:
+            logger.exception("chat stream failed thread_id=%s", thread_id)
+            yield {
+                "event": "message",
+                "data": json.dumps({
+                    "event": "error",
+                    "code": type(exc).__name__,
+                    "message": str(exc) or type(exc).__name__,
+                    "threadId": thread_id,
+                }),
+            }
         finally:
             _running_tasks.pop(thread_id, None)
 

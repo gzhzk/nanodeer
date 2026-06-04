@@ -66,14 +66,20 @@ export const nanodeerAdapter: ChatModelAdapter = {
     const threadId = getSavedThreadId() || crypto.randomUUID();
     if (!getSavedThreadId()) saveThreadId(threadId);
 
-    const response = await createChatStream(prompt, threadId, abortSignal);
-    const reader = response.body!.getReader();
-
     let accumulatedContent = "";
     let accumulatedReasoning = "";
     let hasReasoning = false;
 
     try {
+      const response = await createChatStream(prompt, threadId, abortSignal);
+      if (!response.ok) {
+        throw new Error(`Chat request failed: HTTP ${response.status}`);
+      }
+      if (!response.body) {
+        throw new Error("Chat request failed: empty response body");
+      }
+
+      const reader = response.body.getReader();
       for await (const sse of parseSSEStream(reader, abortSignal)) {
         const ev = sse.data as unknown as NanoDeerEvent;
 
@@ -150,7 +156,14 @@ export const nanodeerAdapter: ChatModelAdapter = {
         };
         return;
       }
-      throw err;
+      accumulatedContent += `\n\n❌ **Error:** ${
+        err instanceof Error ? err.message : "Connection failed"
+      }\n`;
+      yield {
+        content: buildContent(accumulatedReasoning, accumulatedContent, hasReasoning),
+        status: { type: "incomplete" as const, reason: "error" as const },
+      };
+      return;
     }
   },
 };
