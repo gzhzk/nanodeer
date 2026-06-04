@@ -81,6 +81,19 @@ class TestNanoDeerFactory:
         assert executor is not None
         assert executor._sandbox is None
 
+    def test_subagent_provider_exists_when_sandbox_false(self):
+        """Subagents still need a provider for worker lifecycle."""
+        factory = NanoDeerFactory(RuntimeFeatures(sandbox=False))
+        llm = MockLLM()
+        tools = [MockTool()]
+
+        factory.build(llm, tools)
+
+        from nanodeer.subagent import get_executor
+        from nanodeer.sandbox.local import LocalSandboxProvider
+
+        assert isinstance(get_executor().sandbox_provider, LocalSandboxProvider)
+
     def test_compression_false_no_compression_middleware(self):
         """CompressionMiddleware is None when compression=False."""
         factory = NanoDeerFactory(RuntimeFeatures(compression=False))

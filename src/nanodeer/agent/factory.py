@@ -99,11 +99,15 @@ class NanoDeerFactory:
                 cfg = get_config()
                 subagent_tool_schemas = [t for t in (tools or []) if t.name in _SUBAGENT_SAFE_TOOLS]
                 subagent_tools = [t for t in (wrapped_tools or []) if t.name in _SUBAGENT_SAFE_TOOLS]
+                subagent_sandbox_provider = sandbox_provider
+                if subagent_sandbox_provider is None:
+                    from ..sandbox.local import LocalSandboxProvider
+                    subagent_sandbox_provider = LocalSandboxProvider()
                 subagent_runner = SubagentCoordinator(
                     llm=llm,
                     tools=subagent_tools,
                     tool_schemas=subagent_tool_schemas,
-                    sandbox_provider=sandbox_provider,
+                    sandbox_provider=subagent_sandbox_provider,
                     max_concurrent=cfg.subagents.max_concurrent,
                     timeout_seconds=cfg.subagents.timeout_seconds,
                 )
