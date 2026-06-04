@@ -10,7 +10,7 @@
 [![Docker](https://img.shields.io/badge/Docker-optional-2496ED?style=flat-square&logo=docker&logoColor=white)](https://docker.com)
 [![Version 0.1.0](https://img.shields.io/badge/Version-0.1.0-orange?style=flat-square)](https://github.com/gzhzk/nanodeer)
 
-Native ReAct · ContextManager · Sandbox Isolation · HTTP SSE API
+Native ReAct · ContextManager/SandboxManager · Sandbox Isolation · HTTP SSE API
 
 *Architecture is what you build. Engineering is how you build it.*
 
@@ -19,6 +19,15 @@ English | [中文](./README_zh.md)
 </div>
 
 ---
+
+NanoDeer is a compact agent harness with a native async ReAct loop, explicit runtime managers, sandbox-aware tool routing, file-based memory/plan storage, SQLite checkpoint resume, structured trace events, and a Next.js assistant-ui frontend. It intentionally avoids LangGraph and middleware chains: the product path is `HTTP/UI -> NanoEngine -> ReActExecutor -> tools/sandbox -> memory/plan/checkpoint`.
+
+Current product surface:
+- Streaming chat over HTTP SSE with conversation list, rename/archive/delete, and resume.
+- Docker-first sandbox execution with Local fallback and virtual `/mnt/user-data` path translation.
+- Host-side memory, wiki, and plan tools backed by inspectable files.
+- Image upload bridge from frontend to API to `read_image`.
+- Deterministic smoke benchmarks plus trace contracts for regression checks.
 
 ## Table of Contents
 
@@ -100,6 +109,17 @@ pip install -e .
 ./scripts/dev.sh
 # Frontend: http://127.0.0.1:20265
 # Backend:  http://127.0.0.1:20266
+```
+
+### Check
+
+```bash
+# Run Python tests and frontend lint when dependencies are installed
+python -m pip install -e '.[dev]'
+./scripts/check.sh
+
+# Run a focused Python test file
+./scripts/check.sh tests/test_agent/test_react.py
 ```
 
 For manual debugging:
@@ -380,12 +400,12 @@ NanoDeer uses two data carriers with distinct lifetimes:
 
 | Tool | Category | Sandbox |
 |------|----------|---------|
-| `read_file`, `write_file`, `glob`, `grep`, `edit_file` | File | ✅ Docker/Local |
+| `read_file`, `write_file`, `ls`, `glob`, `grep`, `edit_file` | File | ✅ Docker/Local |
 | `bash`, `git`, `exec_python` | Shell | ✅ Docker/Local |
-| `web_search`, `web_fetch`, `read_image` | External | ✅ Docker/Local |
-| `save_memory` | Memory | ❌ Host (not in SANDBOX_TOOL_CONFIGS) |
+| `web_search`, `web_fetch`, `read_image` | External / uploads | ❌ Host |
+| `save_memory`, `search_memory` | Memory | ❌ Host |
 | `create_plan`, `add_step`, `update_step`, `list_plans` | Plan | ❌ Host (direct write) |
-| `spawn_subagent`, `get_subagent_results` | Subagent | ✅ Own sandbox container |
+| `spawn_subagent`, `get_subagent_results` | Subagent | ✅ Own sandbox per worker |
 | `invoke_skill` | Skills | ❌ Host |
 
 ---
@@ -396,22 +416,26 @@ NanoDeer uses two data carriers with distinct lifetimes:
 - ✅ Native ReAct loop with inline orchestration
 - ✅ Docker + Local sandbox with path isolation
 - ✅ 20 built-in tools
-- ✅ File-based memory, plan, checkpoint, conversation persistence
-- ✅ HTTP SSE API (FastAPI)
+- ✅ File-based memory/wiki and plan storage
+- ✅ SQLite checkpoint persistence for conversation resume
+- ✅ HTTP SSE API (FastAPI) + conversation management endpoints
+- ✅ Image upload bridge through the frontend/API into `read_image`
 - ✅ CLI REPL
-- ✅ SubagentCoordinator with spawn/stop/list lifecycle (max 3 concurrent)
+- ✅ SubagentCoordinator with constrained read-only workers
 - ✅ Skill workflow loader
-- ✅ assistant-ui frontend (Next.js + assistant-ui)
-- ✅ Smoke benchmark suite: 8/8 passed with deterministic assertions
+- ✅ assistant-ui frontend (Next.js + assistant-ui), including Projects/Plans/Memory/Wiki sidebar summary
+- ✅ Structured trace events and deterministic smoke benchmark suite
 
 **In progress / planned:**
 
 | Area | Status |
 |------|--------|
-| Inline: guardrail, retry, timeout, fallback | 📝 Planned |
+| Frontend polish and richer workspace views | 🔄 In progress |
+| Plan/Memory/Wiki detail pages wired to backend APIs | 🔄 In progress |
+| Inline: guardrail, timeout, fallback | 📝 Planned |
 | Inline: dangling tool call injection | 📝 Planned |
-| Inline: view_image (base64 injection) | 📝 Planned |
-| **Long-Horizon Task Pipeline** | 📝 Planned |
+| Broader benchmark task sets beyond smoke | 📝 Planned |
+| **Long-horizon task loop** | 📝 Planned |
 |　├─ Focus (focus-driven context injection) | 📝 Planned |
 |　├─ TurnBudget (turn/duration budget) | 📝 Planned |
 |　├─ Learning (error analysis + lesson extraction) | 📝 Planned |

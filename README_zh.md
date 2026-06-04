@@ -10,7 +10,7 @@
 [![Docker](https://img.shields.io/badge/Docker-optional-2496ED?style=flat-square&logo=docker&logoColor=white)](https://docker.com)
 [![Version 0.1.0](https://img.shields.io/badge/Version-0.1.0-orange?style=flat-square)](https://github.com/gzhzk/nanodeer)
 
-原生 ReAct · ContextManager · 沙箱隔离 · HTTP SSE API
+原生 ReAct · ContextManager/SandboxManager · 沙箱隔离 · HTTP SSE API
 
 *架构决定你能做什么，工程决定你能做多好。*
 
@@ -19,6 +19,15 @@
 </div>
 
 ---
+
+NanoDeer 是一个轻量级 Agent harness：原生 async ReAct 循环、显式 runtime managers、沙箱感知工具路由、文件式 memory/plan、SQLite checkpoint 恢复、结构化 trace，以及 Next.js assistant-ui 前端。它刻意不引入 LangGraph，也不使用 middleware 链；主链路就是 `HTTP/UI -> NanoEngine -> ReActExecutor -> tools/sandbox -> memory/plan/checkpoint`。
+
+当前可用能力：
+- 基于 HTTP SSE 的流式对话，支持会话列表、重命名、归档、删除和恢复。
+- Docker 优先的沙箱执行，Docker 不可用时回退 Local，并统一 `/mnt/user-data` 虚拟路径。
+- Memory、Wiki、Plan 作为宿主侧工具，使用可检查的文件存储。
+- 图片上传从前端到 API 再到 `read_image` 工具的桥接链路。
+- deterministic smoke benchmarks + trace contract，用于回归检查。
 
 ## 目录
 
@@ -100,6 +109,17 @@ pip install -e .
 ./scripts/dev.sh
 # 前端: http://127.0.0.1:20265
 # 后端: http://127.0.0.1:20266
+```
+
+### 检查
+
+```bash
+# 运行 Python 测试；如果前端依赖已安装，也会运行 frontend lint
+python -m pip install -e '.[dev]'
+./scripts/check.sh
+
+# 只运行某个 Python 测试文件
+./scripts/check.sh tests/test_agent/test_react.py
 ```
 
 手动调试时也可以分开启动：
@@ -370,12 +390,12 @@ NanoDeer 使用两个生命周期不同的数据载体：
 
 | 工具 | 分类 | 沙箱 |
 |------|------|------|
-| `read_file`、`write_file`、`glob`、`grep`、`edit_file` | 文件 | ✅ Docker/Local |
+| `read_file`、`write_file`、`ls`、`glob`、`grep`、`edit_file` | 文件 | ✅ Docker/Local |
 | `bash`、`git`、`exec_python` | Shell | ✅ Docker/Local |
-| `web_search`、`web_fetch`、`read_image` | 外部 | ✅ Docker/Local |
-| `save_memory` | 记忆 | ❌ 宿主机（不在 SANDBOX_TOOL_CONFIGS） |
+| `web_search`、`web_fetch`、`read_image` | 外部 / 上传 | ❌ 宿主机 |
+| `save_memory`、`search_memory` | 记忆 | ❌ 宿主机 |
 | `create_plan`、`add_step`、`update_step`、`list_plans` | 计划 | ❌ 宿主机（直接写入） |
-| `spawn_subagent`、`get_subagent_results` | 子 Agent | ✅ 独立沙箱容器 |
+| `spawn_subagent`、`get_subagent_results` | 子 Agent | ✅ 每个 worker 独立沙箱 |
 | `invoke_skill` | 技能 | ❌ 宿主机 |
 
 ---
@@ -386,11 +406,14 @@ NanoDeer 使用两个生命周期不同的数据载体：
 - ✅ 原生 ReAct 循环（无 middleware 链）
 - ✅ Docker + Local 沙箱 + 路径隔离
 - ✅ 20 个内置工具
-- ✅ 文件型记忆、计划、checkpoint、会话持久化
-- ✅ assistant-ui 前端（Next.js + assistant-ui）
-- ✅ SubagentCoordinator（spawn/stop/list 生命周期，最大 3 并发）
+- ✅ 文件型 memory/wiki 和 plan 存储
+- ✅ SQLite checkpoint 持久化，用于会话恢复
+- ✅ HTTP SSE API（FastAPI）+ 会话管理接口
+- ✅ 图片上传从前端/API 桥接到 `read_image`
+- ✅ assistant-ui 前端（Next.js + assistant-ui），包含 Projects/Plans/Memory/Wiki 侧边栏摘要
+- ✅ SubagentCoordinator，受限只读 worker
 - ✅ 技能工作流加载
-- ✅ Smoke benchmark：8/8 通过，使用 deterministic assertions
+- ✅ 结构化 trace events + deterministic smoke benchmark
 
 **开发中 / 规划中：**
 
@@ -398,15 +421,16 @@ NanoDeer 使用两个生命周期不同的数据载体：
 |------|------|
 | **LLM 重试**（指数退避，已实现内联） | ✅ 已完成 |
 | **Subagent 只读工具**（_SUBAGENT_SAFE_TOOLS，已实现） | ✅ 已完成 |
+| 前端体验和 workspace 视图打磨 | 🔄 进行中 |
+| Plan/Memory/Wiki 详情页连接后端 API | 🔄 进行中 |
+| 更完整的 benchmark task set | 📝 规划 |
 | **长程任务链路** | 📝 规划 |
 |　├─ 焦点驱动上下文 | 📝 规划 |
 |　├─ 执行预算感知 | 📝 规划 |
 |　├─ 错误分析 + 经验提取 | 📝 规划 |
 |　├─ 会话反思 | 📝 规划 |
 |　└─ Plan-Memory 桥接（step 自判断 → wiki 沉淀） | 📝 规划 |
-| HTTP API 服务（FastAPI，重建中） | 🔄 进行中 |
 | IM 机器人集成（飞书/企业微信） | 📝 规划 |
-| 评估框架 | 📝 规划 |
 | 多模型对比基准测试 | 📝 规划 |
 
 ---
