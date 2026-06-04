@@ -67,6 +67,7 @@ type AttachmentPreviewProps = {
 const AttachmentPreview: FC<AttachmentPreviewProps> = ({ src }) => {
   const [isLoaded, setIsLoaded] = useState(false);
   return (
+    // biome-ignore lint/performance/noImgElement: Attachment previews use local object URLs that Next image optimization cannot improve.
     <img
       src={src}
       alt="Attachment preview"

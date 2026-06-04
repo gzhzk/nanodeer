@@ -45,21 +45,37 @@ function clearStoredThreadId() {
 function mapThread(row: {
   thread_id: string;
   title: string | null;
+  message_count?: number | null;
   status: string | null;
 }): RemoteThreadMetadata {
+  const title = row.title?.trim() || fallbackTitle(row);
   return {
     remoteId: row.thread_id,
-    title: row.title || undefined,
+    title,
     status: row.status === "archived" ? "archived" : "regular",
     externalId: undefined,
   };
+}
+
+function fallbackTitle(row: {
+  thread_id: string;
+  message_count?: number | null;
+}): string {
+  const shortId = row.thread_id.slice(0, 8);
+  const count = row.message_count ?? 0;
+  if (count > 0) {
+    return `Chat ${shortId} · ${count} msgs`;
+  }
+  return `Chat ${shortId}`;
 }
 
 export const nanodeerThreadListAdapter: RemoteThreadListAdapter = {
   async list(_params?: RemoteThreadListPageOptions): Promise<RemoteThreadListResponse> {
     const res = await apiFetch("/api/conversations");
     const data = await res.json();
-    const threads: RemoteThreadMetadata[] = (data.conversations || []).map(mapThread);
+    const threads: RemoteThreadMetadata[] = (data.conversations || [])
+      .filter((row: { status?: string | null }) => (row.status ?? "regular") === "regular")
+      .map(mapThread);
     return { threads };
   },
 

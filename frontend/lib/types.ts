@@ -67,3 +67,52 @@ export interface BackendMessage {
   tool_call_id?: string;
   name?: string;
 }
+
+export interface UploadedFilePayload {
+  name: string;
+  content: string;
+  mime_type: string;
+  encoding: "base64";
+}
+
+export interface WorkspaceSummary {
+  projects: {
+    count: number;
+    items: WorkspaceWikiEntry[];
+  };
+  plans: {
+    count: number;
+    active: number;
+    items: WorkspacePlan[];
+  };
+  memory: {
+    count: number;
+    has_user: boolean;
+    has_memory: boolean;
+    episodic_days: number;
+  };
+  wiki: {
+    count: number;
+    items: WorkspaceWikiEntry[];
+  };
+}
+
+export interface WorkspaceWikiEntry {
+  path: string;
+  title: string;
+  summary: string;
+  tags: string[];
+  updated_at: string;
+}
+
+export interface WorkspacePlan {
+  plan_id: string;
+  goal: string;
+  title: string;
+  status: string;
+  steps: Array<{
+    id: string;
+    content: string;
+    status: string;
+  }>;
+}

@@ -1,7 +1,9 @@
 "use client";
 
+import type { CSSProperties } from "react";
 import {
   ArrowUpIcon,
+  BriefcaseIcon,
   BotIcon,
   CheckIcon,
   ChevronLeftIcon,
@@ -11,10 +13,10 @@ import {
   LoaderIcon,
   PencilIcon,
   RefreshCwIcon,
+  SparklesIcon,
   SquareIcon,
   ThumbsDownIcon,
   ThumbsUpIcon,
-  UserIcon,
 } from "lucide-react";
 import {
   ActionBarPrimitive,
@@ -37,19 +39,28 @@ import {
   UserMessageAttachments,
 } from "@/components/assistant-ui/attachment";
 import { cn } from "@/lib/utils";
+
+type ThreadStyle = CSSProperties & {
+  "--thread-max-width": string;
+  "--accent-color": string;
+  "--accent-foreground": string;
+};
+
 export function Thread() {
+  const style: ThreadStyle = {
+    "--thread-max-width": "62rem",
+    "--accent-color": "#4f7466",
+    "--accent-foreground": "#ffffff",
+  };
+
   return (
     <ThreadPrimitive.Root
-      className="flex h-full flex-col bg-background text-base"
-      style={{
-        "--thread-max-width": "48rem",
-        "--accent-color": "#10a37f",
-        "--accent-foreground": "#ffffff",
-      } as any}
+      className="flex h-full flex-col bg-transparent text-base"
+      style={style}
     >
       <ThreadPrimitive.Viewport
         turnAnchor="top"
-        className="relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth px-4 pt-4"
+        className="nanodeer-grid nanodeer-scrollbar relative flex flex-1 flex-col overflow-x-hidden overflow-y-auto scroll-smooth px-4 pt-4"
       >
         <AuiIf condition={(s) => s.thread.isEmpty}>
           <ThreadWelcome />
@@ -63,8 +74,7 @@ export function Thread() {
           }}
         />
 
-        <ThreadPrimitive.ViewportFooter className="sticky bottom-0 mx-auto mt-auto flex w-full max-w-[var(--thread-max-width)] flex-col gap-4 overflow-visible rounded-t-3xl bg-background pb-4">
-          
+        <ThreadPrimitive.ViewportFooter className="sticky bottom-0 mx-auto mt-auto flex w-full max-w-[var(--thread-max-width)] flex-col gap-4 overflow-visible bg-gradient-to-t from-[#f7f6f3] via-[#f7f6f3]/90 to-transparent px-2 pt-8 pb-5">
           <Composer />
         </ThreadPrimitive.ViewportFooter>
       </ThreadPrimitive.Viewport>
@@ -73,16 +83,20 @@ export function Thread() {
 }
 function ThreadWelcome() {
   return (
-    <div className="mx-auto my-auto flex w-full max-w-[var(--thread-max-width)] flex-grow flex-col">
-      <div className="flex w-full flex-grow flex-col items-center justify-center">
-        <div className="flex size-full flex-col justify-center px-8">
-          <div className="text-2xl font-semibold">Hello there!</div>
-          <div className="text-2xl text-muted-foreground/65">
-            How can I help you today?
+    <div className="mx-auto flex w-full max-w-[var(--thread-max-width)] flex-1 flex-col justify-center px-4 pt-12 pb-4">
+      <div className="max-w-4xl">
+        <div className="mb-4 flex items-center gap-4">
+          <div className="flex size-10 items-center justify-center rounded-2xl bg-[#4f7466]/12 text-[#4f7466]">
+            <SparklesIcon className="size-5" />
           </div>
+          <h1 className="font-serif text-3xl font-semibold tracking-normal text-[#171512] leading-tight md:text-5xl">
+            What should NanoDeer help move forward?
+          </h1>
         </div>
+        <p className="ml-14 text-muted-foreground text-base">
+          Bring a task, a file, or a loose thread.
+        </p>
       </div>
-      
     </div>
   );
 }
@@ -90,11 +104,11 @@ function ThreadWelcome() {
 function Composer() {
   return (
     <ComposerPrimitive.Root className="relative flex w-full flex-col">
-      <ComposerPrimitive.AttachmentDropzone className="flex w-full flex-col rounded-3xl border border-input bg-background px-1 pt-2 outline-none transition-shadow has-[textarea:focus-visible]:border-ring has-[textarea:focus-visible]:ring-2 has-[textarea:focus-visible]:ring-ring/20 data-[dragging=true]:border-ring data-[dragging=true]:border-dashed data-[dragging=true]:bg-accent/50">
+      <ComposerPrimitive.AttachmentDropzone className="flex w-full flex-col overflow-hidden rounded-[1.5rem] border border-black/15 bg-white/90 px-3 pt-3 shadow-[0_14px_42px_rgb(30_25_20/0.09)] backdrop-blur outline-none transition-shadow has-[textarea:focus-visible]:border-[#4f7466] has-[textarea:focus-visible]:ring-4 has-[textarea:focus-visible]:ring-[#4f7466]/20 data-[dragging=true]:border-[#4f7466] data-[dragging=true]:border-dashed data-[dragging=true]:bg-[#f5faf7]">
         <ComposerAttachments />
         <ComposerPrimitive.Input
-          placeholder="Send a message..."
-          className="mb-1 max-h-32 min-h-14 w-full resize-none bg-transparent px-4 pt-2 pb-3 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-0"
+          placeholder="How can I help you today?"
+          className="mb-1 max-h-32 min-h-16 w-full resize-none bg-transparent px-4 pt-2 pb-2 text-lg text-foreground outline-none placeholder:text-muted-foreground/75 focus-visible:ring-0"
           rows={1}
           autoFocus
           aria-label="Message input"
@@ -107,8 +121,14 @@ function Composer() {
 
 function ComposerAction() {
   return (
-    <div className="relative mx-2 mb-2 flex items-center justify-between">
-      <ComposerAddAttachment />
+    <div className="relative mx-2 mb-2 flex items-center justify-between border-black/10 border-t pt-2.5">
+      <div className="flex min-w-0 items-center gap-3">
+        <ComposerAddAttachment />
+        <div className="hidden min-w-0 items-center gap-2 text-muted-foreground text-sm sm:flex">
+          <BriefcaseIcon className="size-4" />
+          <span className="truncate">Work in NanoDeer</span>
+        </div>
+      </div>
 
       <AuiIf condition={(s) => !s.thread.isRunning}>
         <ComposerPrimitive.Send asChild>
@@ -118,7 +138,7 @@ function ComposerAction() {
             type="submit"
             variant="default"
             size="icon"
-            className="size-8 rounded-full"
+            className="size-10 rounded-2xl shadow-sm"
             style={{
               backgroundColor: "var(--accent-color)",
               color: "var(--accent-foreground)",
@@ -136,7 +156,7 @@ function ComposerAction() {
             type="button"
             variant="default"
             size="icon"
-            className="size-8 rounded-full"
+            className="size-10 rounded-2xl shadow-sm"
             style={{
               backgroundColor: "var(--accent-color)",
               color: "var(--accent-foreground)",

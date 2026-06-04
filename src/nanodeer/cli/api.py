@@ -144,6 +144,46 @@ async def list_conversations():
     return {"conversations": conversations}
 
 
+@app.get("/api/workspace/summary")
+async def workspace_summary():
+    """Return lightweight workspace counts for the frontend sidebar."""
+    from nanodeer.agent.memory.storage import MemoryStore
+    from nanodeer.plan.storage import PlanStore
+
+    memory = MemoryStore()
+    plans = PlanStore().list()
+    wiki_entries = memory.list_wiki_entries()
+    projects = [
+        entry for entry in wiki_entries
+        if str(entry.get("path", "")).startswith("project/")
+    ]
+    user_memory = memory.load_user_memory()
+    flat_memory = memory.load_memory()
+    episodic_dates = memory.list_episodic()
+
+    return {
+        "projects": {
+            "count": len(projects),
+            "items": projects[:5],
+        },
+        "plans": {
+            "count": len(plans),
+            "active": sum(1 for plan in plans if plan.status.value == "active"),
+            "items": [plan.to_dict() for plan in plans[:5]],
+        },
+        "memory": {
+            "count": int(bool(user_memory)) + int(bool(flat_memory)) + len(episodic_dates),
+            "has_user": bool(user_memory),
+            "has_memory": bool(flat_memory),
+            "episodic_days": len(episodic_dates),
+        },
+        "wiki": {
+            "count": len(wiki_entries),
+            "items": wiki_entries[:5],
+        },
+    }
+
+
 @app.get("/api/conversations/{thread_id}")
 async def get_conversation(thread_id: str):
     """Get a full conversation by thread_id."""

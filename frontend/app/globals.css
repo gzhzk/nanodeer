@@ -98,15 +98,15 @@
   --sidebar-accent-foreground: oklch(0.21 0.006 285.885);
   --sidebar-border: oklch(0.92 0.004 286.32);
   --sidebar-ring: oklch(0.705 0.015 286.067);
-  --aui-accent: #10a37f;
+  --aui-accent: #4f7466;
   --aui-accent-foreground: #ffffff;
-  --aui-background: #ffffff;
+  --aui-background: #fbfaf7;
   --aui-foreground: #0d0d0d;
   --aui-muted-foreground: #6e6e6e;
   --aui-border: #e5e5e5;
   --aui-user-message: #f7f7f8;
   --aui-composer: #f7f7f8;
-  --aui-max-width: 48rem;
+  --aui-max-width: 62rem;
   --aui-border-radius: 1.5rem;
   --aui-font-family: system-ui;
 }
@@ -171,5 +171,25 @@
 
   body {
     @apply bg-background text-foreground;
+  }
+}
+
+@layer utilities {
+  .nanodeer-grid {
+    background-image: radial-gradient(
+      circle,
+      rgb(35 31 28 / 0.13) 1px,
+      transparent 1px
+    );
+    background-size: 18px 18px;
+    background-position: center;
+  }
+
+  .nanodeer-scrollbar {
+    scrollbar-width: none;
+  }
+
+  .nanodeer-scrollbar::-webkit-scrollbar {
+    display: none;
   }
 }

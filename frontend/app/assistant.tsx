@@ -2,6 +2,7 @@
 
 import {
   AssistantRuntimeProvider,
+  SimpleImageAttachmentAdapter,
   useRemoteThreadListRuntime,
   useLocalRuntime,
   useAuiState,
@@ -15,12 +16,17 @@ import { nanodeerThreadListAdapter } from "@/lib/thread-list-adapter";
 import { createHistoryAdapter } from "@/lib/history-adapter";
 import { useEffect } from "react";
 
+const imageAttachmentAdapter = new SimpleImageAttachmentAdapter();
+
 function useNanoDeerRuntime() {
   // Capture current threadId during render so history.load() gets the active thread.
   const remoteId = useAuiState((s) => s.threadListItem?.remoteId ?? null);
   if (remoteId) setCurrentThreadId(remoteId);
   return useLocalRuntime(nanodeerAdapter, {
-    adapters: { history: createHistoryAdapter() },
+    adapters: {
+      history: createHistoryAdapter(),
+      attachments: imageAttachmentAdapter,
+    },
   });
 }
 
@@ -45,13 +51,14 @@ export const Assistant = () => {
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <SidebarProvider>
-        <div className="flex h-dvh w-full pr-0.5">
-          <ThreadListSidebar className="overflow-hidden rounded-r-xl" />
-          <SidebarInset>
-            <header className="flex h-16 shrink-0 items-center gap-2 border-b px-4">
-              <SidebarTrigger className="rounded-md" />
-              <Separator orientation="vertical" className="mr-2 h-4" />
-              <span className="font-semibold">NanoDeer</span>
+        <div className="flex h-dvh w-full bg-[#f7f6f3] p-3 text-[#262421]">
+          <ThreadListSidebar variant="floating" className="overflow-hidden" />
+          <SidebarInset className="overflow-hidden rounded-[1.75rem] bg-transparent shadow-none">
+            <header className="flex h-14 shrink-0 items-center justify-between px-4">
+              <div className="flex items-center gap-2">
+                <SidebarTrigger className="rounded-lg" />
+                <Separator orientation="vertical" className="mx-1 h-5 bg-black/10" />
+              </div>
             </header>
             <div className="flex-1 overflow-hidden">
               <Thread />
