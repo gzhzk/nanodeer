@@ -149,6 +149,7 @@ class TestCreateNanoDeerAgent:
         agent = create_nanodeer_agent(model=llm, tools=None)
         executor, _ = agent
         assert executor is not None
+        assert "ls" in executor._tool_map
 
     def test_none_features_uses_defaults(self):
         """features=None uses default RuntimeFeatures."""

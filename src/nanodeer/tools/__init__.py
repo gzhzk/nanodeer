@@ -1,5 +1,6 @@
 from .read_file import read_file
 from .write_file import write_file
+from .ls import ls
 from .glob import glob
 from .grep import grep
 from .bash import bash
@@ -23,6 +24,7 @@ def default_tools() -> list:
     return [
         read_file,
         write_file,
+        ls,
         glob,
         grep,
         bash,
@@ -48,6 +50,7 @@ __all__ = [
     # file
     "read_file",
     "write_file",
+    "ls",
     # search
     "glob",
     "grep",

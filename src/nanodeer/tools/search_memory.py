@@ -27,9 +27,6 @@ def search_memory(query: str = "", max_results: int = 10) -> str:
     store = MemoryStore()
     results = store.search_wiki(query=query, max_entries=max(min(max_results, 20), 1))
 
-    if not results:
-        return "No matching wiki entries found."
-
     lines = []
     for entry in results:
         tag_str = f" [{', '.join(entry.tags)}]" if entry.tags else ""
@@ -41,5 +38,21 @@ def search_memory(query: str = "", max_results: int = 10) -> str:
             f"*{entry.summary}*\n\n"
             f"{content}"
         )
+
+    query_text = query.strip().lower()
+
+    for label, content in (
+        ("memory/MEMORY.md", store.load_memory()),
+        ("memory/USER.md", store.load_user_memory()),
+    ):
+        if not content:
+            continue
+        if query_text and query_text not in content.lower():
+            continue
+        preview = content[:1000] + "\n... [truncated]" if len(content) > 1000 else content
+        lines.append(f"## {label}\n\n{preview}")
+
+    if not lines:
+        return "No matching memory entries found."
 
     return "\n\n---\n\n".join(lines)
