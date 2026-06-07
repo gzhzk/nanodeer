@@ -1,0 +1,50 @@
+- id: capability_file_csv_total
+  category: file_ops
+  capabilities: [file_ops]
+  behaviors: [evidence_first, structured_output]
+  description: "Read a CSV, compute a total, write a report, and answer deterministically."
+  setup:
+    files:
+      - source: evaluation/fixtures/data.csv
+        target: data.csv
+  prompt: |
+    Inspect /mnt/user-data/data.csv with tools.
+    Compute the sum of the amount column. Write /mnt/user-data/summary.md
+    containing exactly TOTAL_AMOUNT=65, then answer with TOTAL_AMOUNT=65.
+  assertions:
+    - type: tool_called_any
+      names: [read_file, exec_python]
+    - type: tool_called
+      name: write_file
+    - type: file_contains
+      path: summary.md
+      text: TOTAL_AMOUNT=65
+    - type: output_contains
+      text: TOTAL_AMOUNT=65
+    - type: no_tool_errors
+    - type: trace_contract
+
+- id: capability_log_error_count
+  category: tool_execution
+  capabilities: [file_ops, code_execution]
+  behaviors: [evidence_first, structured_output]
+  description: "Analyze a log fixture and persist an exact JSON result."
+  setup:
+    files:
+      - source: evaluation/fixtures/logs
+        target: logs
+  prompt: |
+    Analyze /mnt/user-data/logs/app.log with tools. Count ERROR lines.
+    Write /mnt/user-data/log_summary.json with {"ERROR_COUNT": 2}.
+    Answer with ERROR_COUNT=2.
+  assertions:
+    - type: tool_called_any
+      names: [exec_python, read_file, grep]
+    - type: file_json_value
+      path: log_summary.json
+      key: ERROR_COUNT
+      value: 2
+    - type: output_contains
+      text: ERROR_COUNT=2
+    - type: no_tool_errors
+    - type: trace_contract

@@ -1,0 +1,39 @@
+- id: contract_sandbox_lifecycle
+  category: sandbox
+  capabilities: [sandbox, file_ops]
+  behaviors: [trace_contract]
+  description: "Verify sandbox lifecycle events and virtual path writes."
+  prompt: |
+    Write CONTRACT_SANDBOX_OK to /mnt/user-data/contract_sandbox.txt,
+    read it back, and answer with CONTRACT_SANDBOX_OK.
+  assertions:
+    - type: event_order
+      events: [turn_start, sandbox_acquired, tool_call, tool_result, sandbox_released, end]
+    - type: file_contains
+      path: contract_sandbox.txt
+      text: CONTRACT_SANDBOX_OK
+    - type: output_contains
+      text: CONTRACT_SANDBOX_OK
+    - type: no_tool_errors
+    - type: trace_contract
+
+- id: contract_checkpoint_resume
+  category: checkpoint
+  capabilities: [checkpoint, file_ops]
+  behaviors: [state_resume]
+  description: "Verify same-thread checkpoint continuity across turns."
+  turns:
+    - |
+      Write CONTRACT_CHECKPOINT_OK to /mnt/user-data/contract_checkpoint.txt.
+      Confirm only that it was written.
+    - |
+      Read /mnt/user-data/contract_checkpoint.txt and answer with CONTRACT_CHECKPOINT_OK.
+  assertions:
+    - type: trace_has
+      event: checkpoint_saved
+    - type: tool_sequence
+      names: [write_file, read_file]
+    - type: output_contains
+      text: CONTRACT_CHECKPOINT_OK
+    - type: no_tool_errors
+    - type: trace_contract

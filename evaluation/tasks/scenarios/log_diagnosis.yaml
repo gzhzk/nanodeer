@@ -1,0 +1,42 @@
+- id: scenario_ops_log_diagnosis_basic
+  category: log_diagnosis
+  scenario: ops_log_diagnosis
+  capabilities: [file_ops, code_execution]
+  behaviors: [evidence_first, structured_output, concise_recommendation]
+  description: "Diagnose a small application log and produce an operator-friendly incident report."
+  setup:
+    files:
+      - source: evaluation/fixtures/logs
+        target: logs
+  prompt: |
+    You are helping an operator triage /mnt/user-data/logs/app.log.
+    Use tools to inspect the log. Write /mnt/user-data/incident_report.json with:
+    {
+      "error_count": 2,
+      "first_error_id": "17",
+      "recovered": true,
+      "recommended_action": "inspect parser handling for request ids 17 and 18"
+    }
+
+    Then answer with OPS_LOG_DIAGNOSIS_ERRORS=2 and one concise recommendation.
+  assertions:
+    - type: tool_called_any
+      names: [read_file, grep, exec_python]
+    - type: tool_called
+      name: write_file
+    - type: file_json_value
+      path: incident_report.json
+      key: error_count
+      value: 2
+    - type: file_json_value
+      path: incident_report.json
+      key: first_error_id
+      value: "17"
+    - type: file_json_value
+      path: incident_report.json
+      key: recovered
+      value: true
+    - type: output_contains
+      text: OPS_LOG_DIAGNOSIS_ERRORS=2
+    - type: no_tool_errors
+    - type: trace_contract

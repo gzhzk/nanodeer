@@ -1,0 +1,62 @@
+- id: capability_memory_wiki_recall
+  category: memory
+  capabilities: [memory]
+  behaviors: [state_recall]
+  description: "Save a wiki memory entry and retrieve it in a later turn."
+  turns:
+    - |
+      Save this fact to wiki memory under a sensible path:
+      NanoDeer's layered evaluation marker is LAYERED-MEMORY-2026.
+      Confirm only that it was saved.
+    - |
+      Search memory for the layered evaluation marker and answer with LAYERED-MEMORY-2026.
+  assertions:
+    - type: tool_called
+      name: save_memory
+    - type: tool_called
+      name: search_memory
+    - type: output_contains
+      text: LAYERED-MEMORY-2026
+    - type: no_tool_errors
+    - type: trace_contract
+
+- id: capability_plan_lifecycle
+  category: plan
+  capabilities: [plan]
+  behaviors: [state_management]
+  description: "Create, update, and list a plan."
+  prompt: |
+    Use plan tools to create a plan titled "Layered Eval Plan" with one step:
+    "verify layered evaluation migration". Mark that step completed, list the plan,
+    and answer with LAYERED_PLAN_COMPLETED.
+  assertions:
+    - type: tool_called
+      name: create_plan
+    - type: tool_called
+      name: update_step
+    - type: tool_called
+      name: list_plans
+    - type: output_contains
+      text: LAYERED_PLAN_COMPLETED
+    - type: no_tool_errors
+    - type: trace_contract
+
+- id: capability_subagent_basic
+  category: subagent
+  capabilities: [subagent]
+  behaviors: [delegation]
+  description: "Spawn a simple read-only worker and retrieve the result."
+  prompt: |
+    Spawn a subagent named layered_verifier. Its task is simple: respond with exactly
+    LAYERED_SUBAGENT_OK and no extra requirements. Retrieve the result. If it is
+    still running, try retrieving it again. Answer with LAYERED_SUBAGENT_OK after
+    you see the result.
+  assertions:
+    - type: tool_called
+      name: spawn_subagent
+    - type: tool_called
+      name: get_subagent_results
+    - type: output_contains
+      text: LAYERED_SUBAGENT_OK
+    - type: no_tool_errors
+    - type: trace_contract

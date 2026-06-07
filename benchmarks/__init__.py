@@ -1,2 +1,0 @@
-"""NanoDeer benchmark helpers."""
-

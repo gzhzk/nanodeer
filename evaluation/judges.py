@@ -1,18 +1,19 @@
-"""Deterministic assertions for benchmark task results."""
+"""Deterministic assertions for evaluation task results."""
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
 from nanodeer.agent.state import NextAction
 from nanodeer.engine import RunResult
 
-from .types import AssertionResult, BenchmarkTask
+from .types import AssertionResult, EvaluationTask
 
 
 def evaluate_assertions(
-    task: BenchmarkTask,
+    task: EvaluationTask,
     result: RunResult,
     *,
     workspace: Path,
@@ -26,20 +27,34 @@ def _evaluate_one(assertion: dict[str, Any], result: RunResult, *, workspace: Pa
     try:
         if kind == "output_contains":
             return _assert_output_contains(assertion, result)
+        if kind == "output_not_contains":
+            return _assert_output_not_contains(assertion, result)
         if kind == "tool_called":
             return _assert_tool_called(assertion, result)
+        if kind in {"tool_not_called", "no_tool_called"}:
+            return _assert_tool_not_called(assertion, result)
         if kind == "tool_called_any":
             return _assert_tool_called_any(assertion, result)
+        if kind == "tool_sequence":
+            return _assert_tool_sequence(assertion, result)
+        if kind == "tool_args_contains":
+            return _assert_tool_args_contains(assertion, result)
         if kind == "trace_has":
             return _assert_trace_has(assertion, result)
+        if kind == "event_order":
+            return _assert_event_order(assertion, result)
         if kind == "trace_contract":
             return _assert_trace_contract(assertion, result)
         if kind == "tool_result_contains":
             return _assert_tool_result_contains(assertion, result)
         if kind == "file_exists":
             return _assert_file_exists(assertion, workspace)
+        if kind == "file_not_exists":
+            return _assert_file_not_exists(assertion, workspace)
         if kind == "file_contains":
             return _assert_file_contains(assertion, workspace)
+        if kind == "file_json_value":
+            return _assert_file_json_value(assertion, workspace)
         if kind == "metric_eq":
             return _assert_metric_compare(assertion, result, op="eq")
         if kind == "metric_lte":
@@ -69,11 +84,24 @@ def _assert_output_contains(assertion: dict[str, Any], result: RunResult) -> Ass
     return AssertionResult(passed, "output_contains", f"Output contains {text!r}: {passed}")
 
 
+def _assert_output_not_contains(assertion: dict[str, Any], result: RunResult) -> AssertionResult:
+    text = str(assertion.get("text", ""))
+    passed = text not in result.message
+    return AssertionResult(passed, "output_not_contains", f"Output omits {text!r}: {passed}")
+
+
 def _assert_tool_called(assertion: dict[str, Any], result: RunResult) -> AssertionResult:
     name = str(assertion.get("name", ""))
     tools = _tool_names(result)
     passed = name in tools
     return AssertionResult(passed, "tool_called", f"Tool {name!r} called: {passed} (tools={tools})")
+
+
+def _assert_tool_not_called(assertion: dict[str, Any], result: RunResult) -> AssertionResult:
+    name = str(assertion.get("name", ""))
+    tools = _tool_names(result)
+    passed = name not in tools
+    return AssertionResult(passed, "tool_not_called", f"Tool {name!r} not called: {passed} (tools={tools})")
 
 
 def _assert_tool_called_any(assertion: dict[str, Any], result: RunResult) -> AssertionResult:
@@ -88,11 +116,59 @@ def _assert_tool_called_any(assertion: dict[str, Any], result: RunResult) -> Ass
     )
 
 
+def _assert_tool_sequence(assertion: dict[str, Any], result: RunResult) -> AssertionResult:
+    expected = [str(name) for name in assertion.get("names", [])]
+    tools = _tool_names(result)
+    cursor = 0
+    for tool in tools:
+        if cursor < len(expected) and tool == expected[cursor]:
+            cursor += 1
+    passed = cursor == len(expected)
+    return AssertionResult(
+        passed,
+        "tool_sequence",
+        f"Tool sequence {expected!r} appears in order: {passed} (tools={tools})",
+    )
+
+
+def _assert_tool_args_contains(assertion: dict[str, Any], result: RunResult) -> AssertionResult:
+    text = str(assertion.get("text", ""))
+    tool_name = assertion.get("name")
+    matches = []
+    for call in result.tool_calls:
+        if tool_name and call.get("name") != tool_name:
+            continue
+        args_text = json.dumps(call.get("args", {}), ensure_ascii=False, sort_keys=True, default=str)
+        if text in args_text:
+            matches.append(call.get("name"))
+    passed = bool(matches)
+    return AssertionResult(
+        passed,
+        "tool_args_contains",
+        f"Tool args contain {text!r}: {passed} (matches={matches})",
+    )
+
+
 def _assert_trace_has(assertion: dict[str, Any], result: RunResult) -> AssertionResult:
     event = str(assertion.get("event", ""))
     events = _event_names(result)
     passed = event in events
     return AssertionResult(passed, "trace_has", f"Trace has {event!r}: {passed}")
+
+
+def _assert_event_order(assertion: dict[str, Any], result: RunResult) -> AssertionResult:
+    expected = [str(name) for name in assertion.get("events", [])]
+    events = _event_names(result)
+    cursor = 0
+    for event in events:
+        if cursor < len(expected) and event == expected[cursor]:
+            cursor += 1
+    passed = cursor == len(expected)
+    return AssertionResult(
+        passed,
+        "event_order",
+        f"Event order {expected!r} appears in trace: {passed} (events={events})",
+    )
 
 
 def _assert_trace_contract(assertion: dict[str, Any], result: RunResult) -> AssertionResult:
@@ -234,6 +310,13 @@ def _assert_file_exists(assertion: dict[str, Any], workspace: Path) -> Assertion
     return AssertionResult(passed, "file_exists", f"File exists {path!r}: {passed}")
 
 
+def _assert_file_not_exists(assertion: dict[str, Any], workspace: Path) -> AssertionResult:
+    path = str(assertion.get("path", ""))
+    target = _safe_workspace_path(workspace, path)
+    passed = not target.exists()
+    return AssertionResult(passed, "file_not_exists", f"File absent {path!r}: {passed}")
+
+
 def _assert_file_contains(assertion: dict[str, Any], workspace: Path) -> AssertionResult:
     path = str(assertion.get("path", ""))
     text = str(assertion.get("text", ""))
@@ -241,6 +324,39 @@ def _assert_file_contains(assertion: dict[str, Any], workspace: Path) -> Asserti
     content = target.read_text(encoding="utf-8") if target.exists() else ""
     passed = text in content
     return AssertionResult(passed, "file_contains", f"File {path!r} contains {text!r}: {passed}")
+
+
+def _assert_file_json_value(assertion: dict[str, Any], workspace: Path) -> AssertionResult:
+    path = str(assertion.get("path", ""))
+    key = str(assertion.get("key", ""))
+    expected = assertion.get("value")
+    target = _safe_workspace_path(workspace, path)
+    if not target.exists():
+        return AssertionResult(False, "file_json_value", f"JSON file {path!r} does not exist")
+
+    data = json.loads(target.read_text(encoding="utf-8"))
+    actual = _get_dotted_value(data, key)
+    passed = actual == expected
+    return AssertionResult(
+        passed,
+        "file_json_value",
+        f"JSON {path!r}.{key} == {expected!r}: {passed} (actual={actual!r})",
+    )
+
+
+def _get_dotted_value(data: Any, key: str) -> Any:
+    current = data
+    if not key:
+        return current
+    for part in key.split("."):
+        if isinstance(current, dict):
+            current = current.get(part)
+        elif isinstance(current, list) and part.isdigit():
+            index = int(part)
+            current = current[index] if 0 <= index < len(current) else None
+        else:
+            return None
+    return current
 
 
 def _assert_metric_compare(assertion: dict[str, Any], result: RunResult, *, op: str) -> AssertionResult:
