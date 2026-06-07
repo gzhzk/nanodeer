@@ -113,6 +113,8 @@ class NanoEngine:
         features: RuntimeFeatures | None = None,
         tools: list | None = None,
         checkpointer=None,
+        sandbox_provider=None,
+        generate_titles: bool = True,
     ):
         """Initialize engine.
 
@@ -122,12 +124,16 @@ class NanoEngine:
             features: Optional RuntimeFeatures for feature gating.
             tools: Optional custom tool list. None = use default tools.
             checkpointer: Optional Checkpointer instance. Defaults to SqliteCheckpointer.
+            sandbox_provider: Optional sandbox provider override for integrations.
+            generate_titles: Whether to generate conversation titles after new turns.
         """
         self.config = config
         self._model_name = model_name
         self._features = features
         self._tools = tools
         self._checkpointer = checkpointer
+        self._sandbox_provider = sandbox_provider
+        self._generate_titles = generate_titles
         self._executor = None
         self._compression_mw = None
 
@@ -149,6 +155,7 @@ class NanoEngine:
                 features=self._features,
                 checkpointer=self._checkpointer,
                 model_name=display_name,
+                sandbox_provider=self._sandbox_provider,
             )
         return self._executor
 
@@ -195,7 +202,7 @@ class NanoEngine:
         final_state, events = await executor.run(state, uploaded_files=uploaded_files)
 
         # Fire-and-forget title generation for new or untitled conversations
-        if final_state.thread_id and (is_new or not final_state.title):
+        if self._generate_titles and final_state.thread_id and (is_new or not final_state.title):
             asyncio.create_task(self._generate_and_save_title(final_state))
 
         # App-layer compression after turn completes

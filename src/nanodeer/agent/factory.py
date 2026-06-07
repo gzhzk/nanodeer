@@ -18,6 +18,7 @@ __all__ = ["RuntimeFeatures", "NanoDeerFactory", "create_nanodeer_agent"]
 class RuntimeFeatures:
     """Feature gates for NanoDeer agent assembly."""
     sandbox: bool = True
+    prompt_profile: str = "default"
     compression: bool = True
     # Compression config
     context_window: int = 204800
@@ -63,6 +64,7 @@ class NanoDeerFactory:
         subagent_runner=None,
         checkpointer=None,
         model_name: str = "",
+        sandbox_provider=None,
     ):
         from .react import ReActExecutor
         from .context import ContextManager
@@ -75,11 +77,11 @@ class NanoDeerFactory:
 
         # Sandbox manager (None if disabled)
         sandbox_mgr = None
-        sandbox_provider = None
         if self.features.sandbox:
             from .sandbox_manager import SandboxManager
-            from ..sandbox import create_sandbox_provider
-            sandbox_provider = create_sandbox_provider()
+            if sandbox_provider is None:
+                from ..sandbox import create_sandbox_provider
+                sandbox_provider = create_sandbox_provider()
             sandbox_mgr = SandboxManager(provider=sandbox_provider)
 
         # Context manager (always, handles memory + plan + files)
@@ -117,6 +119,7 @@ class NanoDeerFactory:
             llm=llm,
             tools=tools,  # original tools for llm.bind_tools()
             prompt_config=PromptConfig(
+                profile=self.features.prompt_profile,
                 memory=self.features.prompt_memory,
                 plan=self.features.prompt_plan,
                 skills=self.features.prompt_skills,
@@ -153,6 +156,7 @@ def create_nanodeer_agent(
     subagent_runner: Any = None,
     checkpointer=None,
     model_name: str = "",
+    sandbox_provider=None,
 ):
     """Create ReActExecutor (no middleware chain)."""
     from ..tools import default_tools
@@ -167,6 +171,7 @@ def create_nanodeer_agent(
         subagent_runner=subagent_runner,
         checkpointer=checkpointer,
         model_name=model_name,
+        sandbox_provider=sandbox_provider,
     )
     compression_mw = factory.build_compression(model)
     return executor, compression_mw

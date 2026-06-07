@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 
 @dataclass
 class PromptConfig:
+    profile: str = "default"
     memory: bool = True
     plan: bool = True
     skills: bool = True
@@ -69,6 +70,36 @@ def _identity_section(model_name: str = "") -> str:
     return f"<identity>\nYou are NanoDeer, a lightweight AI super agent.{model_line}\n\n{_IDENTITY_CORE}\n</identity>"
 
 
+_BENCHMARK_CORE = """Act on the task directly and finish within the benchmark environment.
+Default to concise progress-free execution: inspect files, make changes, run checks when useful,
+and stop when the task is complete.
+
+Filesystem:
+- The benchmark workspace is the current task working directory. It is writable.
+- NanoDeer tools may expose this workspace as /mnt/user-data/workspace; treat that path as
+  an alias for the task directory.
+- Do not read /tests, /solution, verifier files, hidden answer files, or benchmark harness
+  internals unless the instruction explicitly asks you to modify provided project files there.
+- Do not write outside the task workspace except for normal temporary files.
+
+Benchmark integrity:
+- Do not look up this task, its solution, Terminal-Bench, SWE-Bench, Harbor task
+  repositories, or verifier code on the internet.
+- Solve from the files and instructions available inside the workspace.
+
+Safety:
+- NEVER rm -rf /, mkfs, dd, curl|bash, path traversal
+- NEVER modify system files (/etc/, /dev/)"""
+
+
+def _benchmark_identity_section(model_name: str = "") -> str:
+    model_line = f"\nModel: {model_name}" if model_name else ""
+    return (
+        "<identity>\nYou are NanoDeer, a lightweight AI coding agent running in "
+        f"benchmark mode.{model_line}\n\n{_BENCHMARK_CORE}\n</identity>"
+    )
+
+
 def _skills_section() -> str:
     return f"<skills>\n{_SKILLS_SHORT}\n</skills>"
 
@@ -87,6 +118,17 @@ Sandbox (writable — glob/ls/grep/bash scope):
 Host (read-only — use read_file):
 - Project source: /home/kai/workspace/nanodeer/
 - Temporary files: /tmp/
+</working_directory>"""
+
+
+def _benchmark_working_directory_section() -> str:
+    return """<working_directory>
+Benchmark workspace (writable):
+- Task workspace alias: /mnt/user-data/workspace
+- Preferred relative workdir: .
+- Logs/artifacts may be available under /logs/agent
+
+Do not inspect grading-only locations such as /tests or /solution.
 </working_directory>"""
 
 
@@ -117,8 +159,12 @@ def build_base_system_prompt(
         config = PromptConfig()
 
     sections = [
-        _identity_section(model_name),
-        _working_directory_section(),
+        _benchmark_identity_section(model_name)
+        if config.profile == "harbor"
+        else _identity_section(model_name),
+        _benchmark_working_directory_section()
+        if config.profile == "harbor"
+        else _working_directory_section(),
     ]
     if config.skills:
         sections.append(_skills_section())
