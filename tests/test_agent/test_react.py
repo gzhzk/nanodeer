@@ -98,6 +98,39 @@ class SyncInvokeTool:
         return self._result
 
 
+def test_check_clarification_accepts_tagged_question():
+    signals = TurnSignals()
+
+    result = ReActExecutor._check_clarification(
+        "[CLARIFICATION]Which draft should I rename?[/CLARIFICATION]",
+        signals,
+    )
+
+    assert result is True
+    assert signals.clarification_question == "Which draft should I rename?"
+
+
+def test_check_clarification_fallback_accepts_plain_question():
+    signals = TurnSignals()
+
+    result = ReActExecutor._check_clarification(
+        "I found draft_a.txt and draft_b.txt. Which one should I rename?",
+        signals,
+    )
+
+    assert result is True
+    assert "Which one" in signals.clarification_question
+
+
+def test_check_clarification_fallback_ignores_plain_answer():
+    signals = TurnSignals()
+
+    result = ReActExecutor._check_clarification("Done. I renamed the file.", signals)
+
+    assert result is False
+    assert signals.clarification_question is None
+
+
 class MockStreamChunk:
     """Minimal LangChain-like streaming chunk."""
 

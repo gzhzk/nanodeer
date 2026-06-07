@@ -102,9 +102,31 @@ _MAX_RETRIES = 3
 _BASE_DELAY = 2.0
 _MAX_REACT_TURNS = 24
 _REPEATED_TOOL_CALL_LIMIT = 3
+_CLARIFICATION_CUES = (
+    "which",
+    "clarify",
+    "specify",
+    "confirm",
+    "choose",
+    "do you mean",
+    "which one",
+    "哪个",
+    "哪一个",
+    "请确认",
+    "请指定",
+)
 
 def _now_ms() -> int:
     return trace_now_ms()
+
+
+def _looks_like_clarification_question(content: str) -> bool:
+    """Best-effort fallback when the model asks but forgets the protocol tag."""
+    text = content.strip()
+    if not text or ("?" not in text and "？" not in text):
+        return False
+    lowered = text.lower()
+    return any(cue in lowered for cue in _CLARIFICATION_CUES)
 
 
 def _flatten_content(content: Any) -> str:
@@ -439,12 +461,19 @@ class ReActExecutor:
     @staticmethod
     def _check_clarification(content: str, signals: TurnSignals) -> bool:
         """Check if LLM output contains a clarification request. Returns True if WAIT."""
-        if not content or "[CLARIFICATION]" not in content:
+        if not content:
             return False
 
-        # Extract the question from the clarification block
-        m = re.search(r"\[CLARIFICATION\](.*?)(?:\[/CLARIFICATION\]|$)", content, re.DOTALL)
-        question = m.group(1).strip() if m else content.strip()
+        if "[CLARIFICATION]" in content:
+            m = re.search(r"\[CLARIFICATION\](.*?)(?:\[/CLARIFICATION\]|$)", content, re.DOTALL)
+            question = m.group(1).strip() if m else content.strip()
+            signals.clarification_question = question
+            return True
+
+        question = content.strip()
+        if not _looks_like_clarification_question(question):
+            return False
+
         signals.clarification_question = question
         return True
 
