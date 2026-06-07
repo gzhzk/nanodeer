@@ -710,8 +710,8 @@ Focus 段放在 plan 之前、memory 之前，因为它是最**即时**的信息
 
 | 任务 | 涉及文件 | 预估 |
 |------|----------|------|
-| 设计长程 eval 任务集（6-10 个） | `benchmarks/tasks/long_horizon.yaml` | 中 |
-| 增加长程指标（step_completion_rate, error_recurrence_rate, lesson_relevance） | `benchmarks/metrics.py` | 小 |
+| 设计长程 eval 任务集（6-10 个） | `evaluation/tasks/long_horizon.yaml` | 中 |
+| 增加长程指标（step_completion_rate, error_recurrence_rate, lesson_relevance） | `evaluation/metrics.py` | 小 |
 | 基线测试（无任何优化） | — | 小 |
 | Phase 1 后测试 | — | 小 |
 | Phase 2 后测试 | — | 小 |

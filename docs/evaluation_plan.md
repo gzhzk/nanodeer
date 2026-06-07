@@ -7,7 +7,7 @@
 ## 1. 评测框架结构
 
 ```
-nanodeer/benchmarks/
+nanodeer/evaluation/
 ├── __init__.py
 ├── tasks/                       # 评测任务集
 │   ├── __init__.py
@@ -74,7 +74,7 @@ cost = (input_tokens / 1_000_000) * input_price
      + (output_tokens / 1_000_000) * output_price
 ```
 
-Provider 单价维护在 `benchmarks/pricing.yaml` 中。
+Provider 单价维护在 `evaluation/pricing.yaml` 中。
 
 ### 2.3 Trace Schema v1
 
@@ -153,7 +153,7 @@ Provider 单价维护在 `benchmarks/pricing.yaml` 中。
   prompt: "读取 data.csv，计算每列的平均值和中位数，生成一个 summary.txt"
   setup:
     files:
-      - source: "benchmarks/fixtures/data.csv"
+      - source: "evaluation/fixtures/data.csv"
         target: "data.csv"
   expected_tools: ["read_file", "bash", "exec_python"]
   judge_mode: "llm"
@@ -165,7 +165,7 @@ Provider 单价维护在 `benchmarks/pricing.yaml` 中。
   prompt: "找到当前目录下所有 .tmp 文件，将它们重命名为 .bak 后缀"
   setup:
     files:
-      - source: "benchmarks/fixtures/batch_rename/"
+      - source: "evaluation/fixtures/batch_rename/"
         target: "."
   expected_tools: ["bash", "ls", "glob"]
   judge_mode: "exact"
@@ -190,7 +190,7 @@ Provider 单价维护在 `benchmarks/pricing.yaml` 中。
   prompt: "分析 logs/ 目录下的所有 .log 文件，统计每个级别的日志数量，生成一份周报 report.md"
   setup:
     files:
-      - source: "benchmarks/fixtures/logs/"
+      - source: "evaluation/fixtures/logs/"
         target: "logs/"
   expected_tools: ["bash", "grep", "read_file", "write_file"]
   judge_mode: "llm"
@@ -220,7 +220,7 @@ runner.py — 主入口
 ### 4.2 接口设计
 
 ```python
-# benchmarks/runner.py
+# evaluation/runner.py
 
 @dataclass
 class TaskResult:
@@ -236,7 +236,7 @@ class TaskResult:
     error: str | None
 
 @dataclass
-class BenchmarkReport:
+class EvaluationReport:
     config: dict                # 运行配置（模型、provider、温度等）
     results: list[TaskResult]
     summary: dict               # 聚合指标
@@ -266,7 +266,7 @@ def compute_summary(results: list[TaskResult]) -> dict:
 ### 5.1 Markdown 报告
 
 ```markdown
-# NanoDeer Benchmark Report
+# NanoDeer Evaluation Report
 
 **配置**: provider=siliconflow, model=Qwen/Qwen3.6-35B-A3B, temperature=0.1
 **运行时间**: 2025-05-13 14:30:00
@@ -424,11 +424,11 @@ profiles:
 
 | 阶段 | 内容 | 产出 |
 |------|------|------|
-| **Phase 1** | 基础框架：metrics.py、runner.py、任务 YAML | 可运行的 benchmark 脚本 |
+| **Phase 1** | 基础框架：metrics.py、runner.py、任务 YAML | 可运行的 evaluation 脚本 |
 | **Phase 2** | 报告输出：JSON Reporter、Markdown Reporter | 可阅读的报告 |
 | **Phase 3** | 任务集：每个级别 5+ 个任务 | 完整评测集 |
 | **Phase 4** | 示例场景：examples/ 下的可运行 demo | 截图 + 录屏素材 |
-| **Phase 5** | 多模型对比：跑 2-3 个模型的横向对比 | Benchmark Report |
+| **Phase 5** | 多模型对比：跑 2-3 个模型的横向对比 | Evaluation Report |
 | **Phase 6** | 简历/作品集整合 | 一份可以直接展示的报告 |
 
 ---

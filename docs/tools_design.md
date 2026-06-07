@@ -204,7 +204,7 @@ Host-side 工具不进入 `SANDBOX_TOOL_CONFIGS`，所以不会被 `SandboxExecT
 - `NANODEER_MEMORY_ROOT`
 - `NANODEER_PLANS_ROOT`
 
-这使 benchmark 不会污染真实用户记忆和计划。
+这使 evaluation 不会污染真实用户记忆和计划。
 
 ---
 
@@ -394,7 +394,7 @@ read_image
 2. 明确哪些参数是 `path_vars`、`b64_vars`、`translate_vars`。
 3. 加 `test_sandbox_exec.py` 命令构造测试。
 4. 加路径安全或执行集成测试。
-5. 加 benchmark smoke task 验证模型能正确选择它。
+5. 加 evaluation task 验证模型能正确选择它。
 
 ---
 
@@ -410,7 +410,7 @@ read_image
    当前 `_to_lc_messages()` 把工具结果转成 human text，简单但可能影响某些模型的工具纠错能力。
 
 4. **bash audit 和模型习惯有冲突**
-   模型常用 shell redirection，系统又禁止 `>`。需要通过 prompt、tool descriptions、benchmark 来压住这个行为。
+   模型常用 shell redirection，系统又禁止 `>`。需要通过 prompt、tool descriptions、evaluation 来压住这个行为。
 
 5. **完整工具结果没有持久审计位置**
    当前 trace preview 适合 UI，不适合复盘完整 stdout/stderr。应考虑落盘 trace 或 debug artifact。

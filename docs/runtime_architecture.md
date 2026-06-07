@@ -348,7 +348,7 @@ return state, events
 
 - `tool_repeat_guard`: 连续重复相同工具调用达到阈值时，合成包含最近工具 marker 的最终 assistant message，并结束。
 - `turn_limit`: ReAct turn 达到上限时结束，避免真实模型无限工具循环。
-- 这两个事件都会进入 trace，供 benchmark/debug 使用。
+- 这两个事件都会进入 trace，供 evaluation/debug 使用。
 
 ### 7.1 下一轮如何发生
 
@@ -556,7 +556,7 @@ conversation CRUD 直接调用 `SqliteCheckpointer`。
 - 流式有 `assistant_response`，非流式没有
 - 完整 stdout/stderr artifact 和 prompt snapshot 还没落地
 
-这会影响日志监控和 benchmark 对齐。
+这会影响日志监控和 evaluation 对齐。
 
 ### 13.4 streaming path 没有 compression
 

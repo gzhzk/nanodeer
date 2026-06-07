@@ -1,6 +1,6 @@
 # NanoDeer Observability Design
 
-> 当前日志/监控现状与改造建议。重点是让每一步执行都能被 UI、benchmark、debug report 统一观察。
+> 当前日志/监控现状与改造建议。重点是让每一步执行都能被 UI、evaluation、debug report 统一观察。
 
 ---
 
@@ -11,7 +11,7 @@ NanoDeer 的主链路已经有 trace events，但现在还不够“可运营”�
 - Python logger 和 trace event 是两套东西。
 - streaming 和 non-streaming 的 event 字段不完全一致。
 - UI 只能看到 SSE 事件，无法看到完整 debug 上下文。
-- benchmark 可以读 `RunResult.events`，但字段缺口会让断言和失败分析变粗。
+- evaluation 可以读 `RunResult.events`，但字段缺口会让断言和失败分析变粗。
 - 工具完整 stdout/stderr 没有统一落盘审计位置。
 
 如果要调试 20-30 轮中难度任务，必须能回答这些问题：
@@ -72,19 +72,19 @@ executor.run_streaming()
 特点：
 
 - 已经是最接近“统一观测接口”的东西。
-- 可以被 UI、benchmark、reporter 复用。
+- 可以被 UI、evaluation、reporter 复用。
 - 但 streaming/non-streaming 还没完全统一。
 
-### 2.3 Benchmark report
+### 2.3 Evaluation report
 
-新增 benchmark runner 会读取：
+新增 evaluation runner 会读取：
 
 - `RunResult.events`
 - `RunResult.metrics`
 - `RunResult.tool_calls`
 - workspace artifacts
 
-这说明 trace schema 一旦稳定，benchmark 可以自然成为回归观测工具。
+这说明 trace schema 一旦稳定，evaluation 可以自然成为回归观测工具。
 
 ---
 
@@ -161,7 +161,7 @@ Phase 1 已对齐：
 仍需注意：
 
 - 非流式没有 `assistant_response`，这是路径语义差异，不一定必须补。
-- 新增事件必须通过 benchmark `trace_contract` 或单元测试约束基础字段。
+- 新增事件必须通过 evaluation `trace_contract` 或单元测试约束基础字段。
 
 ### 4.3 logger 没有 thread/turn 上下文
 
@@ -211,13 +211,13 @@ executor/internal component
   -> streaming: yield to SSE
   -> non-streaming: append to RunResult.events
   -> logger: optional render from TraceEvent
-  -> benchmark: consume TraceEvent
+  -> evaluation: consume TraceEvent
   -> trace store: optional JSONL persistence
 ```
 
 也就是：
 
-**不要让 logger、SSE、benchmark 各自发明自己的事件。**
+**不要让 logger、SSE、evaluation 各自发明自己的事件。**
 
 ---
 
@@ -316,7 +316,7 @@ Timeline 不是原始 trace，而是 UI-friendly projection：
 
 - streaming token/assistant events 已改为 `TraceCollector.emit()` 输出。
 - non-streaming trace 已补齐 `threadId`、主要 `turn` 字段和 tool result preview/bytes。
-- benchmark 已新增 `trace_contract` 断言，用于检查基础字段、LLM start/end 配对、tool_call/tool_result 配对、sandbox acquire/release 配对。
+- evaluation 已新增 `trace_contract` 断言，用于检查基础字段、LLM start/end 配对、tool_call/tool_result 配对、sandbox acquire/release 配对。
 
 ### Phase 2：TraceCollector（已完成第一版）
 
@@ -330,7 +330,7 @@ class TraceCollector:
     def events(...)
 ```
 
-非流式返回 `collector.events`，流式 `yield collector.emit(...)`。当前这一版还没有落盘，只先保证 schema 和 benchmark 可以稳定消费。
+非流式返回 `collector.events`，流式 `yield collector.emit(...)`。当前这一版还没有落盘，只先保证 schema 和 evaluation 可以稳定消费。
 
 ### Phase 3：JSONL trace store（已完成第一版）
 
@@ -341,7 +341,7 @@ NANODEER_TRACE_ENABLED=1
 NANODEER_TRACE_ROOT=/tmp/nanodeer-traces
 ```
 
-当前 benchmark runner 会自动为每个 task 设置隔离 trace root，并在 report 里记录 `trace_dir`。还没有完成的是 artifact store 和 prompt capture。
+当前 evaluation runner 会自动为每个 task 设置隔离 trace root，并在 report 里记录 `trace_dir`。还没有完成的是 artifact store 和 prompt capture。
 
 后续可扩展为配置文件：
 
@@ -358,11 +358,11 @@ observability:
 
 ---
 
-## 9. 和 benchmark 的关系
+## 9. 和 evaluation 的关系
 
-benchmark 应该消费 trace，而不是解析 logger。
+evaluation 应该消费 trace，而不是解析 logger。
 
-当前 benchmark 已经验证：
+当前 evaluation 已经验证：
 
 - `tool_called`
 - `trace_has`
@@ -370,7 +370,7 @@ benchmark 应该消费 trace，而不是解析 logger。
 - `metric_eq`
 - `no_tool_errors`
 
-如果 trace event 统一，benchmark 可以进一步判断：
+如果 trace event 统一，evaluation 可以进一步判断：
 
 - 每个 `tool_call` 是否有对应 `tool_result`
 - sandbox 是否 acquire/release 配对
@@ -383,7 +383,7 @@ benchmark 应该消费 trace，而不是解析 logger。
 ## 10. 当前最该优先做的日志改进
 
 1. **统一 trace fields**
-   这是所有后续 UI/debug/benchmark 的地基。
+   这是所有后续 UI/debug/evaluation 的地基。
 
 2. **tool_result 保留 error_type 和完整结果 artifact**
    评测失败时，最需要看到的就是工具为什么失败。

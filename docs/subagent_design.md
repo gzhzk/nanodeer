@@ -272,7 +272,7 @@ async def get_subagent_results(sub_id: str) -> str:
 
 - pending/active worker 返回 running 文案，不算工具错误。
 - unknown worker 返回 `Error:`，会被工具结果标记为失败。
-- failed/timeout/cancelled worker 会通过 `<subagent_result>` 暴露状态，并被 `no_tool_errors` benchmark 捕捉。
+- failed/timeout/cancelled worker 会通过 `<subagent_result>` 暴露状态，并被 `no_tool_errors` evaluation 捕捉。
 
 format_result 的输出格式：
 

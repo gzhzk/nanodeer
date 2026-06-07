@@ -2,7 +2,7 @@
 
 # NanoDeer
 
-**🚀 从零实现的 5 层 AI Agent Harness**
+**面向 LLM Agent 的轻量级 Harness：用于构建、运行与评测**
 
 [![MIT License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 [![Python 3.13](https://img.shields.io/badge/Python-3.13-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
@@ -10,9 +10,9 @@
 [![Docker](https://img.shields.io/badge/Docker-optional-2496ED?style=flat-square&logo=docker&logoColor=white)](https://docker.com)
 [![Version 0.1.0](https://img.shields.io/badge/Version-0.1.0-orange?style=flat-square)](https://github.com/gzhzk/nanodeer)
 
-原生 ReAct · ContextManager/SandboxManager · 沙箱隔离 · HTTP SSE API
+Runtime · Tool Use · Memory · Sandbox · Checkpoint
 
-*架构决定你能做什么，工程决定你能做多好。*
+*探索 LLM Agent 背后的运行时。*
 
 [English](./README.md) | 中文
 
@@ -20,14 +20,37 @@
 
 ---
 
-NanoDeer 是一个轻量级 Agent harness：原生 async ReAct 循环、显式 runtime managers、沙箱感知工具路由、文件式 memory/plan、SQLite checkpoint 恢复、结构化 trace，以及 Next.js assistant-ui 前端。它刻意不引入 LangGraph，也不使用 middleware 链；主链路就是 `HTTP/UI -> NanoEngine -> ReActExecutor -> tools/sandbox -> memory/plan/checkpoint`。
+NanoDeer 是一个用于构建、运行与评测 LLM 应用与 Agent 的轻量级运行时 harness。
 
-当前可用能力：
-- 基于 HTTP SSE 的流式对话，支持会话列表、重命名、归档、删除和恢复。
-- Docker 优先的沙箱执行，Docker 不可用时回退 Local，并统一 `/mnt/user-data` 虚拟路径。
-- Memory、Wiki、Plan 作为宿主侧工具，使用可检查的文件存储。
-- 图片上传从前端到 API 再到 `read_image` 工具的桥接链路。
-- deterministic smoke benchmarks + trace contract，用于回归检查。
+与聚焦 orchestration 的工作流框架不同，NanoDeer 更关注 runtime engineering：Agent 如何推理、行动、记忆、恢复，以及如何与工具交互。
+
+它不依赖工作流图或 middleware 链，而是自己实现 runtime primitives：ReAct 执行、工具路由、记忆、沙箱和 checkpoint 恢复。
+
+NanoDeer 既是一个实用的 agent framework，也是一个探索 agent runtime 设计的 playground。
+
+核心能力：
+- 基于 HTTP SSE 的原生 async ReAct 流式对话，支持会话列表、重命名、归档、删除和恢复。
+- 工具路由与 Docker 优先的沙箱执行，Docker 不可用时回退 Local。
+- 文件式 Memory、Wiki、Plan 工具，底层存储可直接检查。
+- SQLite checkpoint 恢复和结构化 trace 事件。
+- 分层 evaluation harness，用于回归测试。
+- Next.js assistant-ui 前端，以及从前端到 `read_image` 的图片上传桥接。
+
+核心链路：
+
+```text
+HTTP / UI
+  ↓
+NanoEngine
+  ↓
+ReActExecutor
+  ↓
+Tools / Sandbox
+  ↓
+Memory / Plan
+  ↓
+Checkpoint
+```
 
 ## 目录
 
@@ -123,15 +146,18 @@ nanodeer/
 │   ├── test_sandbox/        # 沙箱提供者测试
 │   ├── test_skills/         # 技能加载测试
 │   ├── test_subagents/      # 子代理协调器测试
-│   ├── test_benchmarks/     # 基准测试
+│   ├── test_evaluation/     # 评测任务测试
 │   └── test_tools_integration/ # 工具执行集成测试
 │
-├── benchmarks/              # 性能基准测试
-│   ├── runner.py            # 基准测试运行器
-│   ├── tasks/smoke.yaml     # 冒烟测试任务定义
-│   ├── judges.py            # LLM-as-judge 评估
+├── evaluation/              # 评测 harness 和任务集
+│   ├── runner.py            # 评测运行器
+│   ├── tasks/contracts/     # Runtime/API/trace 协议检查
+│   ├── tasks/capabilities/  # 工具和模块能力检查
+│   ├── tasks/behaviors/     # Agent 行为和策略检查
+│   ├── tasks/scenarios/     # 端到端工作流检查
+│   ├── judges.py            # 确定性断言评测器
 │   ├── reporters/           # 输出报告 (JSON 等)
-│   └── fixtures/            # 测试数据
+│   └── fixtures/            # 评测数据
 │
 ├── docs/                    # 设计文档
 │   ├── nanodeer_blueprint_20260401.md  # 项目蓝图
@@ -145,6 +171,7 @@ nanodeer/
 │   ├── skills_design.md               # 技能设计
 │   ├── prompt_design.md               # Prompt 工程设计
 │   ├── observability_design.md        # 可观测性与追踪
+│   ├── evaluation_harness.md          # 分层评测 harness
 │   ├── evaluation_plan.md             # 评估计划
 │   ├── long_horizon_design.md         # 长程任务设计
 │   ├── refactoring_journey.md         # 重构历程笔记
@@ -502,7 +529,7 @@ NanoDeer 使用两个生命周期不同的数据载体：
 - ✅ assistant-ui 前端（Next.js + assistant-ui），包含 Projects/Plans/Memory/Wiki 侧边栏摘要
 - ✅ SubagentCoordinator，受限只读 worker
 - ✅ 技能工作流加载
-- ✅ 结构化 trace events + deterministic smoke benchmark
+- ✅ 结构化 trace events + 分层 deterministic evaluation suites
 
 **开发中 / 规划中：**
 
@@ -512,7 +539,7 @@ NanoDeer 使用两个生命周期不同的数据载体：
 | **Subagent 只读工具**（_SUBAGENT_SAFE_TOOLS，已实现） | ✅ 已完成 |
 | 前端体验和 workspace 视图打磨 | 🔄 进行中 |
 | Plan/Memory/Wiki 详情页连接后端 API | 🔄 进行中 |
-| 更完整的 benchmark task set | 📝 规划 |
+| 外部 benchmark adapters（Terminal-Bench、GAIA、τ-bench） | 📝 规划 |
 | **长程任务链路** | 📝 规划 |
 |　├─ 焦点驱动上下文 | 📝 规划 |
 |　├─ 执行预算感知 | 📝 规划 |

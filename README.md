@@ -2,7 +2,7 @@
 
 # NanoDeer
 
-**🚀 A 5-Layer AI Agent Harness Built from Scratch**
+**A Lightweight Agent Harness for Building, Running, and Evaluating LLM Agents**
 
 [![MIT License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 [![Python 3.13](https://img.shields.io/badge/Python-3.13-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
@@ -10,9 +10,9 @@
 [![Docker](https://img.shields.io/badge/Docker-optional-2496ED?style=flat-square&logo=docker&logoColor=white)](https://docker.com)
 [![Version 0.1.0](https://img.shields.io/badge/Version-0.1.0-orange?style=flat-square)](https://github.com/gzhzk/nanodeer)
 
-Native ReAct · ContextManager/SandboxManager · Sandbox Isolation · HTTP SSE API
+Runtime · Tool Use · Memory · Sandbox · Checkpoint
 
-*Architecture is what you build. Engineering is how you build it.*
+*Exploring the runtime behind LLM agents.*
 
 English | [中文](./README_zh.md)
 
@@ -20,14 +20,37 @@ English | [中文](./README_zh.md)
 
 ---
 
-NanoDeer is a compact agent harness with a native async ReAct loop, explicit runtime managers, sandbox-aware tool routing, file-based memory/plan storage, SQLite checkpoint resume, structured trace events, and a Next.js assistant-ui frontend. It intentionally avoids LangGraph and middleware chains: the product path is `HTTP/UI -> NanoEngine -> ReActExecutor -> tools/sandbox -> memory/plan/checkpoint`.
+NanoDeer is a lightweight runtime harness for building, running, and evaluating LLM applications and agents.
 
-Current product surface:
-- Streaming chat over HTTP SSE with conversation list, rename/archive/delete, and resume.
-- Docker-first sandbox execution with Local fallback and virtual `/mnt/user-data` path translation.
-- Host-side memory, wiki, and plan tools backed by inspectable files.
-- Image upload bridge from frontend to API to `read_image`.
-- Deterministic smoke benchmarks plus trace contracts for regression checks.
+Unlike workflow-oriented frameworks that focus on orchestration, NanoDeer focuses on runtime engineering: how an agent reasons, acts, remembers, recovers, and interacts with tools.
+
+Instead of relying on workflow graphs or middleware chains, NanoDeer implements its own runtime primitives: ReAct execution, tool routing, memory, sandboxing, and checkpoint recovery.
+
+NanoDeer serves both as a practical agent framework and a playground for exploring agent runtime design.
+
+Core Capabilities:
+- Native async ReAct runtime with streaming HTTP SSE chat and conversation management.
+- Tool routing with Docker-first sandbox execution and Local fallback.
+- File-backed memory, wiki, and plan tools with inspectable storage.
+- SQLite checkpoint recovery and structured trace events.
+- Layered evaluation harness for regression testing.
+- Next.js assistant-ui frontend and an image upload bridge to `read_image`.
+
+Core Path:
+
+```text
+HTTP / UI
+  ↓
+NanoEngine
+  ↓
+ReActExecutor
+  ↓
+Tools / Sandbox
+  ↓
+Memory / Plan
+  ↓
+Checkpoint
+```
 
 ## Table of Contents
 
@@ -123,15 +146,18 @@ nanodeer/
 │   ├── test_sandbox/        # Sandbox provider tests
 │   ├── test_skills/         # Skill loader tests
 │   ├── test_subagents/      # Subagent coordinator tests
-│   ├── test_benchmarks/     # Benchmark task tests
+│   ├── test_evaluation/     # Evaluation task tests
 │   └── test_tools_integration/ # Tool execution integration tests
 │
-├── benchmarks/              # Performance benchmarks
-│   ├── runner.py            # Benchmark runner
-│   ├── tasks/smoke.yaml     # Smoke test task definitions
-│   ├── judges.py            # LLM-as-judge evaluation
+├── evaluation/              # Evaluation harness and task suites
+│   ├── runner.py            # Evaluation runner
+│   ├── tasks/contracts/     # Runtime/API/trace protocol checks
+│   ├── tasks/capabilities/  # Tool and module capability checks
+│   ├── tasks/behaviors/     # Agent behavior and policy checks
+│   ├── tasks/scenarios/     # End-to-end workflow checks
+│   ├── judges.py            # Deterministic assertion evaluators
 │   ├── reporters/           # Output reporters (JSON, etc.)
-│   └── fixtures/            # Benchmark data fixtures
+│   └── fixtures/            # Evaluation data fixtures
 │
 ├── docs/                    # Design documentation (Chinese)
 │   ├── nanodeer_blueprint_20260401.md  # Project blueprint
@@ -145,6 +171,7 @@ nanodeer/
 │   ├── skills_design.md               # Skills design
 │   ├── prompt_design.md               # Prompt engineering design
 │   ├── observability_design.md        # Observability & tracing
+│   ├── evaluation_harness.md          # Layered evaluation harness
 │   ├── evaluation_plan.md             # Evaluation plan
 │   ├── long_horizon_design.md         # Long-horizon task design
 │   ├── refactoring_journey.md         # Refactoring journey notes
@@ -513,7 +540,7 @@ NanoDeer uses two data carriers with distinct lifetimes:
 - ✅ SubagentCoordinator with constrained read-only workers
 - ✅ Skill workflow loader
 - ✅ assistant-ui frontend (Next.js + assistant-ui), including Projects/Plans/Memory/Wiki sidebar summary
-- ✅ Structured trace events and deterministic smoke benchmark suite
+- ✅ Structured trace events and layered deterministic evaluation suites
 
 **In progress / planned:**
 
@@ -523,7 +550,7 @@ NanoDeer uses two data carriers with distinct lifetimes:
 | Plan/Memory/Wiki detail pages wired to backend APIs | 🔄 In progress |
 | Inline: guardrail, timeout, fallback | 📝 Planned |
 | Inline: dangling tool call injection | 📝 Planned |
-| Broader benchmark task sets beyond smoke | 📝 Planned |
+| External benchmark adapters (Terminal-Bench, GAIA, τ-bench) | 📝 Planned |
 | **Long-horizon task loop** | 📝 Planned |
 |　├─ Focus (focus-driven context injection) | 📝 Planned |
 |　├─ TurnBudget (turn/duration budget) | 📝 Planned |
@@ -531,7 +558,7 @@ NanoDeer uses two data carriers with distinct lifetimes:
 |　├─ Reflection (session-end reflection) | 📝 Planned |
 |　└─ Plan-Memory bridge (step self-judgment → wiki) | 📝 Planned |
 | IM bot integration (Feishu/WeCom) | 📝 Planned |
-| Evaluation framework | 📝 Planned |
+| Evaluation report history and failure taxonomy | 📝 Planned |
 | Multi-model comparison benchmarks | 📝 Planned |
 
 ---
