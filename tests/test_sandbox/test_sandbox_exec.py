@@ -1,5 +1,6 @@
 """Tests for SandboxExecTool command construction logic."""
 import base64
+import subprocess
 import pytest
 from unittest.mock import MagicMock
 
@@ -75,6 +76,31 @@ class TestSandboxExecCommandConstruction:
         assert "*.py" not in cmd.cmd  # pattern is b64 encoded
         assert base64.b64encode(b"*.py").decode() in cmd.cmd
 
+    def test_glob_command_matches_recursive_relative_paths(self, tmp_path):
+        """glob should match both recursive and root-level **/ patterns."""
+        (tmp_path / "reports").mkdir()
+        (tmp_path / "reports" / "final_metrics.txt").write_text("total=42", encoding="utf-8")
+        (tmp_path / "draft_a.txt").write_text("draft", encoding="utf-8")
+        tool = _mock_tool("glob")
+        exec_tool = SandboxExecTool(tool, provider=None)
+
+        nested_cmd = exec_tool.get_sandbox_command(
+            {"file_path": str(tmp_path), "pattern": "**/*.txt"},
+            "thread-1",
+        )
+        root_cmd = exec_tool.get_sandbox_command(
+            {"file_path": str(tmp_path), "pattern": "**/*draft*"},
+            "thread-1",
+        )
+
+        nested = subprocess.run(nested_cmd.cmd, shell=True, capture_output=True, text=True, timeout=5)
+        root = subprocess.run(root_cmd.cmd, shell=True, capture_output=True, text=True, timeout=5)
+
+        assert nested.returncode == 0
+        assert "reports/final_metrics.txt" in nested.stdout
+        assert root.returncode == 0
+        assert "draft_a.txt" in root.stdout
+
     def test_grep_command(self):
         """grep substitutes file_path and b64-encodes pattern."""
         tool = _mock_tool("grep")
@@ -102,7 +128,7 @@ class TestSandboxExecCommandConstruction:
 
         assert cmd is not None
         assert "ls -la" not in cmd.cmd  # command is b64 encoded
-        assert base64.b64encode(b"ls -la /mnt/user-data/").decode() in cmd.cmd
+        assert base64.b64encode(b"ls -la /mnt/user-data").decode() in cmd.cmd
 
     def test_exec_python_command(self):
         """exec_python b64-encodes code."""
@@ -168,6 +194,11 @@ class TestSandboxExecToolRegistry:
         args_map = {
             "read_file": {"file_path": "/mnt/user-data/workspace/test.txt"},
             "write_file": {"file_path": "/mnt/user-data/workspace/test.txt", "content": "test"},
+            "edit_file": {
+                "file_path": "/mnt/user-data/workspace/test.txt",
+                "old_string": "old",
+                "new_string": "new",
+            },
             "ls": {"file_path": "/mnt/user-data/workspace"},
             "glob": {"file_path": "/mnt/user-data/workspace", "pattern": "*.py"},
             "grep": {"file_path": "/mnt/user-data/workspace", "pattern": "test", "recursive": "True"},

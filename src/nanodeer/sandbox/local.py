@@ -8,6 +8,7 @@ For production, always use DockerSandboxProvider.
 """
 
 import asyncio
+import base64
 import logging
 import os
 import re
@@ -116,7 +117,32 @@ class LocalSandboxProvider(SandboxProvider):
         In local mode, subprocess runs directly on host where those paths don't exist.
         This method translates them to the actual sandbox working_dir path.
         """
-        return cmd.replace("/mnt/user-data/", sandbox.working_dir + "/")
+        translated = self._translate_b64_payload(cmd, sandbox)
+        return self._translate_virtual_paths(translated, sandbox)
+
+    def _translate_b64_payload(self, cmd: str, sandbox: Sandbox) -> str:
+        """Translate virtual paths inside the base64 payload used by shell tools."""
+        if "base64.b64decode(sys.argv[1])" not in cmd:
+            return cmd
+        if "os.system(" not in cmd and "exec(" not in cmd:
+            return cmd
+
+        match = re.match(r'(?P<prefix>.*base64\.b64decode\(sys\.argv\[1\]\).*"\s+)(?P<payload>[A-Za-z0-9+/=]+)(?P<suffix>.*)$', cmd)
+        if not match:
+            return cmd
+
+        try:
+            decoded = base64.b64decode(match.group("payload"), validate=True).decode()
+        except Exception:
+            return cmd
+
+        rewritten = self._translate_virtual_paths(decoded, sandbox)
+        encoded = base64.b64encode(rewritten.encode()).decode()
+        return f"{match.group('prefix')}{encoded}{match.group('suffix')}"
+
+    def _translate_virtual_paths(self, text: str, sandbox: Sandbox) -> str:
+        text = text.replace("/mnt/user-data/", sandbox.working_dir + "/")
+        return text.replace("/mnt/user-data", sandbox.working_dir)
 
     async def release(self, sandbox: Sandbox) -> None:
         """Persist outputs, then clean up workspace directory."""

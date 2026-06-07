@@ -1,4 +1,5 @@
 """Unit tests for sandbox context — thread-safety of get/set/clear."""
+import base64
 import pytest
 import threading
 from nanodeer.sandbox import set_sandbox, get_sandbox, clear_sandbox, create_sandbox_provider, Sandbox
@@ -153,3 +154,27 @@ class TestSandboxProviderFactory:
 
         provider = create_sandbox_provider()
         assert isinstance(provider, LocalSandboxProvider)
+
+
+class TestLocalSandboxPathTranslation:
+    def test_plain_virtual_user_data_path_translates(self, sandbox_a):
+        provider = LocalSandboxProvider()
+
+        translated = provider._translate_cmd("ls /mnt/user-data/reports", sandbox_a)
+
+        assert translated == f"ls {sandbox_a.working_dir}/reports"
+
+    def test_b64_shell_payload_virtual_user_data_path_translates(self, sandbox_a):
+        provider = LocalSandboxProvider()
+        payload = "ls -la /mnt/user-data/ 2>&1"
+        encoded = base64.b64encode(payload.encode()).decode()
+        cmd = (
+            'python3 -c "import base64,os,sys; '
+            'os.system(base64.b64decode(sys.argv[1]).decode())" '
+            f"{encoded}"
+        )
+
+        translated = provider._translate_cmd(cmd, sandbox_a)
+        translated_payload = base64.b64decode(translated.rsplit(" ", 1)[1]).decode()
+
+        assert translated_payload == f"ls -la {sandbox_a.working_dir}/ 2>&1"

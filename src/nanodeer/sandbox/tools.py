@@ -82,8 +82,10 @@ SANDBOX_TOOL_CONFIGS: dict[str, dict] = {
             'python3 -c "import base64,os,fnmatch,sys; '
             'p=sys.argv[1];'
             'pat=base64.b64decode(sys.argv[2]).decode();'
-            '[print(os.path.join(r,f)) for r,_,fs in os.walk(p) '
-            'for f in fs if fnmatch.fnmatch(f,pat)]" '
+            'pats=[pat]+([pat[3:]] if pat.startswith(chr(42)+chr(42)+chr(47)) else []);'
+            '[print(full) for r,_,fs in os.walk(p) for f in fs '
+            'for full in [os.path.join(r,f)] for rel in [os.path.relpath(full,p)] '
+            'if any(fnmatch.fnmatch(t,q) for q in pats for t in (f,rel,full))]" '
             "{file_path} {b64_pattern}"
         ),
         "path_vars": ["file_path"],
@@ -122,7 +124,8 @@ SANDBOX_TOOL_CONFIGS: dict[str, dict] = {
     "bash": {
         "template": f"{_B64_SHELL} {{b64_command}}",
         "path_vars": [],
-        "b64_vars": ["command"],
+        "b64_vars": [],
+        "translate_vars": ["command"],
         "timeout": 30,
     },
     "git": {
@@ -250,8 +253,8 @@ class SandboxExecTool(SandboxToolWrapper):
             validated = validate_path(vpath)
             return virtual2physical(validated, exec_id) if validated else vpath
 
-        # Match /mnt/user-data/ followed by non-quote chars (handles spaces in paths)
-        return re.sub(r"/mnt/user-data/[^'\"]+", replacer, s)
+        # Match virtual user-data paths without swallowing shell operators or redirects.
+        return re.sub(r"/mnt/user-data(?:/[^\s'\";|&<>]*)?", replacer, s)
 
 
 def wrap_tool_for_sandbox(tool, provider) -> SandboxToolWrapper | None:
