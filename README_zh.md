@@ -116,6 +116,7 @@ nanodeer/
 │   ├── subagent/            # 基于信号量的子代理协调器
 │   ├── plan/                # 文件式 JSON 计划存储
 │   ├── skills/              # .md 技能加载系统
+│   ├── integrations/        # 可选 benchmark / 外部 harness 适配器
 │   └── config.py            # Pydantic 配置模型 + 全局单例
 │
 ├── frontend/                # Web 前端 (Next.js + assistant-ui)
@@ -171,6 +172,7 @@ nanodeer/
 │   ├── skills_design.md               # 技能设计
 │   ├── prompt_design.md               # Prompt 工程设计
 │   ├── observability_design.md        # 可观测性与追踪
+│   ├── benchmark_integrations.md      # Harbor/TB2 benchmark 适配设计
 │   ├── evaluation_harness.md          # 分层评测 harness
 │   ├── evaluation_plan.md             # 评估计划
 │   ├── long_horizon_design.md         # 长程任务设计
@@ -237,6 +239,41 @@ python -m pip install -e '.[dev]'
 # 只运行某个 Python 测试文件
 ./scripts/check.sh tests/test_agent/test_react.py
 ```
+
+### Benchmark Adapter Smoke
+
+NanoDeer 提供一个可选的 benchmark 旁路，用于接 Harbor / Terminal-Bench 2.0
+这类外部评测 harness。它不改变默认 API/UI 主链路，而是在 benchmark workspace
+里复用同一套 ReAct loop。
+
+不启动 Harbor、Docker 或 Terminal-Bench 镜像的本地 smoke：
+
+```bash
+mkdir -p /tmp/nanodeer-smoke-workdir /tmp/nanodeer-smoke-logs
+printf '%s\n' \
+  'Create hello.txt containing exactly: NANODEER_BENCH_SMOKE_OK' \
+  > /tmp/nanodeer-smoke.md
+
+nanodeer-bench-run \
+  --instruction-file /tmp/nanodeer-smoke.md \
+  --workdir /tmp/nanodeer-smoke-workdir \
+  --logs-dir /tmp/nanodeer-smoke-logs \
+  --timeout-seconds 120
+```
+
+runner 会把任务文件写到 `--workdir`，并在 `--logs-dir` 下输出
+`run_result.json`、`final.txt`、NanoDeer trace JSONL 和 ATIF 风格的
+`trajectory.json`。
+
+Harbor / Terminal-Bench 2.0 则是另一层：需要在 Docker 可用的机器上安装 Harbor
+并运行，建议放到远程大磁盘机器，避免本地 Docker 镜像和 build cache 占用空间。
+自定义 agent import path：
+
+```text
+nanodeer.integrations.harbor.agent:NanoDeerHarborAgent
+```
+
+适配架构与推进计划见 [docs/benchmark_integrations.md](docs/benchmark_integrations.md)。
 
 手动调试时也可以分开启动：
 
@@ -539,7 +576,7 @@ NanoDeer 使用两个生命周期不同的数据载体：
 | **Subagent 只读工具**（_SUBAGENT_SAFE_TOOLS，已实现） | ✅ 已完成 |
 | 前端体验和 workspace 视图打磨 | 🔄 进行中 |
 | Plan/Memory/Wiki 详情页连接后端 API | 🔄 进行中 |
-| 外部 benchmark adapters（Terminal-Bench、GAIA、τ-bench） | 📝 规划 |
+| 外部 benchmark adapters（优先 Harbor / Terminal-Bench 2.0） | 🔄 初始适配 |
 | **长程任务链路** | 📝 规划 |
 |　├─ 焦点驱动上下文 | 📝 规划 |
 |　├─ 执行预算感知 | 📝 规划 |

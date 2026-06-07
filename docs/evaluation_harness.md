@@ -150,7 +150,9 @@ python -m evaluation.runner --suite behaviors --list
 
 ## 外部 Benchmark 路线
 
-内部四层评测稳定后，再接公开 benchmark。建议顺序：
+内部四层评测稳定后，再接公开 benchmark。当前已经先落了一条
+Harbor / Terminal-Bench 2.0 旁路适配，详见
+[`benchmark_integrations.md`](benchmark_integrations.md)。后续建议顺序：
 
 1. Terminal-Bench：最贴近当前 sandbox/terminal/tool loop。
 2. GAIA small subset：通用 assistant、多工具、多模态/网页任务。
@@ -158,16 +160,20 @@ python -m evaluation.runner --suite behaviors --list
 4. AgentBench selected envs：多环境泛化。
 5. OSWorld/WebArena/SWE-bench：后置高成本 stress tests。
 
-外部 benchmark 不应该直接混进 internal YAML。推荐加 adapter 层：
+外部 benchmark 不应该直接混进 internal YAML。推荐保持两层分工：
+
+- `evaluation/`：内部确定性回归任务、报告、failure taxonomy
+- `src/nanodeer/integrations/`：外部 harness 适配器、headless runner、workspace provider
 
 ```text
-evaluation/external/
-  terminal_bench/
-  gaia/
-  tau_bench/
+src/nanodeer/integrations/
+  benchmarks/
+  harbor/
+  swe_bench/       # future
 ```
 
-adapter 统一输出 NanoDeer 的 `TaskResult`/report 形态，并保留 trace 以便回放。
+adapter 应保留 NanoDeer trace 以便回放，并按外部 harness 需要输出
+`run_result.json`、ATIF `trajectory.json` 或 benchmark-specific artifacts。
 
 ## 命名状态
 

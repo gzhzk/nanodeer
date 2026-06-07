@@ -116,6 +116,7 @@ nanodeer/
 │   ├── subagent/            # Semaphore-based subagent coordinator
 │   ├── plan/                # File-based JSON plan storage
 │   ├── skills/              # .md skill loading system
+│   ├── integrations/        # Optional benchmark / external harness adapters
 │   └── config.py            # Pydantic config model + global singleton
 │
 ├── frontend/                # Web UI (Next.js + assistant-ui)
@@ -171,6 +172,7 @@ nanodeer/
 │   ├── skills_design.md               # Skills design
 │   ├── prompt_design.md               # Prompt engineering design
 │   ├── observability_design.md        # Observability & tracing
+│   ├── benchmark_integrations.md      # Harbor/TB2 benchmark adapter design
 │   ├── evaluation_harness.md          # Layered evaluation harness
 │   ├── evaluation_plan.md             # Evaluation plan
 │   ├── long_horizon_design.md         # Long-horizon task design
@@ -237,6 +239,42 @@ python -m pip install -e '.[dev]'
 # Run a focused Python test file
 ./scripts/check.sh tests/test_agent/test_react.py
 ```
+
+### Benchmark Adapter Smoke
+
+NanoDeer includes an optional benchmark side path for harnesses such as Harbor /
+Terminal-Bench 2.0. This path keeps the normal API/UI runtime unchanged while
+running the same ReAct loop in a benchmark workspace.
+
+Local smoke test without Harbor, Docker, or Terminal-Bench images:
+
+```bash
+mkdir -p /tmp/nanodeer-smoke-workdir /tmp/nanodeer-smoke-logs
+printf '%s\n' \
+  'Create hello.txt containing exactly: NANODEER_BENCH_SMOKE_OK' \
+  > /tmp/nanodeer-smoke.md
+
+nanodeer-bench-run \
+  --instruction-file /tmp/nanodeer-smoke.md \
+  --workdir /tmp/nanodeer-smoke-workdir \
+  --logs-dir /tmp/nanodeer-smoke-logs \
+  --timeout-seconds 120
+```
+
+The runner writes task files in `--workdir` and emits `run_result.json`,
+`final.txt`, NanoDeer trace JSONL, and an ATIF-style `trajectory.json` under
+`--logs-dir`.
+
+Harbor / Terminal-Bench 2.0 is intentionally separate: install Harbor and run it
+on a Docker-capable machine, preferably remote with large disk space for task
+images and build cache. The custom agent import path is:
+
+```text
+nanodeer.integrations.harbor.agent:NanoDeerHarborAgent
+```
+
+See [docs/benchmark_integrations.md](docs/benchmark_integrations.md) for the
+adapter architecture and rollout notes.
 
 For manual debugging:
 
@@ -550,7 +588,7 @@ NanoDeer uses two data carriers with distinct lifetimes:
 | Plan/Memory/Wiki detail pages wired to backend APIs | 🔄 In progress |
 | Inline: guardrail, timeout, fallback | 📝 Planned |
 | Inline: dangling tool call injection | 📝 Planned |
-| External benchmark adapters (Terminal-Bench, GAIA, τ-bench) | 📝 Planned |
+| External benchmark adapters (Harbor / Terminal-Bench 2.0 first) | 🔄 Initial adapter |
 | **Long-horizon task loop** | 📝 Planned |
 |　├─ Focus (focus-driven context injection) | 📝 Planned |
 |　├─ TurnBudget (turn/duration budget) | 📝 Planned |
