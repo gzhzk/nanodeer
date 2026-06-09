@@ -8,6 +8,7 @@ instruction, then let NanoDeer's benchmark runner write logs and trajectory.
 from __future__ import annotations
 
 import base64
+import inspect
 import shlex
 from pathlib import PurePosixPath
 
@@ -22,6 +23,30 @@ class NanoDeerHarborAgent(BaseInstalledAgent):
 
     SUPPORTS_ATIF: bool = True
     VENV_PATH: str = "/tmp/nanodeer-venv"
+    RUN_TIMEOUT_SECONDS: int = 900
+
+    async def _exec_as_agent(
+        self,
+        environment: BaseEnvironment,
+        *,
+        command: str,
+        env: dict[str, str] | None = None,
+        timeout_seconds: int | None = None,
+    ) -> None:
+        kwargs = {"command": command}
+        if env is not None:
+            kwargs["env"] = env
+        if timeout_seconds is not None:
+            params = inspect.signature(self.exec_as_agent).parameters
+            has_kwargs = any(
+                param.kind == inspect.Parameter.VAR_KEYWORD
+                for param in params.values()
+            )
+            for name in ("timeout", "timeout_seconds", "timeout_sec"):
+                if name in params or has_kwargs:
+                    kwargs[name] = timeout_seconds
+                    break
+        await self.exec_as_agent(environment, **kwargs)
 
     @staticmethod
     def name() -> str:
@@ -49,7 +74,7 @@ class NanoDeerHarborAgent(BaseInstalledAgent):
         )
         install_spec = self._get_env("NANODEER_INSTALL_SPEC") or "nanodeer"
         python = f"{self.VENV_PATH}/bin/python"
-        await self.exec_as_agent(
+        await self._exec_as_agent(
             environment,
             command=(
                 f"python3 -m venv {shlex.quote(self.VENV_PATH)} && "
@@ -57,6 +82,7 @@ class NanoDeerHarborAgent(BaseInstalledAgent):
                 f"{python} -m pip install {shlex.quote(install_spec)} && "
                 f"{python} -m nanodeer.integrations.benchmarks.runner --help"
             ),
+            timeout_seconds=600,
         )
 
     @with_prompt_template
@@ -98,7 +124,7 @@ class NanoDeerHarborAgent(BaseInstalledAgent):
             if (value := self._get_env(key))
         }
 
-        await self.exec_as_agent(
+        await self._exec_as_agent(
             environment,
             command=(
                 f"mkdir -p {agent_dir} && "
@@ -114,9 +140,11 @@ class NanoDeerHarborAgent(BaseInstalledAgent):
                 "--workdir . "
                 f"--logs-dir {agent_dir} "
                 f"--instruction-file {shlex.quote(str(instruction_path))}"
+                f" --timeout-seconds {self.RUN_TIMEOUT_SECONDS - 30}"
                 f"{model_arg}"
             ),
             env=env,
+            timeout_seconds=self.RUN_TIMEOUT_SECONDS,
         )
 
     def populate_context_post_run(self, context: AgentContext) -> None:
