@@ -15,6 +15,22 @@ ALLOWED_PREFIXES = (
 )
 
 
+def _extra_allowed_prefixes() -> tuple[str, ...]:
+    raw = os.getenv("NANODEER_EXTRA_ALLOWED_PATHS", "")
+    prefixes = []
+    for item in raw.split(os.pathsep):
+        if not item:
+            continue
+        normalized = os.path.normpath(item)
+        if os.path.isabs(normalized):
+            prefixes.append(normalized)
+    return tuple(prefixes)
+
+
+def _has_allowed_prefix(path: str, prefixes: tuple[str, ...]) -> bool:
+    return any(path == prefix or path.startswith(prefix.rstrip("/") + "/") for prefix in prefixes)
+
+
 def validate_path(path: str) -> str | None:
     """Validate path: normalize, block traversal, block dangerous system paths."""
     if not path:
@@ -31,7 +47,8 @@ def validate_path(path: str) -> str | None:
         return None
 
     # Only allow mount points, workspace paths, or common user directories
-    if not any(normalized.startswith(prefix) for prefix in ALLOWED_PREFIXES):
+    allowed_prefixes = ALLOWED_PREFIXES + _extra_allowed_prefixes()
+    if not _has_allowed_prefix(normalized, allowed_prefixes):
         return None
 
     # Block dangerous system paths
@@ -48,6 +65,10 @@ def validate_path(path: str) -> str | None:
 def virtual2physical(virtual_path: str, exec_id: str) -> str:
     """Translate to physical path with exec-level isolation."""
     safe_exec_id = re.sub(r'[^a-zA-Z0-9_-]', '', exec_id)
+    extra_allowed = _extra_allowed_prefixes()
+
+    if _has_allowed_prefix(virtual_path, extra_allowed):
+        return virtual_path
 
     # Mount point: already physical
     if virtual_path.startswith(VIRTUAL_PREFIX):

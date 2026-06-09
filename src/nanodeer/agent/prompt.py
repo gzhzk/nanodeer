@@ -125,6 +125,7 @@ def _benchmark_working_directory_section() -> str:
     return """<working_directory>
 Benchmark workspace (writable):
 - Task workspace alias: /mnt/user-data/workspace
+- Harness task paths such as /app are also writable when provided by the task
 - Preferred relative workdir: .
 - Logs/artifacts may be available under /logs/agent
 

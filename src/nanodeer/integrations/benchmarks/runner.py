@@ -98,6 +98,7 @@ async def run_benchmark(args: argparse.Namespace) -> int:
     workdir = Path(args.workdir).expanduser().resolve()
     logs_dir = Path(args.logs_dir).expanduser().resolve()
     logs_dir.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("NANODEER_EXTRA_ALLOWED_PATHS", str(workdir))
     state_dir = _set_trial_env(logs_dir)
 
     from nanodeer.agent.factory import RuntimeFeatures
