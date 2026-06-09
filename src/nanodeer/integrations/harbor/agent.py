@@ -21,13 +21,15 @@ class NanoDeerHarborAgent(BaseInstalledAgent):
     """Run NanoDeer inside a Harbor task container."""
 
     SUPPORTS_ATIF: bool = True
+    VENV_PATH: str = "/tmp/nanodeer-venv"
 
     @staticmethod
     def name() -> str:
         return "nanodeer"
 
     def get_version_command(self) -> str | None:
-        return "python3 -m pip show nanodeer | awk '/^Version:/ {print $2}'"
+        python = f"{self.VENV_PATH}/bin/python"
+        return f"{python} -m pip show nanodeer | awk '/^Version:/ {{print $2}}'"
 
     def parse_version(self, stdout: str) -> str:
         return stdout.strip() or "unknown"
@@ -37,7 +39,8 @@ class NanoDeerHarborAgent(BaseInstalledAgent):
             environment,
             command=(
                 "if command -v apt-get >/dev/null 2>&1; then "
-                "apt-get update && apt-get install -y python3 python3-pip git ripgrep; "
+                "apt-get update && "
+                "apt-get install -y python3 python3-pip python3-venv git ripgrep; "
                 "elif command -v apk >/dev/null 2>&1; then "
                 "apk add --no-cache python3 py3-pip git ripgrep; "
                 "fi"
@@ -45,11 +48,14 @@ class NanoDeerHarborAgent(BaseInstalledAgent):
             env={"DEBIAN_FRONTEND": "noninteractive"},
         )
         install_spec = self._get_env("NANODEER_INSTALL_SPEC") or "nanodeer"
+        python = f"{self.VENV_PATH}/bin/python"
         await self.exec_as_agent(
             environment,
             command=(
-                f"python3 -m pip install --user {shlex.quote(install_spec)} && "
-                "python3 -m nanodeer.integrations.benchmarks.runner --help"
+                f"python3 -m venv {shlex.quote(self.VENV_PATH)} && "
+                f"{python} -m pip install --upgrade pip && "
+                f"{python} -m pip install {shlex.quote(install_spec)} && "
+                f"{python} -m nanodeer.integrations.benchmarks.runner --help"
             ),
         )
 
@@ -103,7 +109,7 @@ class NanoDeerHarborAgent(BaseInstalledAgent):
                     f"base64.b64decode({encoded_instruction!r}))"
                 )
                 + " && "
-                "python3 -m nanodeer.integrations.benchmarks.runner "
+                f"{self.VENV_PATH}/bin/python -m nanodeer.integrations.benchmarks.runner "
                 "--profile harbor "
                 "--workdir . "
                 f"--logs-dir {agent_dir} "
