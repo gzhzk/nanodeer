@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import json
 import os
+import traceback
 from pathlib import Path
 
 
@@ -220,7 +221,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
-    raise SystemExit(asyncio.run(run_benchmark(args)))
+    try:
+        raise SystemExit(asyncio.run(run_benchmark(args)))
+    except Exception:
+        logs_dir = Path(args.logs_dir).expanduser()
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        trace = traceback.format_exc()
+        (logs_dir / "exception.txt").write_text(trace, encoding="utf-8")
+        print(trace)
+        raise
 
 
 if __name__ == "__main__":
