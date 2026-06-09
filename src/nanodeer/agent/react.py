@@ -70,7 +70,7 @@ _MEDIUM_RISK = [
 _SHELL_METACHAR = frozenset([";", "&&", "||", "|", ">", ">>", "<", "`", "$("])
 
 
-def _bash_safe(tool_name: str, tool_args: dict) -> bool:
+def _bash_safe(tool_name: str, tool_args: dict, *, allow_shell_syntax: bool = False) -> bool:
     """Check bash command for dangerous patterns. Returns False to block."""
     if tool_name != "bash":
         return True
@@ -78,8 +78,9 @@ def _bash_safe(tool_name: str, tool_args: dict) -> bool:
     if not cmd:
         return True
 
-    # Hard block: shell metacharacters for chaining
-    if any(meta in cmd for meta in _SHELL_METACHAR):
+    # Hard block shell metacharacters in the default product profile. Benchmark
+    # terminal tasks need normal shell syntax such as redirection and pipes.
+    if not allow_shell_syntax and any(meta in cmd for meta in _SHELL_METACHAR):
         logger.warning("Shell metachar blocked: %r", cmd[:80])
         return False
 
@@ -640,7 +641,11 @@ class ReActExecutor:
                 )
 
                 # Bash audit (defense-in-depth for sandbox)
-                if not _bash_safe(tc["name"], tc.get("args", {})):
+                if not _bash_safe(
+                    tc["name"],
+                    tc.get("args", {}),
+                    allow_shell_syntax=self._prompt_config.profile == "harbor",
+                ):
                     collector.emit(
                         "tool_blocked",
                         turn=turn,
@@ -1022,7 +1027,11 @@ class ReActExecutor:
                 )
 
                 # Bash audit
-                if not _bash_safe(tc["name"], tc.get("args", {})):
+                if not _bash_safe(
+                    tc["name"],
+                    tc.get("args", {}),
+                    allow_shell_syntax=self._prompt_config.profile == "harbor",
+                ):
                     state.finish_reason = "bash_blocked"
                     state.next_action = NextAction.END
                     yield collector.emit(
