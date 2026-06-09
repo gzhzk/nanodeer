@@ -122,6 +122,19 @@ def test_check_clarification_fallback_accepts_plain_question():
     assert "Which one" in signals.clarification_question
 
 
+def test_check_clarification_can_disable_plain_question_fallback():
+    signals = TurnSignals()
+
+    result = ReActExecutor._check_clarification(
+        "The regex is saved. Which component does what?",
+        signals,
+        allow_plain_question=False,
+    )
+
+    assert result is False
+    assert signals.clarification_question is None
+
+
 def test_check_clarification_fallback_ignores_plain_answer():
     signals = TurnSignals()
 

@@ -460,7 +460,12 @@ class ReActExecutor:
         return raw_tcs, our_tcs
 
     @staticmethod
-    def _check_clarification(content: str, signals: TurnSignals) -> bool:
+    def _check_clarification(
+        content: str,
+        signals: TurnSignals,
+        *,
+        allow_plain_question: bool = True,
+    ) -> bool:
         """Check if LLM output contains a clarification request. Returns True if WAIT."""
         if not content:
             return False
@@ -470,6 +475,9 @@ class ReActExecutor:
             question = m.group(1).strip() if m else content.strip()
             signals.clarification_question = question
             return True
+
+        if not allow_plain_question:
+            return False
 
         question = content.strip()
         if not _looks_like_clarification_question(question):
@@ -593,7 +601,11 @@ class ReActExecutor:
                         len(raw_tcs), tool_names if raw_tcs else [], content_preview)
 
             # 5. Clarification check
-            if self._check_clarification(str(resp.content or ""), signals):
+            if self._check_clarification(
+                str(resp.content or ""),
+                signals,
+                allow_plain_question=self._prompt_config.profile != "harbor",
+            ):
                 state.next_action = NextAction.WAIT
                 if self._checkpointer and state.thread_id:
                     await self._checkpointer.save(state.thread_id, state)
@@ -971,7 +983,11 @@ class ReActExecutor:
             )
 
             # 5. Clarification check
-            if self._check_clarification(collected_content, signals):
+            if self._check_clarification(
+                collected_content,
+                signals,
+                allow_plain_question=self._prompt_config.profile != "harbor",
+            ):
                 state.next_action = NextAction.WAIT
                 if self._checkpointer and state.thread_id:
                     await self._checkpointer.save(state.thread_id, state)

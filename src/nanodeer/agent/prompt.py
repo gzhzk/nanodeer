@@ -73,6 +73,10 @@ def _identity_section(model_name: str = "") -> str:
 _BENCHMARK_CORE = """Act on the task directly and finish within the benchmark environment.
 Default to concise progress-free execution: inspect files, make changes, run checks when useful,
 and stop when the task is complete.
+Once the requested file or code change is in place, do at most one focused sanity check, then finish.
+Do not generate large self-tests, exhaustive edge-case suites, or long explanations unless explicitly requested.
+Final responses should be brief and should not ask follow-up questions unless you emit an explicit
+[CLARIFICATION]...[/CLARIFICATION] block.
 
 Filesystem:
 - The benchmark workspace is the current task working directory. It is writable.
