@@ -16,6 +16,7 @@ import asyncio
 import inspect
 import json
 import logging
+import os
 import re
 import time
 from typing import Any, AsyncGenerator
@@ -117,8 +118,71 @@ _CLARIFICATION_CUES = (
     "请指定",
 )
 
+_BENCH_SANITY_COMMAND = re.compile(
+    r"(\bpytest\b|\bunittest\b|test[_-][\w.-]*\.py|final_test\.py|/app/(?:test|check|verify)[\w.-]*\.py|\bassert\b)",
+    re.I,
+)
+_BENCH_PASSING_RESULT = re.compile(
+    r"\b(all tests passed|tests passed|passed|success|ok|0 failed)\b",
+    re.I,
+)
+_BENCH_TEST_RUNNER = re.compile(r"\b(python3?|pytest|unittest)\b", re.I)
+_BENCH_WORKSPACE_PREFIXES = ("/app/", "/mnt/user-data/workspace/")
+_BENCH_TEST_ARTIFACT_PREFIXES = ("test", "check", "verify", "tmp", "final_test")
+
 def _now_ms() -> int:
     return trace_now_ms()
+
+
+def _benchmark_sanity_check_limit() -> int:
+    raw = os.getenv("NANODEER_BENCH_SANITY_CHECK_LIMIT", "1")
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 1
+
+
+def _benchmark_mode(prompt_config: PromptConfig) -> bool:
+    return prompt_config.profile == "harbor"
+
+
+def _looks_like_benchmark_sanity_command(tool_name: str, tool_args: dict) -> bool:
+    if tool_name == "exec_python":
+        return True
+    if tool_name != "bash":
+        return False
+    command = str(tool_args.get("command", ""))
+    return bool(_BENCH_SANITY_COMMAND.search(command))
+
+
+def _looks_like_passing_sanity_result(tool_name: str, tool_args: dict, result: str, success: bool) -> bool:
+    if not success or not _looks_like_benchmark_sanity_command(tool_name, tool_args):
+        return False
+    if tool_name == "exec_python" or _BENCH_PASSING_RESULT.search(result):
+        return True
+    return bool(_BENCH_TEST_RUNNER.search(str(tool_args.get("command", ""))))
+
+
+def _is_benchmark_artifact_write(tool_name: str, tool_args: dict) -> bool:
+    if tool_name not in {"write_file", "edit_file"}:
+        return False
+    path = str(tool_args.get("file_path", ""))
+    if not path.startswith(_BENCH_WORKSPACE_PREFIXES):
+        return False
+    name = path.rstrip("/").rsplit("/", 1)[-1].lower()
+    return not any(name.startswith(prefix) for prefix in _BENCH_TEST_ARTIFACT_PREFIXES)
+
+
+def _benchmark_sanity_budget_message(limit: int) -> str:
+    return (
+        f"Benchmark sanity check budget exhausted ({limit}). "
+        "Use the existing check result, write the requested artifact if needed, "
+        "and finish without running more self-tests."
+    )
+
+
+def _benchmark_completion_message() -> str:
+    return "Benchmark task artifact written and sanity check completed. Finished."
 
 
 def _looks_like_clarification_question(content: str) -> bool:
@@ -504,6 +568,10 @@ class ReActExecutor:
         collector = TraceCollector(thread_id=thread_id)
         repeated_tool_signature = ""
         repeated_tool_count = 0
+        benchmark_mode = _benchmark_mode(self._prompt_config)
+        benchmark_sanity_limit = _benchmark_sanity_check_limit() if benchmark_mode else 0
+        benchmark_sanity_checks = 0
+        benchmark_artifact_written = False
         while True:
             turn += 1
             state.next_action = NextAction.PROCESS
@@ -652,10 +720,39 @@ class ReActExecutor:
                     args_preview=_preview(tc.get("args", {})),
                 )
 
+                tool_args = tc.get("args", {})
+                if (
+                    benchmark_mode
+                    and _looks_like_benchmark_sanity_command(tc["name"], tool_args)
+                    and benchmark_sanity_checks >= benchmark_sanity_limit
+                ):
+                    content = _benchmark_sanity_budget_message(benchmark_sanity_limit)
+                    result_text = str(content)
+                    signals.events.append({
+                        "type": "tool_result",
+                        "event": "tool_result",
+                        "turn": turn,
+                        "call_index": call_index,
+                        "name": tc["name"],
+                        "id": tc.get("id"),
+                        "result": result_text[:500],
+                        "result_preview": result_text[:500],
+                        "result_bytes": len(result_text.encode("utf-8", errors="replace")),
+                        "success": True,
+                        "duration_ms": 0,
+                        "threadId": thread_id,
+                    })
+                    state.messages.append(ToolMessage(
+                        tool_call_id=tc["id"],
+                        name=tc["name"],
+                        content=result_text,
+                    ))
+                    continue
+
                 # Bash audit (defense-in-depth for sandbox)
                 if not _bash_safe(
                     tc["name"],
-                    tc.get("args", {}),
+                    tool_args,
                     allow_shell_syntax=self._prompt_config.profile == "harbor",
                 ):
                     collector.emit(
@@ -687,7 +784,7 @@ class ReActExecutor:
                 explicit_success = True
                 try:
                     if tool:
-                        content = await _invoke_tool(tool, tc.get("args", {}), exec_id=exec_id)
+                        content = await _invoke_tool(tool, tool_args, exec_id=exec_id)
                     else:
                         explicit_success = False
                         content = f"Tool {tc['name']} not found"
@@ -711,6 +808,21 @@ class ReActExecutor:
 
                 success = _tool_success(content, explicit_success)
                 result_text = str(content)
+                if benchmark_mode and _looks_like_passing_sanity_result(
+                    tc["name"],
+                    tool_args,
+                    result_text,
+                    success,
+                ):
+                    benchmark_sanity_checks += 1
+                    if benchmark_sanity_checks >= benchmark_sanity_limit:
+                        result_text = (
+                            f"{result_text}\n\n"
+                            f"{_benchmark_sanity_budget_message(benchmark_sanity_limit)}"
+                        )
+                        content = result_text
+                if benchmark_mode and success and _is_benchmark_artifact_write(tc["name"], tool_args):
+                    benchmark_artifact_written = True
 
                 signals.events.append({
                     "type": "tool_result",
@@ -732,6 +844,16 @@ class ReActExecutor:
                     name=tc["name"],
                     content=str(content),
                 ))
+                if (
+                    benchmark_mode
+                    and success
+                    and benchmark_artifact_written
+                    and benchmark_sanity_checks >= benchmark_sanity_limit
+                ):
+                    state.messages.append(AIMessage(content=_benchmark_completion_message()))
+                    state.finish_reason = "benchmark_completed"
+                    state.next_action = NextAction.END
+                    break
 
             if state.next_action != NextAction.END:
                 current_signature = _tool_calls_signature(raw_tcs)
@@ -841,6 +963,10 @@ class ReActExecutor:
         turn = 0
         repeated_tool_signature = ""
         repeated_tool_count = 0
+        benchmark_mode = _benchmark_mode(self._prompt_config)
+        benchmark_sanity_limit = _benchmark_sanity_check_limit() if benchmark_mode else 0
+        benchmark_sanity_checks = 0
+        benchmark_artifact_written = False
         while True:
             turn += 1
             state.next_action = NextAction.PROCESS
@@ -1030,22 +1156,49 @@ class ReActExecutor:
             exec_id = state.thread_id or "default"
             for call_index, tc in enumerate(raw_tcs):
                 tool = self._tool_map.get(tc["name"])
+                tool_args = tc.get("args", {})
 
                 yield collector.emit(
                     "tool_call",
                     call_index=call_index,
                     name=tc["name"],
                     id=tc.get("id"),
-                    args=tc.get("args", {}),
-                    args_preview=_preview(tc.get("args", {})),
+                    args=tool_args,
+                    args_preview=_preview(tool_args),
                     threadId=thread_id,
                     turn=turn,
                 )
 
+                if (
+                    benchmark_mode
+                    and _looks_like_benchmark_sanity_command(tc["name"], tool_args)
+                    and benchmark_sanity_checks >= benchmark_sanity_limit
+                ):
+                    result_text = _benchmark_sanity_budget_message(benchmark_sanity_limit)
+                    yield collector.emit(
+                        "tool_result",
+                        call_index=call_index,
+                        name=tc["name"],
+                        id=tc.get("id"),
+                        result=result_text[:500],
+                        result_preview=result_text[:500],
+                        result_bytes=len(result_text.encode("utf-8", errors="replace")),
+                        success=True,
+                        duration_ms=0,
+                        threadId=thread_id,
+                        turn=turn,
+                    )
+                    state.messages.append(ToolMessage(
+                        tool_call_id=tc.get("id", ""),
+                        name=tc["name"],
+                        content=result_text,
+                    ))
+                    continue
+
                 # Bash audit
                 if not _bash_safe(
                     tc["name"],
-                    tc.get("args", {}),
+                    tool_args,
                     allow_shell_syntax=self._prompt_config.profile == "harbor",
                 ):
                     state.finish_reason = "bash_blocked"
@@ -1078,7 +1231,7 @@ class ReActExecutor:
                 explicit_success = True
                 try:
                     if tool:
-                        content = await _invoke_tool(tool, tc.get("args", {}), exec_id=exec_id)
+                        content = await _invoke_tool(tool, tool_args, exec_id=exec_id)
                     else:
                         explicit_success = False
                         content = f"Tool {tc['name']} not found"
@@ -1093,6 +1246,22 @@ class ReActExecutor:
                     logger.warning("tool=%s error=%s", tc["name"], e)
 
                 result_text = str(content)
+                success = _tool_success(content, explicit_success)
+                if benchmark_mode and _looks_like_passing_sanity_result(
+                    tc["name"],
+                    tool_args,
+                    result_text,
+                    success,
+                ):
+                    benchmark_sanity_checks += 1
+                    if benchmark_sanity_checks >= benchmark_sanity_limit:
+                        result_text = (
+                            f"{result_text}\n\n"
+                            f"{_benchmark_sanity_budget_message(benchmark_sanity_limit)}"
+                        )
+                        content = result_text
+                if benchmark_mode and success and _is_benchmark_artifact_write(tc["name"], tool_args):
+                    benchmark_artifact_written = True
                 result_str = result_text[:500]
                 yield collector.emit(
                     "tool_result",
@@ -1102,7 +1271,7 @@ class ReActExecutor:
                     result=result_str,
                     result_preview=result_str,
                     result_bytes=len(result_text.encode("utf-8", errors="replace")),
-                    success=_tool_success(content, explicit_success),
+                    success=success,
                     duration_ms=_elapsed_ms(tool_start),
                     threadId=thread_id,
                     turn=turn,
@@ -1113,6 +1282,16 @@ class ReActExecutor:
                     name=tc["name"],
                     content=str(content),
                 ))
+                if (
+                    benchmark_mode
+                    and success
+                    and benchmark_artifact_written
+                    and benchmark_sanity_checks >= benchmark_sanity_limit
+                ):
+                    state.messages.append(AIMessage(content=_benchmark_completion_message()))
+                    state.finish_reason = "benchmark_completed"
+                    state.next_action = NextAction.END
+                    break
 
             if state.next_action != NextAction.END:
                 current_signature = _tool_calls_signature(raw_tcs)

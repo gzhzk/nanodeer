@@ -3,7 +3,12 @@
 import pytest
 from unittest.mock import MagicMock, AsyncMock
 
-from nanodeer.agent.react import ReActExecutor, _bash_safe, _tool_success
+from nanodeer.agent.react import (
+    ReActExecutor,
+    _bash_safe,
+    _looks_like_benchmark_sanity_command,
+    _tool_success,
+)
 from nanodeer.agent.state import NextAction, ThreadState, TurnSignals
 from nanodeer.agent.messages import HumanMessage, SystemMessage, AIMessage, ToolMessage
 from nanodeer.agent.prompt import PromptConfig
@@ -82,6 +87,19 @@ class MockTool:
         self._result = result
 
     async def ainvoke(self, args, exec_id=None):
+        return self._result
+
+
+class CountingTool:
+    """Tool that records invocations."""
+
+    def __init__(self, name="counting_tool", result="ok"):
+        self.name = name
+        self._result = result
+        self.calls = []
+
+    async def ainvoke(self, args, exec_id=None):
+        self.calls.append(args)
         return self._result
 
 
@@ -374,6 +392,84 @@ class TestReActLoop:
 
         assert exec_ids_seen == ["default"]
 
+    @pytest.mark.asyncio
+    async def test_harbor_profile_limits_ad_hoc_self_tests(self):
+        """Harbor benchmark runs stop after one passing self-test and artifact write."""
+        first_test = {
+            "name": "bash",
+            "args": {
+                "command": (
+                    "cat > /app/test_regex.py <<'PY'\n"
+                    "assert True\n"
+                    "PY\n"
+                    "python3 /app/test_regex.py"
+                )
+            },
+            "id": "call-test-1",
+        }
+        second_test = {
+            "name": "bash",
+            "args": {
+                "command": (
+                    "cat > /app/test_regex2.py <<'PY'\n"
+                    "assert True\n"
+                    "PY\n"
+                    "python3 /app/test_regex2.py"
+                )
+            },
+            "id": "call-test-2",
+        }
+        write_artifact = {
+            "name": "write_file",
+            "args": {"file_path": "/app/regex.txt", "content": "^[a-z]+$"},
+            "id": "call-write",
+        }
+
+        llm = SequenceToolLLM([first_test, second_test, write_artifact])
+        bash_tool = CountingTool(name="bash", result="All tests passed")
+        write_tool = CountingTool(name="write_file", result="Wrote file")
+        executor = ReActExecutor(
+            llm,
+            [bash_tool, write_tool],
+            context_manager=MockContext(),
+            prompt_config=PromptConfig(profile="harbor"),
+        )
+
+        state = ThreadState(thread_id="t1", messages=[HumanMessage(content="Create regex.txt")])
+        final, _events = await executor.run(state)
+
+        assert final.next_action == NextAction.END
+        assert final.finish_reason == "benchmark_completed"
+        assert llm.call_count == 3
+        assert len(bash_tool.calls) == 1
+        assert len(write_tool.calls) == 1
+        assert any(
+            isinstance(msg, ToolMessage) and "sanity check budget exhausted" in msg.content.lower()
+            for msg in final.messages
+        )
+
+    @pytest.mark.asyncio
+    async def test_default_profile_does_not_limit_ad_hoc_self_tests(self):
+        """The benchmark self-test budget is scoped to Harbor profile only."""
+        test_call = {
+            "name": "exec_python",
+            "args": {"code": "assert True\nprint('All tests passed')"},
+            "id": "call-test",
+        }
+
+        llm = RepeatingToolLLM(test_call)
+        python_tool = CountingTool(name="exec_python", result="All tests passed")
+        executor = ReActExecutor(
+            llm,
+            [python_tool],
+            context_manager=MockContext(),
+        )
+
+        state = ThreadState(thread_id="t1", messages=[HumanMessage(content="Run checks")])
+        await executor.run(state)
+
+        assert len(python_tool.calls) == 3
+
 
 class TestReActStreamingLoop:
     @pytest.mark.asyncio
@@ -501,3 +597,17 @@ class TestToolSuccess:
             "</subagent_result>"
         )
         assert _tool_success(result) is False
+
+
+class TestBenchmarkSanityDetection:
+    def test_detects_ad_hoc_bash_test(self):
+        assert _looks_like_benchmark_sanity_command(
+            "bash",
+            {"command": "cat > /app/test_edge.py <<'PY'\nassert True\nPY\npython3 /app/test_edge.py"},
+        )
+
+    def test_does_not_treat_normal_artifact_write_as_test(self):
+        assert not _looks_like_benchmark_sanity_command(
+            "bash",
+            {"command": "printf 'abc' > /app/regex.txt"},
+        )
