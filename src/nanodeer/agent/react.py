@@ -16,6 +16,7 @@ import asyncio
 import inspect
 import json
 import logging
+import os
 import re
 import time
 from typing import Any, AsyncGenerator
@@ -101,7 +102,7 @@ def _bash_safe(tool_name: str, tool_args: dict, *, allow_shell_syntax: bool = Fa
 
 _MAX_RETRIES = 3
 _BASE_DELAY = 2.0
-_MAX_REACT_TURNS = 24
+_MAX_REACT_TURNS = int(os.environ.get("NANODEER_MAX_TURNS", "24"))
 _REPEATED_TOOL_CALL_LIMIT = 3
 _CLARIFICATION_CUES = (
     "which",

@@ -120,6 +120,8 @@ class NanoDeerHarborAgent(BaseInstalledAgent):
                 "MOONSHOT_API_BASE",
                 "ZHIPU_API_BASE",
                 "DASHSCOPE_API_BASE",
+                "NANODEER_BENCH_PROFILE",
+                "NANODEER_MAX_TURNS",
             )
             if (value := self._get_env(key))
         }
