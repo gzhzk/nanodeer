@@ -39,6 +39,15 @@ from .trace import (
     preview as trace_preview,
 )
 
+from ..tools.groups import (
+    AVAILABLE_GROUPS,
+    CORE_GROUP,
+    GROUP_DESCRIPTIONS,
+    REQUEST_TOOLS_TOOL_SCHEMA,
+    resolve_tools,
+    validate_groups,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -412,7 +421,7 @@ class ReActExecutor:
         context_manager: ContextManager | None = None,
         sandbox_manager: SandboxManager | None = None,
     ):
-        self.llm = llm.bind_tools(tools)
+        self._raw_llm = llm
         self._tools = tools
         self._tool_map = {t.name: t for t in tools}
         self._prompt_config = prompt_config or PromptConfig()
@@ -420,6 +429,36 @@ class ReActExecutor:
         self._model_name = model_name
         self._context = context_manager or ContextManager()
         self._sandbox = sandbox_manager
+
+        # Progressive tool exposure
+        self._progressive_tools = True
+        self._active_groups: set[str] = {CORE_GROUP}
+        self._rebind_tools()
+
+    def _rebind_tools(self) -> None:
+        """Re-bind LLM with tools from active groups + request_tools."""
+        tool_names = resolve_tools(list(self._active_groups))
+        active = [t for t in self._tools if t.name in tool_names]
+        # request_tools is always available (it's a meta-tool, not a real tool)
+        schemas = active + [REQUEST_TOOLS_TOOL_SCHEMA]
+        self.llm = self._raw_llm.bind_tools(schemas)
+
+    def _handle_request_tools(self, args: dict[str, Any]) -> str:
+        """Process a request_tools call: activate groups, return status."""
+        groups = args.get("groups", [])
+        valid, invalid = validate_groups(groups)
+        if valid:
+            self._active_groups.update(valid)
+            self._rebind_tools()
+        parts = []
+        if valid:
+            parts.append(f"Activated groups: {', '.join(sorted(valid))}")
+        if invalid:
+            parts.append(f"Unknown groups: {', '.join(invalid)}")
+            parts.append(f"Available: {', '.join(sorted(AVAILABLE_GROUPS - {CORE_GROUP}))}")
+        if not parts:
+            parts.append("No groups specified.")
+        return "\n".join(parts)
 
     # -- Messages conversion --------------------------------------------------
 
@@ -642,6 +681,30 @@ class ReActExecutor:
 
             exec_id = state.thread_id or "default"
             for call_index, tc in enumerate(raw_tcs):
+                # Intercept request_tools — meta-tool, not a real tool dispatch
+                if tc["name"] == "request_tools":
+                    content = self._handle_request_tools(tc.get("args", {}))
+                    state.messages.append(
+                        ToolMessage(
+                            content=content,
+                            tool_call_id=tc.get("id", ""),
+                            name="request_tools",
+                        )
+                    )
+                    collector.emit(
+                        "tool_result",
+                        turn=turn,
+                        call_index=call_index,
+                        name="request_tools",
+                        id=tc.get("id"),
+                        result=content,
+                        result_preview=content[:TRACE_PREVIEW_CHARS],
+                        result_bytes=len(content.encode()),
+                        success=True,
+                        duration_ms=0,
+                    )
+                    continue
+
                 tool = self._tool_map.get(tc["name"])
                 collector.emit(
                     "tool_call",
@@ -1030,6 +1093,30 @@ class ReActExecutor:
 
             exec_id = state.thread_id or "default"
             for call_index, tc in enumerate(raw_tcs):
+                # Intercept request_tools — meta-tool, not a real tool dispatch
+                if tc["name"] == "request_tools":
+                    content = self._handle_request_tools(tc.get("args", {}))
+                    state.messages.append(
+                        ToolMessage(
+                            content=content,
+                            tool_call_id=tc.get("id", ""),
+                            name="request_tools",
+                        )
+                    )
+                    collector.emit(
+                        "tool_result",
+                        turn=turn,
+                        call_index=call_index,
+                        name="request_tools",
+                        id=tc.get("id"),
+                        result=content,
+                        result_preview=content[:TRACE_PREVIEW_CHARS],
+                        result_bytes=len(content.encode()),
+                        success=True,
+                        duration_ms=0,
+                    )
+                    continue
+
                 tool = self._tool_map.get(tc["name"])
 
                 yield collector.emit(
