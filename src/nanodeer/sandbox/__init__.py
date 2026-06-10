@@ -63,6 +63,34 @@ def clear_sandbox(exec_id: str) -> None:
         _sandbox_context.pop(exec_id, None)
 
 
+def resolve_virtual_path(virtual_path: str) -> str:
+    """Resolve /mnt/user-data/ paths to real host filesystem paths.
+
+    File tools (read_file/write_file/edit_file) run on the host. The sandbox
+    uses virtual paths like /mnt/user-data/workspace/ for consistency between
+    host and container. This function translates those virtual paths to the
+    actual host working directory of the active sandbox.
+
+    Without an active sandbox, falls back to ~/.nanodeer/threads/default/user-data/.
+    """
+    if not virtual_path.startswith("/mnt/user-data"):
+        return virtual_path
+
+    rel = virtual_path.removeprefix("/mnt/user-data")
+
+    # Check active sandbox for the real host path
+    for _sid, sb in list(_sandbox_context.items()):
+        wd = sb.working_dir.rstrip("/")
+        return f"{wd}{rel}"
+
+    # No sandbox active — use a reasonable default
+    from pathlib import Path
+    base = Path.home() / ".nanodeer" / "threads" / "default" / "user-data"
+    result = str(base) + rel
+    base.mkdir(parents=True, exist_ok=True)  # ensures the directory tree exists
+    return result
+
+
 def create_sandbox_provider() -> SandboxProvider:
     """Try Docker sandbox, fall back to LocalSandboxProvider on failure."""
     from .local import LocalSandboxProvider
