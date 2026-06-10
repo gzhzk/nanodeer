@@ -604,7 +604,7 @@ class ReActExecutor:
             if self._check_clarification(
                 str(resp.content or ""),
                 signals,
-                allow_plain_question=self._prompt_config.profile != "harbor",
+                allow_plain_question=self._prompt_config.profile not in ("harbor", "harbor-minimal"),
             ):
                 state.next_action = NextAction.WAIT
                 if self._checkpointer and state.thread_id:
@@ -656,7 +656,7 @@ class ReActExecutor:
                 if not _bash_safe(
                     tc["name"],
                     tc.get("args", {}),
-                    allow_shell_syntax=self._prompt_config.profile == "harbor",
+                    allow_shell_syntax=self._prompt_config.profile in ("harbor", "harbor-minimal"),
                 ):
                     collector.emit(
                         "tool_blocked",
@@ -986,7 +986,7 @@ class ReActExecutor:
             if self._check_clarification(
                 collected_content,
                 signals,
-                allow_plain_question=self._prompt_config.profile != "harbor",
+                allow_plain_question=self._prompt_config.profile not in ("harbor", "harbor-minimal"),
             ):
                 state.next_action = NextAction.WAIT
                 if self._checkpointer and state.thread_id:
@@ -1046,7 +1046,7 @@ class ReActExecutor:
                 if not _bash_safe(
                     tc["name"],
                     tc.get("args", {}),
-                    allow_shell_syntax=self._prompt_config.profile == "harbor",
+                    allow_shell_syntax=self._prompt_config.profile in ("harbor", "harbor-minimal"),
                 ):
                     state.finish_reason = "bash_blocked"
                     state.next_action = NextAction.END

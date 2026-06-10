@@ -104,12 +104,24 @@ Safety:
 - NEVER rm -rf /, mkfs, dd, curl|bash, path traversal
 - NEVER modify system files (/etc/, /dev/)"""
 
+_BENCHMARK_CORE_MINIMAL = """Act on the task directly and finish within the benchmark workspace.
+Available tools: read_file, write_file, edit_file, bash, ls.
+Be concise and stop when the task is complete."""
+
 
 def _benchmark_identity_section(model_name: str = "") -> str:
     model_line = f"\nModel: {model_name}" if model_name else ""
     return (
         "<identity>\nYou are NanoDeer, a lightweight AI coding agent running in "
         f"benchmark mode.{model_line}\n\n{_BENCHMARK_CORE}\n</identity>"
+    )
+
+
+def _benchmark_minimal_identity_section(model_name: str = "") -> str:
+    model_line = f"\nModel: {model_name}" if model_name else ""
+    return (
+        "<identity>\nYou are NanoDeer running in a benchmark environment."
+        f"{model_line}\n\n{_BENCHMARK_CORE_MINIMAL}\n</identity>"
     )
 
 
@@ -172,14 +184,20 @@ def build_base_system_prompt(
     if config is None:
         config = PromptConfig()
 
-    sections = [
-        _benchmark_identity_section(model_name)
-        if config.profile == "harbor"
-        else _identity_section(model_name),
-        _benchmark_working_directory_section()
-        if config.profile == "harbor"
-        else _working_directory_section(),
-    ]
+    if config.profile == "harbor-minimal":
+        sections = [
+            _benchmark_minimal_identity_section(model_name),
+        ]
+    elif config.profile == "harbor":
+        sections = [
+            _benchmark_identity_section(model_name),
+            _benchmark_working_directory_section(),
+        ]
+    else:
+        sections = [
+            _identity_section(model_name),
+            _working_directory_section(),
+        ]
     if config.skills:
         sections.append(_skills_section())
     if config.subagent:

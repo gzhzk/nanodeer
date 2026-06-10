@@ -124,6 +124,7 @@ class NanoDeerHarborAgent(BaseInstalledAgent):
             if (value := self._get_env(key))
         }
 
+        profile = self._get_env("NANODEER_BENCH_PROFILE") or "harbor"
         await self._exec_as_agent(
             environment,
             command=(
@@ -136,7 +137,7 @@ class NanoDeerHarborAgent(BaseInstalledAgent):
                 )
                 + " && "
                 f"{self.VENV_PATH}/bin/python -m nanodeer.integrations.benchmarks.runner "
-                "--profile harbor "
+                f"--profile {profile} "
                 "--workdir . "
                 f"--logs-dir {agent_dir} "
                 f"--instruction-file {shlex.quote(str(instruction_path))}"
