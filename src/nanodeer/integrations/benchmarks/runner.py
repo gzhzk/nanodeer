@@ -74,6 +74,17 @@ def _apply_model_env_config(config, model_name: str | None) -> None:
         "zhipu": "ZHIPU_API_BASE",
         "dashscope": "DASHSCOPE_API_BASE",
     }
+    # Well-known OpenAI-compatible base URLs.  Env var (DEEPSEEK_API_BASE etc.)
+    # takes precedence; this is the fallback so common providers work without
+    # manual export.  Only list endpoints that are stable and verified.
+    default_api_bases = {
+        "deepseek": "https://api.deepseek.com/v1",
+        "siliconflow": "https://api.siliconflow.cn/v1",
+        "openrouter": "https://openrouter.ai/api/v1",
+        "groq": "https://api.groq.com/openai/v1",
+        "moonshot": "https://api.moonshot.cn/v1",
+        "dashscope": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    }
     api_key = os.getenv(env_keys.get(provider, ""))
     if not api_key:
         return
@@ -86,7 +97,7 @@ def _apply_model_env_config(config, model_name: str | None) -> None:
         provider,
         {
             "api_key": api_key,
-            "api_base": os.getenv(base_env_keys.get(provider, "")),
+            "api_base": os.getenv(base_env_keys.get(provider, "")) or default_api_bases.get(provider),
         },
     )
     config.agents.defaults.provider = provider
