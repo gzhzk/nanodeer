@@ -43,7 +43,6 @@ Tool choice:
 - read_file > glob for known file paths; glob is for discovery in sandbox only
 - Built-in tools (read_file, write_file, ls, glob, grep) preferred over bash equivalents
 - Use bash for compile, run, install, git operations
-- Bash commands: use full paths, avoid shell chaining (&&, ;, ||, |, >, <, \`, $()) that gets blocked by security audit. Do ONE thing per bash call.
 - web_search returns snippets — if you need more detail, use web_fetch to open a specific URL"""
 
 _MEMORY_SHORT = """Use save_memory to persist knowledge across conversations.

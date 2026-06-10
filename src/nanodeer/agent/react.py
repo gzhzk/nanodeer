@@ -71,21 +71,27 @@ _MEDIUM_RISK = [
 _SHELL_METACHAR = frozenset([";", "&&", "||", "|", ">", ">>", "<", "`", "$("])
 
 
-def _bash_safe(tool_name: str, tool_args: dict, *, allow_shell_syntax: bool = False) -> bool:
-    """Check bash command for dangerous patterns. Returns False to block."""
+def _bash_safe(tool_name: str, tool_args: dict) -> bool:
+    """Check bash command for dangerous patterns. Returns False to block.
+
+    Three-tier security:
+    - HIGH_RISK patterns → hard block (rm -rf /, curl|bash, dd, mkfs, ...)
+    - Shell metacharacters → warn-only (&&, ||, ;, |, ... are common bash idioms)
+    - MEDIUM_RISK patterns → warn-only (chmod 777, pip install...)
+    """
     if tool_name != "bash":
         return True
     cmd = tool_args.get("command", "")
     if not cmd:
         return True
 
-    # Hard block shell metacharacters in the default product profile. Benchmark
-    # terminal tasks need normal shell syntax such as redirection and pipes.
-    if not allow_shell_syntax and any(meta in cmd for meta in _SHELL_METACHAR):
-        logger.warning("Shell metachar blocked: %r", cmd[:80])
-        return False
+    # Shell metacharacters — warn-only, not blocked. They're safe bash idioms
+    # (cd dir && make, cmd | head, ...). Dangerous commands that use them
+    # (curl|bash, dd if=) are caught by HIGH_RISK below.
+    if any(meta in cmd for meta in _SHELL_METACHAR):
+        logger.warning("Shell metachar in command (warn-only): %r", cmd[:80])
 
-    # Risk classification
+    # Hard block: genuinely destructive or risky commands
     for p in _HIGH_RISK:
         if p.search(cmd):
             logger.warning("High risk blocked: %r", cmd[:80])
@@ -655,7 +661,6 @@ class ReActExecutor:
                 if not _bash_safe(
                     tc["name"],
                     tc.get("args", {}),
-                    allow_shell_syntax=self._prompt_config.profile in ("harbor", "harbor-minimal"),
                 ):
                     collector.emit(
                         "tool_blocked",
@@ -1029,7 +1034,6 @@ class ReActExecutor:
                 if not _bash_safe(
                     tc["name"],
                     tc.get("args", {}),
-                    allow_shell_syntax=self._prompt_config.profile in ("harbor", "harbor-minimal"),
                 ):
                     state.finish_reason = "bash_blocked"
                     state.next_action = NextAction.END
