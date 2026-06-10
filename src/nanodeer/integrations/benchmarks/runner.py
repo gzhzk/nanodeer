@@ -45,18 +45,6 @@ def _benchmark_tools():
     return [tool for tool in default_tools() if tool.name not in disabled]
 
 
-def _benchmark_tools_minimal():
-    """Minimal tool set: only file ops + bash, matching Pi Agent philosophy."""
-    allowed = {"read_file", "write_file", "edit_file", "bash", "ls"}
-    return [tool for tool in default_tools() if tool.name in allowed]
-
-
-def _select_tools(profile: str):
-    if profile == "harbor-minimal":
-        return _benchmark_tools_minimal()
-    return _benchmark_tools()
-
-
 def _apply_model_env_config(config, model_name: str | None) -> None:
     if not model_name or "/" not in model_name:
         return
@@ -150,7 +138,7 @@ async def run_benchmark(args: argparse.Namespace) -> int:
         config,
         model_name=args.model,
         features=features,
-        tools=_select_tools(args.profile),
+        tools=_benchmark_tools(),
         sandbox_provider=provider,
         generate_titles=False,
     )
@@ -218,7 +206,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--profile",
         default="harbor",
-        choices=["harbor", "harbor-minimal"],
+        choices=["harbor"],
         help="Benchmark prompt profile.",
     )
     parser.add_argument("--model", default=None, help="Optional model override.")
