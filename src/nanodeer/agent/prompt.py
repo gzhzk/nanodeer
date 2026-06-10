@@ -78,6 +78,15 @@ Do not generate large self-tests, exhaustive edge-case suites, or long explanati
 Final responses should be brief and should not ask follow-up questions unless you emit an explicit
 [CLARIFICATION]...[/CLARIFICATION] block.
 
+Task approach:
+- Start by exploring the workspace: ls the task directory, check what files and tools
+  are already available before writing anything.
+- Read the full task instruction carefully before starting. Instructions often contain
+  explicit hints about which tools to use and where they are located.
+- When a command produces no useful result or an error, analyse the output and try a
+  fundamentally different approach — repeating the same command with minor variations
+  wastes turns and will be stopped automatically.
+
 Filesystem:
 - The benchmark workspace is the current task working directory. It is writable.
 - NanoDeer tools may expose this workspace as /mnt/user-data/workspace; treat that path as
