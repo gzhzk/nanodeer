@@ -105,19 +105,6 @@ class SandboxConfig(Base):
     base_path: Path | None = None  # Defaults to thread.storage_path if None
 
 
-class SubagentsConfig(Base):
-    """Subagents configuration."""
-
-    timeout_seconds: int = 900
-    max_concurrent: int = 3
-
-
-class MemoryConfig(Base):
-    """Memory configuration (placeholder for future use)."""
-
-    enabled: bool = True
-
-
 class ThreadConfig(Base):
     """Thread storage configuration."""
 
@@ -145,8 +132,6 @@ class HarnessConfig(BaseSettings):
     # Config sections
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
-    subagents: SubagentsConfig = Field(default_factory=SubagentsConfig)
-    memory: MemoryConfig = Field(default_factory=MemoryConfig)
     thread: ThreadConfig = Field(default_factory=ThreadConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     log_level: str = "info"
@@ -160,7 +145,7 @@ class HarnessConfig(BaseSettings):
         config_dict = {}
 
         # Extract standard sections
-        for section in ["agents", "sandbox", "subagents", "memory", "thread", "security", "log_level"]:
+        for section in ["agents", "sandbox", "thread", "security", "log_level"]:
             if section in yaml_config:
                 config_dict[section] = yaml_config[section]
 

@@ -172,13 +172,9 @@ class MockStreamingLLM:
 class MockContext:
     def __init__(self):
         self.load_count = 0
-        self.absorb_count = 0
 
     async def load(self, state, signals):
         self.load_count += 1
-
-    async def absorb(self, state):
-        self.absorb_count += 1
 
 
 class MockSandboxManager:
@@ -200,17 +196,14 @@ class TestReActExecutorInit:
         tools = [MockTool("tool_a"), MockTool("tool_b")]
         executor = ReActExecutor(llm, tools)
 
-        assert executor.llm is llm
-        assert executor._tools == tools
+        assert executor._llm is llm
+        assert sorted(executor._tools.keys()) == ["tool_a", "tool_b"]
 
     def test_prompt_config_default(self):
-        """Default PromptConfig has all flags True."""
+        """Default PromptConfig has memory flag True."""
         llm = MockLLM()
         executor = ReActExecutor(llm, [])
         assert executor._prompt_config.memory is True
-        assert executor._prompt_config.plan is True
-        assert executor._prompt_config.skills is True
-        assert executor._prompt_config.subagent is True
 
 
 class TestReActLoop:
@@ -398,7 +391,6 @@ class TestReActStreamingLoop:
         assert all(event.get("threadId") == "t-stream" for event in events)
         assert sandbox.acquire_count == 1
         assert sandbox.release_count == 1
-        assert context.absorb_count == 1
 
 
 class TestReActExecutorToolNotFound:

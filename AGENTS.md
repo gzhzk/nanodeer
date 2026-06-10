@@ -1,749 +1,309 @@
-# AGENTS.md — NanoDeer Agent Harness
+# NanoDeer — AGENTS.md
 
 ## Project Overview
 
-NanoDeer is a lightweight AI agent harness centered on a native async ReAct loop and an HTTP SSE API.
+NanoDeer is a reference implementation for agent runtime engineering. Core: native async ReAct loop in `react.py`. No LangGraph, no middleware chain, no framework lock-in.
 
-Current implementation highlights:
-
-- no LangGraph dependency
-- no middleware chain
-- `NanoEngine` as the application entry
-- `ReActExecutor` as the execution core
-- `ContextManager` + `SandboxManager` for turn setup and isolation
-- sandbox-aware tool routing with Docker-first, Local fallback
-- file-based memory and plan storage
-- SQLite checkpoint persistence for conversation resume
-
-If you need the shortest mental model:
-
-**UI/API -> NanoEngine -> ReActExecutor -> tools/sandbox -> memory/plan/checkpoint**
+**v0.2 layout:**
+- Core runtime: `engine.py` + `agent/` + `sandbox/` + `tools/` (8 core) + `cli/`
+- Extensions (on disk, not default): `subagent/`, `plan/`, `skills/`, `memory/wiki.py`, `memory/layers.py`, 12 extension tools
+- Demo frontend: `demo/frontend/` (Next.js, separate concern)
+- Evaluation: `evaluation/` (archived, kept as-is)
 
 ---
 
-## Architecture: 5 Layers
+## Entry Points
 
-```text
-Layer 5: HTTP API / UI Interface
-  frontend/                         -> Next.js + assistant-ui
-  src/nanodeer/cli/api.py          -> FastAPI + SSE API
-  src/nanodeer/cli/repl.py         -> async CLI REPL
-
-Layer 4: Application Entry
-  src/nanodeer/engine.py
-    NanoEngine.run()               -> RunResult
-    NanoEngine.run_streaming()     -> AsyncGenerator[dict]
-
-Layer 3: Execution Core
-  src/nanodeer/agent/react.py      -> ReActExecutor
-  src/nanodeer/agent/context.py    -> ContextManager
-  src/nanodeer/agent/sandbox_manager.py -> SandboxManager
-  src/nanodeer/agent/state.py      -> ThreadState, TurnSignals, NextAction
-
-Layer 2: Capabilities
-  src/nanodeer/tools/              -> built-in tools
-  src/nanodeer/agent/prompt.py     -> prompt assembly
-  src/nanodeer/subagent/           -> SubagentCoordinator
-  src/nanodeer/skills/             -> skill loader
-
-Layer 1: Persistence / Isolation / Data
-  src/nanodeer/sandbox/            -> DockerSandboxProvider, LocalSandboxProvider, path translation
-  src/nanodeer/agent/memory/       -> MemoryStore + wiki storage
-  src/nanodeer/plan/               -> PlanStore + Plan/Step types
-  src/nanodeer/agent/checkpoint/   -> SqliteCheckpointer
-```
-
-**Primary entry flow**:
-
-`Browser/HTTP -> /api/chat -> NanoEngine.run_streaming() -> ReActExecutor.run_streaming() -> tool loop -> SSE events`
-
-**Non-streaming flow**:
-
-`NanoEngine.run() -> ReActExecutor.run() -> RunResult`
+| Command | File | Purpose |
+|---------|------|---------|
+| `nanodeer` | `cli/api.py:main()` | FastAPI SSE server on :20266 |
+| `nanodeer-repl` | `cli/repl.py:main()` | Async CLI REPL |
 
 ---
 
-## API Protocol
+## API Endpoints (FastAPI, port 20266)
 
-**Base URL**: `http://127.0.0.1:20266`
-
-### Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
+| Method | Path | Purpose |
+|--------|------|---------|
 | GET | `/health` | Health check |
 | GET | `/api/info` | Runtime model/provider info |
-| POST | `/api/chat` | Start streaming chat, returns SSE |
-| POST | `/api/chat/cancel` | Cancel a running chat by `thread_id` |
+| POST | `/api/chat` | Start streaming chat (SSE) |
+| POST | `/api/chat/cancel` | Cancel running chat by `thread_id` |
 | GET | `/api/conversations` | List saved conversations |
-| GET | `/api/conversations/{thread_id}` | Get a full conversation |
-| GET | `/api/conversations/{thread_id}/meta` | Get conversation metadata only |
-| DELETE | `/api/conversations/{thread_id}` | Delete a conversation |
-| PATCH | `/api/conversations/{thread_id}/rename` | Rename a conversation |
-| PATCH | `/api/conversations/{thread_id}/archive` | Archive a conversation |
-| PATCH | `/api/conversations/{thread_id}/unarchive` | Unarchive a conversation |
+| GET | `/api/conversations/{thread_id}` | Get full conversation |
+| GET | `/api/conversations/{thread_id}/meta` | Get metadata only |
+| DELETE | `/api/conversations/{thread_id}` | Delete conversation |
+| PATCH | `/api/conversations/{thread_id}/rename` | Rename |
+| PATCH | `/api/conversations/{thread_id}/archive` | Archive |
+| PATCH | `/api/conversations/{thread_id}/unarchive` | Unarchive |
 
-### SSE Event Shape
-
-The frontend consumes JSON payloads yielded by `NanoEngine.run_streaming()`. Common events include:
+### POST /api/chat request body
 
 ```json
-{"event": "turn_start", "threadId": "...", "turnMs": 0}
-{"event": "llm_token", "text": "Hello", "threadId": "..."}
-{"event": "assistant_response", "text": "...", "has_tools": false, "threadId": "..."}
-{"event": "tool_call", "name": "bash", "args": {...}, "threadId": "..."}
-{"event": "tool_result", "name": "bash", "result": "...", "success": true, "threadId": "..."}
-{"event": "wait", "question": "Did you mean X or Y?", "threadId": "..."}
-{"event": "end", "next_action": "end", "durationMs": 1234, "threadId": "..."}
-{"event": "error", "code": "...", "message": "...", "threadId": "..."}
-{"event": "cancelled", "threadId": "..."}
+{
+  "prompt": "string",
+  "thread_id": "string (optional, auto-generated if null)",
+  "uploaded_files": [
+    {"name": "file.txt", "content": "base64 or raw bytes", "mime_type": "text/plain"}
+  ]
+}
 ```
 
-Notes:
+### SSE event types
 
-- normal completion emits a single `end`
-- clarification emits `wait`
-- cancellation is surfaced as `cancelled`
+| event | key fields | when |
+|-------|-----------|------|
+| `turn_start` | model, turn, message_count | start of each ReAct turn |
+| `context_loaded` | duration_ms, has_memory, has_uploaded_files | context assembly done |
+| `sandbox_acquired` | exec_id, container_id, status | sandbox ready |
+| `llm_start` | model, prompt_chars, message_count | LLM call begins |
+| `reasoning_token` | text | reasoning content (streaming) |
+| `llm_token` | text | output token (streaming) |
+| `llm_end` | duration_ms, usage, tool_call_count | LLM call completes |
+| `assistant_response` | text, has_tools | full response available |
+| `tool_call` | name, args, id | tool invocation begins |
+| `tool_result` | name, success, duration_ms, result | tool returns |
+| `tool_blocked` | name, reason | bash audit blocked |
+| `tool_repeat_guard` | repeated_count, tool_calls | repeated identical tools |
+| `turn_limit` | max_turns | max ReAct turns reached |
+| `checkpoint_saved` | duration_ms | state persisted |
+| `wait` | question | clarification requested |
+| `sandbox_released` | exec_id, status | container released |
+| `end` | next_action, duration_ms | execution finished |
+| `error` | code, message | runtime error |
+| `cancelled` | — | user cancelled |
 
 ---
 
-## Main Execution Flow
+## ReAct Loop (react.py ~1166 lines)
 
-The current harness is built around a direct ReAct loop, not around middleware hooks.
+### Termination conditions
 
-### Streaming path
+| `finish_reason` | Trigger |
+|----------------|---------|
+| `completed` | LLM returned no tool calls (final answer) |
+| `repeated_tool_calls` | 3 consecutive identical tool call signatures |
+| `max_turns` | Reached `NANODEER_MAX_TURNS` (default 24) |
+| `bash_blocked` | Bash audit blocked dangerous command |
+| `sandbox_released` | Container died mid-session |
 
-```text
-POST /api/chat
-  -> NanoEngine.run_streaming(prompt, thread_id)
-  -> restore/create ThreadState
-  -> ReActExecutor.run_streaming(state)
-  -> ContextManager.load(state, signals)
-  -> SandboxManager.acquire(state)
-  -> LLM.astream(...)
-  -> clarification check / tool-call aggregation
-  -> tool loop
-  -> repeat/max-turn convergence guard
-  -> checkpoint save
-  -> context absorb (episodic memory)
-  -> next turn or end
+### Per-turn lifecycle
+
+```
+1. ContextManager.load()      — memory + uploads (parallel)
+2. SandboxManager.acquire()   — idempotent, reuses container across turns
+3. Health check               — detect dead container → END
+4. LLM.ainvoke()              — with retry (3 attempts, exponential backoff)
+5. Clarification check        — [CLARIFICATION] tag → WAIT
+6. Tool loop:
+   a. tool = exec_tools.get(name)    — dict lookup
+   b. _bash_safe() audit            — inline regex
+   c. _invoke_tool(tool, args)      — ainvoke with exec_id
+7. Checkpoint.save()               — SQLite
+8. END → SandboxManager.release()  — cleanup
 ```
 
-### Non-streaming path
+---
 
-```text
-NanoEngine.run(prompt, thread_id)
-  -> restore/create ThreadState
-  -> ReActExecutor.run(state)
-  -> same turn lifecycle without SSE token streaming
-```
+## Core Data Models (state.py)
 
-### ReAct loop outline
+### NextAction (enum)
+- `PROCESS` — continue loop
+- `WAIT` — clarification, return to user
+- `END` — terminate
+
+### ThreadState (persistent across turns)
+| Field | Type | Description |
+|-------|------|-------------|
+| `thread_id` | str | Conversation ID |
+| `messages` | list[BaseMessage] | Full conversation history |
+| `next_action` | NextAction | Current loop state |
+| `finish_reason` | str | Termination reason |
+| `title` | str or None | Conversation title |
+| `system_prompt` | str or None | Cached base prompt |
+| `sandbox` | SandboxState or None | Container reference |
+
+### TurnSignals (ephemeral, fresh each turn)
+| Field | Type | Description |
+|-------|------|-------------|
+| `memory_context` | str | Memory section for prompt |
+| `uploaded_files` | list[dict] | Raw file uploads |
+| `uploaded_files_list` | str | File listings for prompt |
+| `clarification_question` | str | Question text from LLM |
+| `events` | list | Transient trace events |
+
+---
+
+## Core Tools (tools/__init__.py)
+
+### default_tools() returns 8 tools:
+
+| Tool | File | Args |
+|------|------|------|
+| `read_file` | `tools/read_file.py` | file_path: str |
+| `write_file` | `tools/write_file.py` | file_path: str, content: str |
+| `edit_file` | `tools/edit_file.py` | file_path: str, old_string: str, new_string: str |
+| `bash` | `tools/bash.py` | command: str, description: str (optional) |
+| `web_search` | `tools/web_search.py` | query: str |
+| `web_fetch` | `tools/web_fetch.py` | url: str |
+| `save_memory` | `tools/save_memory.py` | target: str ("user" or "memory"), content: str, mode: str |
+| `search_memory` | `tools/search_memory.py` | query: str (optional) |
+
+### Tool execution model
+
+- Original tool objects → `tools dict` → passed to `llm.bind_tools()` for schemas
+- Bash gets wrapped by `SandboxToolWrapper` → `exec_tools dict` → routes to Docker/Local
+- All other tools run directly on host
+- Tool lookup: `exec_tools.get(name)` — plain dict, no manager
+
+### Sandbox wrapping (sandbox/tools.py, 40 lines)
 
 ```python
-while True:
-    # 1. ContextManager.load()       -> dirs + memory + plan + uploads
-    # 2. SandboxManager.acquire()    -> idempotent acquire/reuse
-    # 3. health check                -> detect released/dead sandbox
-    # 4. LLM call                    -> ainvoke() or astream(), with retry
-    # 5. clarification check         -> [CLARIFICATION] => WAIT
-    # 6. if no tool calls            -> END
-    # 7. else tool loop              -> one tool call at a time
-    # 8. checkpoint save
-    # 9. context.absorb()            -> episodic memory append
-    # 10. release sandbox on END
+def wrap_tool_for_sandbox(tool, provider):
+    if tool.name == "bash":
+        return SandboxToolWrapper(tool, provider)
+    return None  # all other tools pass through
 ```
 
 ---
 
-## Core Runtime Concepts
-
-### NanoEngine
-
-`src/nanodeer/engine.py`
-
-Responsibilities:
-
-- create the configured chat model
-- restore thread state from checkpoint
-- append the latest user message
-- lazily build the executor via `NanoDeerFactory`
-- run streaming or non-streaming execution
-- perform app-layer compression after a turn
-- generate conversation titles asynchronously
-
-### ReActExecutor
-
-`src/nanodeer/agent/react.py`
-
-Responsibilities:
-
-- own the main agent loop
-- bind tools to the model
-- stream tokens and aggregate tool calls
-- detect clarification requests
-- run tools and append `ToolMessage`s
-- stop repeated identical tool-call loops with `tool_repeat_guard`
-- stop runaway ReAct turns with `turn_limit`
-- set `NextAction` (`PROCESS`, `WAIT`, `END`)
-- save checkpoints
-
-### ContextManager
-
-`src/nanodeer/agent/context.py`
-
-Responsibilities:
-
-- ensure per-thread workspace dirs exist
-- load memory context
-- load plan context
-- process uploads
-- scan uploads into prompt-visible context
-- absorb the completed turn into episodic memory
-
-This replaces the need for separate thread/upload/memory/plan middlewares.
-
-### SandboxManager
-
-`src/nanodeer/agent/sandbox_manager.py`
-
-Responsibilities:
-
-- acquire sandbox instances lazily and idempotently
-- reuse sandbox across turns when still active
-- release sandbox on end
-- keep sandbox lifecycle logic out of the main prompt/building code
-
-### ThreadState vs TurnSignals
-
-`src/nanodeer/agent/state.py`
-
-- `ThreadState`: persistent cross-turn state
-  - thread id
-  - message history
-  - sandbox state
-  - title
-  - next action
-- `TurnSignals`: per-turn transient data
-  - clarification question
-  - memory context
-  - plan context
-  - uploads context
-  - per-turn metadata
-
-Rule of thumb:
-
-- if it must survive resume/reload, it belongs in `ThreadState`
-- if it only helps one turn build/run, it belongs in `TurnSignals`
-
----
-
-## Tool System
-
-### Built-in tools
-
-Current default tool list is 19 tools:
-
-- File: `read_file`, `write_file`, `ls`, `glob`, `grep`
-- Shell/code: `bash`, `git`, `exec_python`
-- External/media: `web_search`, `read_image`
-- Skills: `invoke_skill`
-- Memory: `save_memory`, `search_memory`
-- Plan: `create_plan`, `add_step`, `update_step`, `list_plans`
-- Subagent: `spawn_subagent`, `get_subagent_results`
-
-Source:
-
-- `src/nanodeer/tools/__init__.py`
-
-### Sandbox-aware tools
-
-Sandbox wrapping is configured in `src/nanodeer/sandbox/tools.py`.
-
-The execution model is:
-
-- LLM sees the original tool schema
-- `NanoDeerFactory` wraps sandbox-aware tools for runtime execution
-- wrapped tools route to Docker or Local sandbox transparently
-- subagents follow the same split: original safe tool schemas for `bind_tools()`, sandbox-wrapped safe tools for execution
-
-Important design detail:
-
-- many file/shell tools rely on sandbox wrappers for actual execution
-- `glob` and `grep` validate/translate `file_path` as a path and base64-encode only `pattern`
-- host-only tools, such as memory/plan/skills, execute directly outside sandbox
-
-### Host-side tools
-
-These are conceptually host-side capabilities:
-
-- `save_memory`
-- `search_memory`
-- `create_plan`
-- `add_step`
-- `update_step`
-- `list_plans`
-- `invoke_skill`
-
-### Bash safety
-
-`_bash_safe()` in `react.py` audits risky shell commands before execution.
-
-It blocks clearly dangerous patterns such as destructive filesystem wipes and suspicious shell chaining patterns.
-
----
-
-## Memory, Plan, Checkpoint
-
-### Memory
-
-`src/nanodeer/agent/memory/storage.py`
-
-Current memory layout:
-
-- `USER.md` -> user preferences/context
-- `MEMORY.md` -> long-term flat memory
-- `episodic/YYYY-MM-DD.md` -> recent session logs
-- `wiki/entries/**` + `wiki/index.json` -> structured knowledge base
-
-`save_memory` supports:
-
-- `target="user"`
-- `target="memory"`
-- `target="wiki/<category>/<name>"`
-
-`search_memory` searches wiki entries, which are now the preferred structured memory format.
-
-### Plan
-
-`src/nanodeer/plan/storage.py`
-
-Current plan system is file-based, not todo-slug based.
-
-Storage:
-
-- `~/.nanodeer/plans/{plan_id}.json`
-- `~/.nanodeer/plans/index.json`
-
-Core types:
-
-- `Plan`
-- `Step`
-- `PlanStatus`
-- `StepStatus`
-
-Plan tools:
-
-- `create_plan`
-- `add_step`
-- `update_step`
-- `list_plans`
-
-### Checkpoint
-
-`src/nanodeer/agent/checkpoint/sqlite.py`
-
-Checkpoint is SQLite-backed and is used for:
-
-- restoring prior thread state
-- conversation listing
-- metadata updates like rename/archive
-
----
-
-## Subagent System
-
-Current implementation uses `SubagentCoordinator`, not the older executor naming.
-
-Files:
-
-- `src/nanodeer/subagent/__init__.py`
-- `src/nanodeer/subagent/coordinator.py`
-- `src/nanodeer/subagent/runner.py`
-- `src/nanodeer/subagent/types.py`
-
-Design:
-
-- coordinator-managed worker lifecycle
-- semaphore-based concurrency control
-- timeout per worker
-- dedicated worker ids
-- own sandbox per worker
-
-Safe tool subset for subagents:
-
-- `web_search`
-- `read_file`
-- `ls`
-- `glob`
-- `grep`
-- `read_image`
-
-Subagents intentionally do not get shell/write/spawn capabilities.
-
----
-
-## Sandbox Design
-
-Files:
-
-- `src/nanodeer/sandbox/__init__.py`
-- `src/nanodeer/sandbox/docker.py`
-- `src/nanodeer/sandbox/local.py`
-- `src/nanodeer/sandbox/path.py`
-- `src/nanodeer/sandbox/tools.py`
-
-Key points:
-
-- Docker is preferred when available
-- if Docker provider setup fails, runtime can fall back to `LocalSandboxProvider`
-- virtual sandbox path is `/mnt/user-data/...`
-- host path is translated under the execution-specific directory
-- path validation protects against traversal
-
-This means "sandbox enabled" does not strictly mean "Docker required at runtime".
-
----
-
-## Benchmark & Evaluation System
-
-`benchmarks/` — deterministic benchmark suite, no LLM-as-judge. All assertions run against trace events, file system side effects, and aggregated metrics.
-
-### Layout
-
-```text
-benchmarks/
-├── types.py            # BenchmarkTask, TaskResult, BenchmarkReport, AssertionResult
-├── runner.py           # CLI entry point + task execution engine
-├── judges.py           # 12 deterministic assertion types
-├── reporters/
-│   └── json_reporter.py   # outputs JSON report
-├── tasks/
-│   └── smoke.yaml      # 8 smoke tasks (current sole task set)
-└── fixtures/
-    ├── data.csv        # file-ops fixture
-    └── logs/app.log    # log-analysis fixture
-
-tests/test_benchmarks/
-├── test_judges.py      # assertion unit tests
-└── test_runner.py      # load / prepare / configure unit tests
+## Engine (engine.py, ~436 lines)
+
+### NanoEngine constructor
+```python
+engine = NanoEngine(
+    config,                     # HarnessConfig
+    model_name=None,            # Optional model override
+    features=None,              # RuntimeFeatures
+    tools=None,                 # Custom tool list
+    checkpointer=None,          # Custom checkpointer
+    sandbox_provider=None,      # Custom sandbox provider
+    generate_titles=True,       # Auto-generate conversation titles
+)
 ```
 
-### Usage
-
-```bash
-python -m benchmarks.runner                                 # run all tasks
-python -m benchmarks.runner --task tool_file_pipeline        # single task
-python -m benchmarks.runner --limit 3 --no-sandbox           # first 3, no sandbox
-python -m benchmarks.runner --compression                    # with app-layer compression
-python -m benchmarks.runner --model siliconflow/deepseek-chat # specific model
+### RuntimeFeatures
+```python
+@dataclass
+class RuntimeFeatures:
+    sandbox: bool = True           # Enable Docker/Local sandbox
+    prompt_profile: str = "default"  # "default" or "harbor"
+    prompt_memory: bool = True     # Include memory in prompt
 ```
 
-### Task format (YAML)
+### Key methods
+- `run(prompt, thread_id=None, uploaded_files=None) → RunResult`
+- `run_streaming(prompt, ...) → AsyncGenerator[dict]` — yields SSE events
+- Internally calls `_get_executor()` which lazily builds: LLM → MemoryStore → SandboxManager → ContextManager → ReActExecutor
 
+### RunResult
+| Field | Type |
+|-------|------|
+| `thread_id` | str |
+| `message` | str |
+| `next_action` | NextAction |
+| `finish_reason` | str |
+| `tool_calls` | list[dict] |
+| `duration_ms` | int |
+| `events` | list |
+| `metrics` | dict (turns, llm_calls, tool_calls, tokens) |
+
+---
+
+## Configuration (config.py + config.yaml)
+
+### Key sections (config.yaml)
 ```yaml
-- id: tool_file_pipeline
-  category: file_ops
-  description: "Read a CSV, compute total, write report."
-  setup:
-    files:
-      - source: benchmarks/fixtures/data.csv
-        target: data.csv
-  prompt: "Use tools to inspect /mnt/user-data/data.csv..."
-  turns:                          # optional multi-turn
-    - "First turn prompt..."
-    - "Second turn prompt..."
-  assertions:                     # all must pass for task PASS
-    - type: tool_called
-      name: write_file
-    - type: file_contains
-      path: summary.md
-      text: TOTAL_AMOUNT=65
-    - type: trace_contract
+agents:
+  defaults:
+    model: deepseek-v4-flash
+    provider: deepseek
+    max_tokens: 8192
+    temperature: 0.1
+
+anthropic: { api_key: $ANTHROPIC_API_KEY, api_base: https://api.anthropic.com }
+# ... 11 other providers
+
+sandbox:
+  image: nanodeer/sandbox:latest
+  container_prefix: nanodeer-sandbox
+  network_mode: none
+
+thread:
+  storage_path: ~/.nanodeer/threads
+  checkpointer_type: sqlite
+
+security:
+  mode: default
 ```
 
-### 12 deterministic assertion types
-
-Defined in `judges.py`, all based on trace events + file system + aggregated metrics — **no LLM judge**:
-
-| Assertion | Checks |
-|----------|--------|
-| `output_contains` | final message contains text |
-| `tool_called` | a specific tool was called |
-| `tool_called_any` | any tool from a list was called |
-| `trace_has` | trace event stream contains an event |
-| `trace_contract` | full schema consistency: required fields, pair integrity, sandbox lifecycle |
-| `tool_result_contains` | tool result content contains text |
-| `file_exists` | file exists inside workspace |
-| `file_contains` | file content contains text |
-| `metric_eq / lte / gte` | numeric metric comparison |
-| `next_action_is` | final action equals expected value (e.g. `end`) |
-| `no_tool_errors` | `num_tool_errors == 0` |
-
-**`trace_contract` is the most critical assertion** — it validates:
-- every event has `event == type`, `schema_version`, `ts_ms`, `threadId`
-- turn-associated events carry the `turn` field
-- a final `end` event exists
-- `llm_start` / `llm_end` are paired within each turn
-- every `tool_call` has a matching `tool_result`
-- every `sandbox_acquired` has a matching `sandbox_released`
-
-### Current task inventory (8) — `smoke.yaml`
-
-| Task | Category | Coverage |
-|------|----------|----------|
-| `tool_file_pipeline` | file_ops | read → compute → write → answer |
-| `tool_python_logs` | tool_execution | log analysis → write JSON |
-| `sandbox_isolation` | sandbox | file read/write → sandbox lifecycle trace |
-| `memory_write_search` | memory | write wiki → search recall |
-| `memory_recall_next_turn` | memory | cross-turn memory persistence |
-| `plan_lifecycle` | plan | create plan → update step → list |
-| `subagent_basic` | subagent | spawn → read results |
-| `checkpoint_resume` | checkpoint | same thread, cross-turn state restore |
-
-### Run flow
-
-```text
-cli: python -m benchmarks.runner --tasks smoke.yaml
-
-  ┌─ load_tasks()              ← parse YAML
-  ├─ configure_isolated_runtime()
-  │   └─ isolate env + config: memory/plan/trace/checkpoint all independent
-  ├─ prepare_workspace()
-  │   └─ copy fixtures into task/threads/.../user-data/
-  ├─ run_task()
-  │   └─ NanoEngine.run(prompt)   ← real LLM call
-  │       └─ ReActExecutor.run()
-  ├─ evaluate_assertions()
-  │   └─ trace events + file system + metrics → PASS/FAIL
-  ├─ compute_summary()
-  └─ write JSON report
-```
-
-### Design principles
-
-- **Deterministic assertions first**: no LLM scoring — all assertions run on reproducible trace events and file side effects
-- **Full isolation**: each task gets independent memory/plan/trace/checkpoint directories, controlled via `NANODEER_MEMORY_ROOT` / `NANODEER_PLANS_ROOT` / `NANODEER_TRACE_ROOT` / `NANODEER_TRACE_ENABLED`
-- **Trace contract as invariant guard**: `trace_contract` is a cross-module invariant — any change that breaks trace event completeness is caught immediately by benchmarks
-- **Extensible by design**: task set grows hierarchically; YAML format supports multi-turn and custom setup/files
-- **Performance measurement**: summary includes pass rate, avg duration/turns/tool_calls, LLM retry count, token consumption
+### Provider routing
+- OpenAI-compatible (openai, deepseek, siliconflow, etc.) → `ReasoningChatOpenAI` (`agent/llm.py`)
+- Anthropic-compatible (anthropic, minimax) → `ChatAnthropic` (langchain-anthropic)
+- Routing is automatic based on provider name in `_OPENAI_COMPATIBLE` set
 
 ---
 
-## Observability / Trace System
+## Storage Layout (~/.nanodeer/)
 
-`src/nanodeer/agent/trace.py` — structured runtime telemetry serving both debugging and benchmark assertions.
+```
+~/.nanodeer/
+├── memory/
+│   ├── USER.md            # User preferences (LLM writes via save_memory)
+│   └── MEMORY.md          # Long-term facts (LLM writes via save_memory)
+├── plans/                  # (extension) JSON plan files
+├── threads/
+│   ├── threads.db          # SQLite — message + metadata persistence
+│   └── {thread_id}/
+│       └── user-data/      # Volume-mounted to container
+└── conversations/          # UI metadata index
+```
 
-### TraceCollector
+---
 
-Every `NanoEngine.run()` / `run_streaming()` call creates a `TraceCollector` that spans the entire ReAct loop, collecting events and optionally persisting them as JSONL.
+## Extension Modules (on disk, not default)
 
+| Module | Path | Entry point |
+|--------|------|-------------|
+| Subagent | `subagent/coordinator.py` | `SubagentCoordinator` |
+| Plan | `plan/storage.py` | `PlanStore` |
+| Skills | `skills/loader.py` | `load_skills()` |
+| Wiki | `agent/memory/wiki.py` | `WikiStore` |
+| Memory layers | `agent/memory/layers.py` | `MemoryLayers` |
+| Extension tools | `tools/*.py` (12 files) | Import individually |
+
+To enable an extension, import and configure it manually (not in default `RuntimeFeatures`).
+
+---
+
+## Key Implementation Details
+
+### Tool filter for sandbox
 ```python
-collector = TraceCollector(thread_id=thread_id, run_id=run_id)
-collector.emit("turn_start", turn=1, model=..., ...)
+# engine.py _get_executor():
+wrapped_tools = None
+if sandbox_provider:
+    from nanodeer.sandbox.tools import wrap_tool_for_sandbox
+    wrapped_tools = [wrap_tool_for_sandbox(t, sandbox_provider) or t for t in tools]
+# wrapped_tools → exec_tools dict (for execution)
+# tools → tools dict (for LLM schemas)
 ```
 
-- Controlled by env vars: `NANODEER_TRACE_ENABLED=1` + `NANODEER_TRACE_ROOT=/path`
-- JSONL path: `{trace_root}/{thread_id}/{run_id}.jsonl`
-- Forced on during benchmarks
+### Message conversion (react.py _to_lc_messages)
+- NanoDeer `HumanMessage`/`AIMessage`/`ToolMessage` → LangChain LC message types
+- Tool calls extracted via `_extract_tool_calls()` from both OpenAI-style `tool_calls` field and Anthropic-style `content` blocks
+- Usage extracted via `_extract_usage()` from LangChain's `usage_metadata`, OpenAI's `token_usage`, or Anthropic's raw metadata
 
-### Event inventory
+### Bash audit (react.py _bash_safe)
+- Hard blocks: shell metachar (`;`, `&&`, `||`, `|`, `` ` ``, `$()`), `rm -rf /`, `curl|bash`, `dd if=`, `mkfs`, `chmod 4777`
+- Warning only: `chmod 777`, `pip install`, `apt-get install`, `nmap`
+- Benchmark mode (`harbor` profile) allows shell metachar
 
-| Event | Trigger | Key fields |
-|------|---------|------------|
-| `turn_start` | start of each turn | turn, model, message_count |
-| `context_loaded` | ContextManager done | duration_ms, has_memory, has_plan |
-| `memory_context` / `plan_context` | context loaded | — |
-| `sandbox_acquired` | SandboxManager acquire | duration_ms, exec_id, container_id |
-| `llm_start` | LLM call begins | model, prompt_chars, message_count |
-| `llm_retry` | LLM retry | attempt, delay_seconds, error |
-| `llm_end` | LLM call completes | duration_ms, usage, tool_call_count |
-| `reasoning_token` | reasoning token (streaming) | text |
-| `llm_token` | output token (streaming) | text |
-| `assistant_response` | full response (streaming) | text, has_tools |
-| `tool_call` | tool invocation | name, args, id |
-| `tool_blocked` | bash audit block | name, reason |
-| `tool_result` | tool returns | name, success, duration_ms, result |
-| `tool_repeat_guard` | repeated identical tool-call loop stopped | repeated_count, tool_calls |
-| `turn_limit` | max ReAct turn guard stopped execution | max_turns |
-| `checkpoint_saved` | Checkpointer persists | duration_ms |
-| `context_absorbed` | turn absorption done | duration_ms |
-| `wait` | clarification triggered | question |
-| `sandbox_released` | SandboxManager release | duration_ms, exec_id |
-| `end` | execution finished | next_action, duration_ms |
+### Clarification detection (react.py _check_clarification)
+- Primary: `[CLARIFICATION]...[/CLARIFICATION]` tag
+- Fallback: plain question detection (checks for `?` + keywords like "which", "clarify", "confirm")
+- Fallback can be disabled for benchmark profiles
 
-### Schema contract
-
-Every event guarantees:
-
-```json
-{
-  "event": "llm_start",
-  "type": "llm_start",
-  "schema_version": "nanodeer.trace.v1",
-  "ts_ms": 1717000000000,
-  "threadId": "thread-xxx",
-  "run_id": "abc123",
-  "turn": 1,
-  "...": "<domain fields>"
-}
-```
-
-### Data flow
-
-```text
-TraceCollector.emit()
-    │
-    ├── collector.events[]     ← in-memory, flows into RunResult.events
-    │                              └─ → benchmark assert (judges.py)
-    │                              └─ → NanoEngine._extract_metrics()
-    │
-    └── JSONL file             ← persisted for post-hoc inspection
-```
-
-### Metrics (aggregated from trace)
-
-`NanoEngine._extract_metrics()` rolls up trace events into `RunResult.metrics`:
-
-```python
-{
-    "duration_ms": int,
-    "num_turns": int,
-    "num_llm_calls": int,
-    "num_tool_calls": int,
-    "num_tool_errors": int,
-    "llm_retry_count": int,
-    "input_tokens": int,
-    "output_tokens": int,
-    "total_tokens": int,
-}
-```
-
----
-
-## How they fit together
-
-```text
-     Benchmark (benchmarks)
-           │
-           ▼
-NanoEngine.run() ─── ReActExecutor ─── context / sandbox / LLM / tools
-           │               │
-           ▼               ▼
-     RunResult      TraceCollector.emit()
-      (metrics)           │
-           │              ▼
-           ├── evaluate_assertions()
-           │       │
-           │       ▼
-           │  AssertionResult (PASS/FAIL)
-           │
-           ▼
-     BenchmarkReport (JSON)
-```
-
-- **Benchmark** = end-to-end smoke tests using real LLM calls, verified via deterministic assertions
-- **Trace** = event-level observability skeleton, serving both benchmark assertions (`trace_contract`) and runtime debugging
-- **Metrics** = performance indicators aggregated from trace events, used in benchmark summary and analysis
-
----
-
-## Module Map
-
-### Layer 5: UI / API
-
-| File | Role |
-|------|------|
-| `frontend/app/assistant.tsx` | primary assistant UI |
-| `frontend/components/nanodeer-adapter.ts` | frontend adapter for NanoDeer SSE |
-| `src/nanodeer/cli/api.py` | FastAPI app, SSE chat, conversation APIs |
-| `src/nanodeer/cli/repl.py` | async CLI REPL |
-
-### Layer 4: Application Entry
-
-| File | Role |
-|------|------|
-| `src/nanodeer/engine.py` | `NanoEngine`, model creation, resume, run, compression, title |
-
-### Layer 3: Execution Core
-
-| File | Role |
-|------|------|
-| `src/nanodeer/agent/react.py` | `ReActExecutor`, retry, clarification, bash audit, tool loop |
-| `src/nanodeer/agent/context.py` | `ContextManager`, load + absorb |
-| `src/nanodeer/agent/sandbox_manager.py` | `SandboxManager` |
-| `src/nanodeer/agent/state.py` | state types |
-| `src/nanodeer/agent/messages.py` | NanoDeer message models |
-| `src/nanodeer/agent/trace.py` | `TraceCollector`, trace event schema + JSONL persistence |
-| `src/nanodeer/agent/factory.py` | `NanoDeerFactory`, `RuntimeFeatures` |
-
-### Layer 2: Capabilities
-
-| File | Role |
-|------|------|
-| `src/nanodeer/tools/__init__.py` | default tool registry |
-| `src/nanodeer/agent/prompt.py` | lead agent prompt builder |
-| `src/nanodeer/subagent/coordinator.py` | subagent orchestration |
-| `src/nanodeer/skills/loader.py` | skill loading |
-
-### Layer 1: Persistence / Isolation / Data
-
-| File | Role |
-|------|------|
-| `src/nanodeer/sandbox/docker.py` | Docker sandbox provider |
-| `src/nanodeer/sandbox/local.py` | Local sandbox provider |
-| `src/nanodeer/sandbox/path.py` | virtual/physical path translation |
-| `src/nanodeer/sandbox/tools.py` | sandbox tool wrapping |
-| `src/nanodeer/agent/memory/storage.py` | `MemoryStore` |
-| `src/nanodeer/plan/storage.py` | `PlanStore` |
-| `src/nanodeer/agent/checkpoint/sqlite.py` | `SqliteCheckpointer` |
-
----
-
-## Important Design Decisions
-
-1. **No LangGraph**
-   The harness uses a native async ReAct loop in `react.py`.
-
-2. **No middleware chain**
-   Cross-cutting logic lives in explicit runtime components:
-   - inline functions in `react.py`
-   - `ContextManager`
-   - `SandboxManager`
-   - app-layer `NanoEngine` responsibilities
-
-3. **Engine owns app concerns**
-   Checkpoint resume, compression, and title generation happen in `NanoEngine`, not in the executor loop.
-
-4. **Streaming is the primary product path**
-   The frontend is built around SSE from `run_streaming()`.
-
-5. **Tools are schema/runtime split**
-   LLM-facing tool schemas are original tools; runtime execution may be sandbox-wrapped. Subagents use the same split for their read-only safe tool subset.
-
-6. **Sandbox lifecycle is turn-aware**
-   Sandboxes are reused across turns and released on end.
-
-7. **Structured memory prefers wiki entries**
-   `wiki/...` entries are the preferred long-term knowledge format over flat memory blobs.
-
-8. **Plan system replaced old todo terminology**
-   Current runtime uses plans and steps, not `write_todo` / `list_todos`.
-
-9. **Subagents are intentionally constrained**
-   They get a read-only safe subset and their own sandbox. Pending/active subagent polling is not treated as a tool error; failed/timeout/cancelled worker results are.
-
-10. **Docker is preferred, not mandatory**
-    Local fallback exists when Docker is unavailable.
-
-11. **Benchmark assertions are deterministic, not LLM-based**
-    All 12 assertion types in `judges.py` operate on trace events, file system state, and aggregated metrics — no LLM-as-judge. This makes benchmarks reproducible across model versions and providers.
-
-12. **Trace is the universal contract**
-    `TraceCollector` serves dual duty: runtime debugging (JSONL) and benchmark verification (`trace_contract` assertion). Every module change that breaks trace invariants is caught by benchmark smoke tests.
-
-13. **Benchmark isolation is enforced by environment variables**
-    Each task gets independent `NANODEER_MEMORY_ROOT` / `NANODEER_PLANS_ROOT` / `NANODEER_TRACE_ROOT` — no cross-task pollution. The config is reset per task via `reset_config()` + process-global override.
-
-14. **Tasks are modular and form a progression**
-    YAML format supports single-turn and multi-turn tasks. The 8 current smoke tasks each target one subsystem (file ops, sandbox, memory, plan, subagent, checkpoint). The intent is to expand to full per-module coverage so any regression surfaces as a benchmark failure.
+### Convergence guards
+- **Repeated tool calls**: 3 identical signatures → synthesize final answer + END
+- **Max turns**: `NANODEER_MAX_TURNS` env var (default 24) → forced END

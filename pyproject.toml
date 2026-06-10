@@ -34,7 +34,6 @@ dev = [
 [project.scripts]
 nanodeer = "nanodeer.cli.api:main"
 nanodeer-repl = "nanodeer.cli.repl:main"
-nanodeer-bench-run = "nanodeer.integrations.benchmarks.runner:main"
 
 [project.urls]
 Homepage = "https://github.com/gzhzk/nanodeer"

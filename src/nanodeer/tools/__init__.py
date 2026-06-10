@@ -1,84 +1,82 @@
+"""Built-in tool definitions.
+
+Core tools (always available via default_tools()):
+  read_file, write_file, edit_file, bash,
+  web_search, web_fetch,
+  save_memory, search_memory
+
+Extension tools (import individually, not in default_tools()):
+  ls, glob, grep, git, exec_python, read_image,
+  create_plan, add_step, update_step, list_plans,
+  spawn_subagent, get_subagent_results, invoke_skill
+"""
+
 from .read_file import read_file
 from .write_file import write_file
+from .edit_file import edit_file
+from .bash import bash
+from .web_search import web_search
+from .web_fetch import web_fetch
+from .save_memory import save_memory
+from .search_memory import search_memory
+
+# Extension tools — importable individually, not in default_tools()
 from .ls import ls
 from .glob import glob
 from .grep import grep
-from .bash import bash
 from .git import git
-from .web_search import web_search
-from .web_fetch import web_fetch
-from .read_image import read_image
 from .exec_python import exec_python
-from .edit_file import edit_file
+from .read_image import read_image
 from .invoke_skill import invoke_skill
-from .save_memory import save_memory
-from .search_memory import search_memory
 from .create_plan import create_plan
 from .plan_step import add_step, update_step
 from .list_plans import list_plans
 from .spawn_subagent import spawn_subagent, get_subagent_results
 
 
+# Core tool list — always available
+CORE_TOOLS = [
+    read_file,
+    write_file,
+    edit_file,
+    bash,
+    web_search,
+    web_fetch,
+    save_memory,
+    search_memory,
+]
+
+
 def default_tools() -> list:
-    """Return all built-in tools as a list."""
-    return [
-        read_file,
-        write_file,
-        ls,
-        glob,
-        grep,
-        bash,
-        git,
-        web_search,
-        web_fetch,
-        read_image,
-        edit_file,
-        exec_python,
-        invoke_skill,
-        save_memory,
-        search_memory,
-        create_plan,
-        add_step,
-        update_step,
-        list_plans,
-        spawn_subagent,
-        get_subagent_results,
-    ]
+    """Return core built-in tools. Extension tools must be added manually."""
+    return list(CORE_TOOLS)
 
 
 __all__ = [
-    # file
+    # core
     "read_file",
     "write_file",
-    "ls",
-    # search
-    "glob",
-    "grep",
-    # shell
-    "bash",
-    "git",
-    # python
-    "exec_python",
-    # edit
     "edit_file",
-    # web
+    "bash",
     "web_search",
     "web_fetch",
-    # image
-    "read_image",
-    # skill
-    "invoke_skill",
-    # memory
     "save_memory",
     "search_memory",
-    # plan
+    # extension (importable by name)
+    "ls",
+    "glob",
+    "grep",
+    "git",
+    "exec_python",
+    "read_image",
+    "invoke_skill",
     "create_plan",
     "add_step",
     "update_step",
     "list_plans",
-    # subagent
     "spawn_subagent",
     "get_subagent_results",
-    # utility
+    # utilities
     "default_tools",
+    "CORE_TOOLS",
 ]

@@ -1,11 +1,16 @@
-"""Tests for SandboxExecTool command construction logic."""
-import base64
-import subprocess
-import pytest
-from unittest.mock import MagicMock
+"""Tests for simplified SandboxToolWrapper — bash only, no base64/translation."""
 
-from nanodeer.sandbox.tools import SandboxExecTool, SANDBOX_TOOL_CONFIGS
-from nanodeer.sandbox import SandboxCommand
+import pytest
+from unittest.mock import MagicMock, AsyncMock
+
+from nanodeer.sandbox.tools import SandboxToolWrapper, wrap_tool_for_sandbox
+from nanodeer.sandbox import Sandbox, RunResult, set_sandbox, clear_sandbox
+
+
+class MockProvider:
+    """Minimal sandbox provider for testing."""
+    def __init__(self):
+        self.run = AsyncMock(return_value=RunResult(stdout="ok", stderr="", returncode=0))
 
 
 def _mock_tool(name: str):
@@ -14,203 +19,67 @@ def _mock_tool(name: str):
     return tool
 
 
-class TestSandboxExecCommandConstruction:
-    """Test get_sandbox_command() for each tool."""
+class TestWrapToolForSandbox:
+    def test_wraps_bash_only(self):
+        """Only bash returns a wrapper; other tools return None."""
+        bash_wrapper = wrap_tool_for_sandbox(_mock_tool("bash"), MockProvider())
+        assert isinstance(bash_wrapper, SandboxToolWrapper)
 
-    def test_read_file_command(self):
-        """read_file uses path_vars for direct substitution."""
-        tool = _mock_tool("read_file")
-        exec_tool = SandboxExecTool(tool, provider=None)
+        read_wrapper = wrap_tool_for_sandbox(_mock_tool("read_file"), MockProvider())
+        assert read_wrapper is None
 
-        cmd = exec_tool.get_sandbox_command(
-            {"file_path": "/mnt/user-data/workspace/test.txt"},
-            "thread-1"
-        )
 
-        assert cmd is not None
-        assert "test.txt" in cmd.cmd
-        assert base64.b64encode(b"test content").decode() not in cmd.cmd  # not b64 encoded
+class TestSandboxToolWrapper:
+    def test_name_property(self):
+        """Wrapper exposes the underlying tool's name."""
+        wrapper = SandboxToolWrapper(_mock_tool("bash"), MockProvider())
+        assert wrapper.name == "bash"
 
-    def test_write_file_command(self):
-        """write_file path is substituted, content is base64-encoded."""
-        tool = _mock_tool("write_file")
-        exec_tool = SandboxExecTool(tool, provider=None)
+    def test_get_sandbox_command_marker(self):
+        """get_sandbox_command exists as a marker for _invoke_tool."""
+        wrapper = SandboxToolWrapper(_mock_tool("bash"), MockProvider())
+        assert wrapper.get_sandbox_command is True
 
-        cmd = exec_tool.get_sandbox_command(
-            {"file_path": "/mnt/user-data/workspace/test.txt", "content": "hello world"},
-            "thread-1"
-        )
+    @pytest.mark.asyncio
+    async def test_runs_in_sandbox_when_provider_and_exec_id(self):
+        """Runs bash command in sandbox when provider and exec_id are available."""
+        provider = MockProvider()
+        wrapper = SandboxToolWrapper(_mock_tool("bash"), provider)
 
-        assert cmd is not None
-        assert "test.txt" in cmd.cmd
-        assert "hello world" not in cmd.cmd  # content should be base64
-        assert base64.b64encode(b"hello world").decode() in cmd.cmd
-        assert "chr(46)" in cmd.cmd
-        assert "chr(119)+chr(98)" in cmd.cmd
+        sandbox = Sandbox(exec_id="t1", container_id="c1", working_dir="/tmp")
+        set_sandbox("t1", sandbox)
 
-    def test_ls_command(self):
-        """ls uses path_vars."""
-        tool = _mock_tool("ls")
-        exec_tool = SandboxExecTool(tool, provider=None)
+        try:
+            result = await wrapper.ainvoke({"command": "ls -la"}, exec_id="t1")
+            provider.run.assert_called_once_with(sandbox, "ls -la", timeout=30)
+            assert result == "ok"
+        finally:
+            clear_sandbox("t1")
 
-        cmd = exec_tool.get_sandbox_command(
-            {"file_path": "/mnt/user-data/workspace"},
-            "thread-1"
-        )
-
-        assert cmd is not None
-        assert "workspace" in cmd.cmd
-
-    def test_glob_command(self):
-        """glob substitutes file_path and b64-encodes pattern."""
-        tool = _mock_tool("glob")
-        exec_tool = SandboxExecTool(tool, provider=None)
-
-        cmd = exec_tool.get_sandbox_command(
-            {"file_path": "/mnt/user-data/workspace", "pattern": "*.py"},
-            "thread-1"
-        )
-
-        assert cmd is not None
-        assert "workspace" in cmd.cmd
-        assert "*.py" not in cmd.cmd  # pattern is b64 encoded
-        assert base64.b64encode(b"*.py").decode() in cmd.cmd
-
-    def test_glob_command_matches_recursive_relative_paths(self, tmp_path):
-        """glob should match both recursive and root-level **/ patterns."""
-        (tmp_path / "reports").mkdir()
-        (tmp_path / "reports" / "final_metrics.txt").write_text("total=42", encoding="utf-8")
-        (tmp_path / "draft_a.txt").write_text("draft", encoding="utf-8")
-        tool = _mock_tool("glob")
-        exec_tool = SandboxExecTool(tool, provider=None)
-
-        nested_cmd = exec_tool.get_sandbox_command(
-            {"file_path": str(tmp_path), "pattern": "**/*.txt"},
-            "thread-1",
-        )
-        root_cmd = exec_tool.get_sandbox_command(
-            {"file_path": str(tmp_path), "pattern": "**/*draft*"},
-            "thread-1",
-        )
-
-        nested = subprocess.run(nested_cmd.cmd, shell=True, capture_output=True, text=True, timeout=5)
-        root = subprocess.run(root_cmd.cmd, shell=True, capture_output=True, text=True, timeout=5)
-
-        assert nested.returncode == 0
-        assert "reports/final_metrics.txt" in nested.stdout
-        assert root.returncode == 0
-        assert "draft_a.txt" in root.stdout
-
-    def test_grep_command(self):
-        """grep substitutes file_path and b64-encodes pattern."""
-        tool = _mock_tool("grep")
-        exec_tool = SandboxExecTool(tool, provider=None)
-
-        cmd = exec_tool.get_sandbox_command(
-            {"file_path": "/mnt/user-data/workspace", "pattern": "def.*", "recursive": "True"},
-            "thread-1"
-        )
-
-        assert cmd is not None
-        assert "workspace" in cmd.cmd
-        assert "def.*" not in cmd.cmd  # pattern is b64 encoded
-        assert base64.b64encode(b"def.*").decode() in cmd.cmd
-
-    def test_bash_command(self):
-        """bash b64-encodes command."""
+    @pytest.mark.asyncio
+    async def test_falls_back_to_host_without_sandbox(self):
+        """Without sandbox, falls through to the underlying tool."""
         tool = _mock_tool("bash")
-        exec_tool = SandboxExecTool(tool, provider=None)
+        tool.ainvoke = AsyncMock(return_value="host result")
+        wrapper = SandboxToolWrapper(tool, provider=None)
 
-        cmd = exec_tool.get_sandbox_command(
-            {"command": "ls -la /mnt/user-data/"},
-            "thread-1"
-        )
+        result = await wrapper.ainvoke({"command": "echo hi"})
+        assert result == "host result"
+        tool.ainvoke.assert_called_once_with({"command": "echo hi"})
 
-        assert cmd is not None
-        assert "ls -la" not in cmd.cmd  # command is b64 encoded
-        assert base64.b64encode(b"ls -la /mnt/user-data").decode() in cmd.cmd
+    @pytest.mark.asyncio
+    async def test_empty_command_returns_empty_string(self):
+        """Empty bash command returns empty result."""
+        provider = MockProvider()
+        wrapper = SandboxToolWrapper(_mock_tool("bash"), provider)
+        result = await wrapper.ainvoke({"command": ""}, exec_id="t1")
+        assert result == ""
 
-    def test_exec_python_command(self):
-        """exec_python b64-encodes code."""
-        tool = _mock_tool("exec_python")
-        exec_tool = SandboxExecTool(tool, provider=None)
-
-        cmd = exec_tool.get_sandbox_command(
-            {"code": "print('hello')"},
-            "thread-1"
-        )
-
-        assert cmd is not None
-        assert "print('hello')" not in cmd.cmd  # code is b64 encoded
-        assert base64.b64encode(b"print('hello')").decode() in cmd.cmd
-
-    def test_git_command(self):
-        """git uses translate_vars to replace virtual paths before b64."""
-        tool = _mock_tool("git")
-        exec_tool = SandboxExecTool(tool, provider=None)
-
-        # git tool returns a command string with virtual path embedded
-        cmd_str = "git -C /mnt/user-data/workspace status"
-        cmd = exec_tool.get_sandbox_command(
-            {"command": cmd_str},
-            "thread-1"
-        )
-
-        assert cmd is not None
-        # The virtual path should be translated to physical path before b64 encoding
-
-    def test_timeout_from_config(self):
-        """Timeout comes from SANDBOX_TOOL_CONFIGS."""
+    @pytest.mark.asyncio
+    async def test_empty_command_without_exec_id_falls_to_host(self):
+        """Empty command without exec_id falls to host tool."""
         tool = _mock_tool("bash")
-        exec_tool = SandboxExecTool(tool, provider=None)
-
-        cmd = exec_tool.get_sandbox_command({"command": "ls"}, "thread-1")
-        assert cmd.timeout == 30
-
-        tool2 = _mock_tool("ls")
-        exec_tool2 = SandboxExecTool(tool2, provider=None)
-        cmd2 = exec_tool2.get_sandbox_command({"file_path": "/mnt/user-data/"}, "thread-1")
-        assert cmd2.timeout == 10
-
-
-class TestSandboxExecToolRegistry:
-    """Verify all sandbox tools are properly registered."""
-
-    @pytest.mark.parametrize("tool_name", list(SANDBOX_TOOL_CONFIGS.keys()))
-    def test_all_sandbox_tools_have_exec_tool(self, tool_name):
-        """Every tool in SANDBOX_TOOL_CONFIGS can create a SandboxExecTool."""
-        tool = _mock_tool(tool_name)
-        exec_tool = SandboxExecTool(tool, provider=None)
-        assert exec_tool is not None
-        assert exec_tool.name == tool_name
-
-    @pytest.mark.parametrize("tool_name", list(SANDBOX_TOOL_CONFIGS.keys()))
-    def test_all_sandbox_tools_produce_valid_command(self, tool_name):
-        """Every sandbox tool produces a SandboxCommand with non-empty cmd."""
-        tool = _mock_tool(tool_name)
-        exec_tool = SandboxExecTool(tool, provider=None)
-
-        # Provide minimal args for each tool type
-        args_map = {
-            "read_file": {"file_path": "/mnt/user-data/workspace/test.txt"},
-            "write_file": {"file_path": "/mnt/user-data/workspace/test.txt", "content": "test"},
-            "edit_file": {
-                "file_path": "/mnt/user-data/workspace/test.txt",
-                "old_string": "old",
-                "new_string": "new",
-            },
-            "ls": {"file_path": "/mnt/user-data/workspace"},
-            "glob": {"file_path": "/mnt/user-data/workspace", "pattern": "*.py"},
-            "grep": {"file_path": "/mnt/user-data/workspace", "pattern": "test", "recursive": "True"},
-            "bash": {"command": "ls"},
-            "git": {"command": "git -C /mnt/user-data/workspace status"},
-            "exec_python": {"code": "print(1)"},
-        }
-
-        args = args_map.get(tool_name, {})
-        cmd = exec_tool.get_sandbox_command(args, "thread-1")
-
-        assert cmd is not None
-        assert isinstance(cmd, SandboxCommand)
-        assert cmd.cmd  # non-empty
-        assert cmd.timeout > 0
+        tool.ainvoke = AsyncMock(return_value="")
+        wrapper = SandboxToolWrapper(tool, provider=None)
+        result = await wrapper.ainvoke({"command": ""})
+        assert result == ""

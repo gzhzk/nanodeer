@@ -1,4 +1,4 @@
-"""search_memory tool — search and read saved wiki entries and memories."""
+"""search_memory tool — read and search USER.md / MEMORY.md flat files."""
 
 from langchain_core.tools import tool
 
@@ -6,53 +6,37 @@ from ..agent.memory.storage import MemoryStore
 
 
 @tool
-def search_memory(query: str = "", max_results: int = 10) -> str:
-    """Search saved wiki entries and memories by keyword.
+def search_memory(query: str = "") -> str:
+    """Search saved memory (USER.md and MEMORY.md) by keyword.
 
-    Use this to find relevant information from past conversations before
-    answering. Returns matching entries with their paths, summaries, and
-    full content (truncated if long). If query is empty, returns the most
-    recent entries.
-
-    For wiki entries, the path can be used to reference the source.
-    Example: "wiki/project/language" for a project language decision.
+    Use this to find relevant information from past conversations and
+    persisted knowledge. If query is empty, returns all content.
 
     Args:
-        query: Search keywords. Leave empty to list recent entries.
-        max_results: Maximum entries to return (default 10, max 20).
+        query: Search keywords (case-insensitive). Leave empty to show all.
 
     Returns:
-        Formatted memory entries with path and content.
+        Matching memory content, or a message if nothing is found.
     """
     store = MemoryStore()
-    results = store.search_wiki(query=query, max_entries=max(min(max_results, 20), 1))
+    q = query.strip().lower()
+    results = []
 
-    lines = []
-    for entry in results:
-        tag_str = f" [{', '.join(entry.tags)}]" if entry.tags else ""
-        content = entry.content
-        if len(content) > 1000:
-            content = content[:1000] + "\n... [truncated]"
-        lines.append(
-            f"## {entry.path}{tag_str}\n"
-            f"*{entry.summary}*\n\n"
-            f"{content}"
-        )
+    memory = store.load_memory()
+    if memory:
+        if not q or q in memory.lower():
+            label = "## MEMORY.md — long-term knowledge\n\n"
+            preview = memory[:2000] + "\n... [truncated]" if len(memory) > 2000 else memory
+            results.append(label + preview)
 
-    query_text = query.strip().lower()
+    user = store.load_user_memory()
+    if user:
+        if not q or q in user.lower():
+            label = "\n\n## USER.md — user preferences\n\n"
+            preview = user[:2000] + "\n... [truncated]" if len(user) > 2000 else user
+            results.append(label + preview)
 
-    for label, content in (
-        ("memory/MEMORY.md", store.load_memory()),
-        ("memory/USER.md", store.load_user_memory()),
-    ):
-        if not content:
-            continue
-        if query_text and query_text not in content.lower():
-            continue
-        preview = content[:1000] + "\n... [truncated]" if len(content) > 1000 else content
-        lines.append(f"## {label}\n\n{preview}")
-
-    if not lines:
+    if not results:
         return "No matching memory entries found."
 
-    return "\n\n---\n\n".join(lines)
+    return "".join(results)

@@ -2,15 +2,14 @@
 
 # NanoDeer
 
-**面向 LLM Agent 的轻量级 Harness：用于构建、运行与评测**
+**面向 Agent Runtime 工程的开源参考实现**
 
 [![MIT License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 [![Python 3.13](https://img.shields.io/badge/Python-3.13-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.135-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![Docker](https://img.shields.io/badge/Docker-optional-2496ED?style=flat-square&logo=docker&logoColor=white)](https://docker.com)
-[![Version 0.1.0](https://img.shields.io/badge/Version-0.1.0-orange?style=flat-square)](https://github.com/gzhzk/nanodeer)
 
-Runtime · Tool Use · Memory · Sandbox · Checkpoint
+ReAct 循环 · 工具调用 · 沙箱隔离 · 检查点 · 记忆 · SSE 流式
 
 *探索 LLM Agent 背后的运行时。*
 
@@ -20,193 +19,143 @@ Runtime · Tool Use · Memory · Sandbox · Checkpoint
 
 ---
 
-NanoDeer 是一个用于构建、运行与评测 LLM 应用与 Agent 的轻量级运行时 harness。
+NanoDeer 是 **Agent Runtime 工程的开源参考实现**——不是又一个跟 Claude Code、Cursor 竞争的工具，而是把 Agent 运行时拆开、展示每个核心模式是怎么实现的。
 
-与聚焦 orchestration 的工作流框架不同，NanoDeer 更关注 runtime engineering：Agent 如何推理、行动、记忆、恢复，以及如何与工具交互。
-
-它不依赖工作流图或 middleware 链，而是自己实现 runtime primitives：ReAct 执行、工具路由、记忆、沙箱和 checkpoint 恢复。
-
-NanoDeer 既是一个实用的 agent framework，也是一个探索 agent runtime 设计的 playground。
-
-核心能力：
-- 基于 HTTP SSE 的原生 async ReAct 流式对话，支持会话列表、重命名、归档、删除和恢复。
-- 工具路由与 Docker 优先的沙箱执行，Docker 不可用时回退 Local。
-- 文件式 Memory、Wiki、Plan 工具，底层存储可直接检查。
-- SQLite checkpoint 恢复和结构化 trace 事件。
-- 分层 evaluation harness，用于回归测试。
-- Next.js assistant-ui 前端，以及从前端到 `read_image` 的图片上传桥接。
-
-核心链路：
-
-```text
-HTTP / UI
-  ↓
-NanoEngine
-  ↓
-ReActExecutor
-  ↓
-Tools / Sandbox
-  ↓
-Memory / Plan
-  ↓
-Checkpoint
-```
-
-## 目录
-
-- [项目结构](#项目结构)
-- [快速开始](#快速开始)
-- [背景](#背景)
-- [核心差异点](#核心差异点)
-- [架构](#架构)
-  - [5 层架构总览](#5-层架构总览)
-  - [执行流程](#执行流程)
-  - [存储路径](#存储路径)
-  - [信号与状态设计](#信号与状态设计)
-- [设计原则](#设计原则)
-- [工具](#工具)
-- [项目状态与路线图](#项目状态与路线图)
-- [设计灵感来源](#设计灵感来源)
-- [致谢](#致谢)
-- [许可证](#许可证)
+它的核心是一条直白的 ReAct 循环，没有中间件链、没有图编排、没有框架锁。每个核心模块刚好展示一个模式。非核心模块（subagent、plan、skills、wiki、layers）保留为**外接模块**——代码完整留存，但不进入默认加载路径。
 
 ---
 
-## 项目结构
+## 背景
+
+去年底我开始接触 agent 相关的工作，那时候理解还很粗糙——无非就是 AI 帮你做事。三月初导师提到 "harness engineering 最近挺热的，可以看看"，我开始找资料，同时用上了 Claude Code。
+
+三月下旬 **DeerFlow** 进入视野。字节跳动的开源项目第一次让我看到企业级 Agent harness 框架应该是什么样子——状态机、middleware 链、沙箱隔离、分级记忆，每个组件都在对的位置上。
+
+故事可能到这里就结束了。但三月的最后一个晚上，我去听了字节的校招宣讲。宣讲中有一句话印象很深——*"和优秀的人做有挑战的事。"* 宣讲期间手机亮了一下——**Claude Code** 开源了。那一瞬间很多事串起来了：DeerFlow 告诉我框架该长什么样，Claude Code 告诉我产品可以是什么体验，那时 **OpenClaw** 也在国内热度也很高。当晚回到宿舍，我写下了第一版设计的想法。
+
+**核心想法**：把那些验证过的模式提炼出来——原生 ReAct 循环、Docker 沙箱隔离、分级记忆、内联编排——收拢到一个聚焦、可审计的基础上，每个模块只有一个职责，横切逻辑内联处理。
+
+---
+
+## 设计思想
+
+### 1. 没有中间件链
+
+大多数 Agent 框架把横切关注点做成 pre/post 钩子。NanoDeer **完全没有中间件链**——每个关注点要么是主循环里的内联函数，要么是独立的 Manager：
+
+| 关注点 | 实现 |
+|--------|------|
+| 上下文加载 | `ContextManager.load()` — 并行 I/O |
+| 沙箱生命周期 | `SandboxManager.acquire()/release()` — 幂等管理 |
+| Bash 审计 | `_bash_safe()` — 内联正则，拦截危险命令 |
+| LLM 重试 | `_call_with_retry()` — 指数退避 |
+| 澄清检测 | `_check_clarification()` — 检查 `[CLARIFICATION]` 标签 |
+| 收敛保护 | 重复工具调用上限 + 最大轮数限制 |
+
+这意味着你只需要读 [react.py](src/nanodeer/agent/react.py) 一个文件就能理解整个执行流程，不需要学任何图 DSL。
+
+### 2. 核心 + 外接分层
+
+项目明确分为两层：
+
+- **核心**（默认加载）：ReAct 循环、8 个工具、检查点、扁平文件记忆、沙箱、SSE API
+- **外接**（硬盘保留，不默认加载）：subagent、plan、skills、wiki、记忆分层、12 个额外工具
+
+早期版本所有功能默认全加载。这次重构清理后，探索成果不浪费，只是不放在关键路径上。需要的人可以手动启用。
+
+### 3. 为什么只有 bash 走沙箱
+
+文件工具（read/write/edit）在宿主机直接运行，因为 workspace 目录是通过 volume mount 挂载到容器里的——宿主机和容器看到的是同一份文件。只有 bash 需要在容器内执行来隔离命令。这使沙箱包装从 263 行（每个工具配模板、base64 编码、虚拟路径翻译）简化到 40 行。
+
+### 4. 为什么用扁平文件记忆
+
+原来的 L1-L4 分层记忆模型（episodic → semantic → wiki → user）概念很漂亮，但复杂度超过了实用价值。简化版只用两个文件：`USER.md` 存偏好，`MEMORY.md` 存事实。分层模型作为外接模块保留。
+
+### 5. 为什么 ToolManager 换成字典
+
+原来的 `ToolManager` + `groups.py` 用来做渐进工具暴露（先给 4 个核心工具，通过 `request_tools()` 解锁更多）。这个机制解决了一个对现代 LLM 来说不存在的问题——它们处理 20 个工具毫无压力。字典查找更简单、零依赖、一眼能看懂。
+
+### 6. 为什么 factory 合并进 engine
+
+`NanoDeerFactory` 只是个薄薄的参数转发层。少一层间接，读代码时少一次跳转。
+
+### 7. 参考实现，不是产品
+
+这是最重要的决定。NanoDeer 不跟 Claude Code、Cursor、Aider、Continue 竞争。它的存在意义是**被阅读**——展示 Agent 运行时怎么工作、可以被 fork 和修改、可以作为教学材料。价值在于代码的清晰程度和每个设计选择背后的推理，不在于功能数量。
+
+---
+
+## 核心架构
 
 ```
-nanodeer/
-├── pyproject.toml           # 构建配置、入口注册、依赖声明
-├── config.yaml              # 运行时配置 (LLM、sandbox、memory、thread…)
-├── config.yaml.example      # 配置模板 — 复制为 config.yaml 后编辑
-├── .env.example             # API Key 模板 — 复制为 .env 后填入密钥
-├── .gitignore               # Git 忽略规则
-├── LICENSE                  # MIT 许可证
-├── AGENTS.md                # Agent 工作流文档
-├── README.md                # 英文文档
-├── README_zh.md             # 本文档
-│
-├── scripts/
-│   ├── dev.sh               # 一键启动后端 + 前端
-│   └── check.sh             # 运行测试 + 代码检查
-│
-├── src/nanodeer/            # 后端源码 (Python)
-│   ├── cli/
-│   │   ├── api.py           # Layer 5: FastAPI + SSE HTTP 服务
-│   │   └── repl.py          # Layer 5: 调试用 REPL
-│   ├── engine.py            # Layer 4: NanoEngine — 应用层调度器
-│   ├── agent/
-│   │   ├── factory.py       # Layer 3-4 桥梁: NanoDeerFactory 装配器
-│   │   ├── react.py         # Layer 3: ReActExecutor — 主循环 (核心)
-│   │   ├── state.py         # ThreadState / TurnSignals 数据模型
-│   │   ├── context.py       # Layer 3: ContextManager — 上下文装配
-│   │   ├── prompt.py        # Layer 2: 静态+动态 双层 prompt 构建
-│   │   ├── sandbox_manager.py # Layer 3: 沙箱生命周期管理
-│   │   ├── compression.py   # Layer 4½: 对话压缩
-│   │   ├── trace.py         # 运行时可观测性 (结构化事件)
-│   │   ├── checkpoint/      # Layer 1: SQLite 会话持久化
-│   │   └── memory/          # Layer 1: 文件式分层记忆 (L1-L4)
-│   ├── sandbox/
-│   │   ├── __init__.py      # SandboxProvider ABC + 模块级上下文
-│   │   ├── docker.py        # Docker 沙箱
-│   │   ├── local.py         # 本地子进程回退
-│   │   ├── path.py          # 虚拟→物理路径翻译 + 安全校验
-│   │   └── tools.py         # SandboxExecTool — tool 路由到容器内执行
-│   ├── tools/               # 内置工具定义 (20 个)
-│   ├── subagent/            # 基于信号量的子代理协调器
-│   ├── plan/                # 文件式 JSON 计划存储
-│   ├── skills/              # .md 技能加载系统
-│   ├── integrations/        # 可选 benchmark / 外部 harness 适配器
-│   └── config.py            # Pydantic 配置模型 + 全局单例
-│
-├── frontend/                # Web 前端 (Next.js + assistant-ui)
-│   ├── app/                 # Next.js App Router 页面
-│   ├── components/          # React 组件 (聊天、侧边栏、设置)
-│   ├── lib/                 # 前端工具库和 API 客户端
-│   ├── hooks/               # 自定义 React Hooks
-│   ├── package.json         # Node 依赖
-│   ├── next.config.ts       # Next.js 配置
-│   ├── tsconfig.json        # TypeScript 配置
-│   ├── biome.json           # Linter/格式化 配置
-│   ├── postcss.config.mjs   # PostCSS 配置
-│   ├── components.json      # shadcn/ui 组件注册表
-│   └── .env.example         # 前端环境模板
-│
-├── sandbox/                 # Docker 沙箱镜像构建
-│   ├── Dockerfile           # 基于 Python 3.11-slim 的极简沙箱镜像
-│   ├── build.sh             # 镜像构建脚本
-│   └── README.md            # 沙箱设置指南
-│
-├── tests/                   # Python 测试套件
-│   ├── conftest.py          # 共享 pytest fixtures
-│   ├── test_agent/          # ReAct 执行器 & 状态测试
-│   ├── test_agent_memory/   # 记忆系统测试
-│   ├── test_cli/            # API 端点 & REPL 测试
-│   ├── test_integration/    # 端到端集成测试
-│   ├── test_plan/           # Plan 存储测试
-│   ├── test_sandbox/        # 沙箱提供者测试
-│   ├── test_skills/         # 技能加载测试
-│   ├── test_subagents/      # 子代理协调器测试
-│   ├── test_evaluation/     # 评测任务测试
-│   └── test_tools_integration/ # 工具执行集成测试
-│
-├── evaluation/              # 评测 harness 和任务集
-│   ├── runner.py            # 评测运行器
-│   ├── tasks/contracts/     # Runtime/API/trace 协议检查
-│   ├── tasks/capabilities/  # 工具和模块能力检查
-│   ├── tasks/behaviors/     # Agent 行为和策略检查
-│   ├── tasks/scenarios/     # 端到端工作流检查
-│   ├── judges.py            # 确定性断言评测器
-│   ├── reporters/           # 输出报告 (JSON 等)
-│   └── fixtures/            # 评测数据
-│
-├── docs/                    # 设计文档
-│   ├── nanodeer_blueprint_20260401.md  # 项目蓝图
-│   ├── runtime_architecture.md        # 运行时架构
-│   ├── harness_architecture.md        # Harness 架构
-│   ├── memory_design.md               # 记忆系统设计
-│   ├── sandbox_design.md              # 沙箱设计
-│   ├── subagent_design.md             # 子代理设计
-│   ├── plan_design.md                 # 计划系统设计
-│   ├── tools_design.md                # 工具设计
-│   ├── skills_design.md               # 技能设计
-│   ├── prompt_design.md               # Prompt 工程设计
-│   ├── observability_design.md        # 可观测性与追踪
-│   ├── benchmark_integrations.md      # Harbor/TB2 benchmark 适配设计
-│   ├── evaluation_harness.md          # 分层评测 harness
-│   ├── evaluation_plan.md             # 评估计划
-│   ├── long_horizon_design.md         # 长程任务设计
-│   ├── refactoring_journey.md         # 重构历程笔记
-│   └── ref/                           # 参考架构报告
-│
-├── examples/                # 使用示例 (待补充)
-│
-├── .agents/                 # Agent 编排配置 (内部)
-├── .codex/                  # Codex 元数据 (内部)
-└── .claude/                 # Claude Code 项目设置 (内部)
+                      ┌──────────────────────────────┐
+                      │      CLI / API / SSE           │
+                      │  cli/api.py · cli/repl.py     │
+                      └──────────┬───────────────────┘
+                                 │
+                      ┌──────────▼───────────────────┐
+                      │  NanoEngine (engine.py)       │
+                      │  — LLM 多 provider 路由       │
+                      │  — 会话状态创建/恢复           │
+                      │  — 内联执行器组装              │
+                      └──────────┬───────────────────┘
+                                 │
+                      ┌──────────▼───────────────────┐
+                      │  ReActExecutor (react.py)     │
+                      │  1. ContextManager.load()     │
+                      │  2. SandboxManager.acquire()  │
+                      │  3. LLM.ainvoke() + 重试      │
+                      │  4. 澄清检测                  │
+                      │  5. 工具循环（bash 审计）     │
+                      │  6. Checkpoint.save()         │
+                      └──────────────────────────────┘
 ```
+
+**10 个核心模式：**
+
+| 模块 | 展示的模式 | 行数 |
+|------|-----------|------|
+| `react.py` | ReAct 主循环 | ~1160 |
+| `state.py` | 会话状态模型 | 43 |
+| `context.py` | 上下文装配 | 111 |
+| `prompt.py` | Prompt 构建 | 196 |
+| `llm.py` | LLM provider 抽象 | 41 |
+| `sandbox/tools.py` | 沙箱包装 | 40 |
+| `memory/storage.py` | 扁平文件记忆 | 97 |
+| `checkpoint/sqlite.py` | SQLite 持久化 | 287 |
+| `cli/api.py` | SSE 流式 API | ~336 |
+| `config.py` | 运行时配置 | ~195 |
+
+---
+
+## 工具
+
+**8 个核心工具**（`default_tools()` 默认加载）：
+
+| 工具 | 类别 | 执行位置 |
+|------|------|---------|
+| `read_file` | 文件 | 宿主机 |
+| `write_file` | 文件 | 宿主机 |
+| `edit_file` | 文件 | 宿主机 |
+| `bash` | Shell | **沙箱内**（容器） |
+| `web_search` | 网络 | 宿主机 |
+| `web_fetch` | 网络 | 宿主机 |
+| `save_memory` | 记忆 | 宿主机 |
+| `search_memory` | 记忆 | 宿主机 |
+
+**12 个外接工具**（文件保留，需手动 import）：
+`ls`, `glob`, `grep`, `git`, `exec_python`, `read_image`,
+`create_plan`, `add_step`, `update_step`, `list_plans`,
+`spawn_subagent`, `get_subagent_results`, `invoke_skill`
 
 ---
 
 ## 快速开始
 
 ### 环境要求
-
-| 依赖               | 版本             | 必需   | 说明                                                   |
-|--------------------|------------------|--------|--------------------------------------------------------|
-| **操作系统**       | Linux / macOS    | ✅     | Windows 建议使用 WSL2                                    |
-| **Python**         | ≥ 3.10           | ✅     | 推荐 3.11+；沙箱 Docker 镜像使用 3.11                    |
-| **Node.js**        | ≥ 18             | ⚠️     | 仅前端开发需要                                          |
-| **npm**            | (随 Node 安装)    | ⚠️     | 前端依赖管理                                            |
-| **Docker**         | ≥ 24.0           | ⚠️     | 沙箱隔离需要；无 Docker 时自动使用 Local 回退            |
-| **curl**           | 任意版本          | ⚠️     | dev.sh/check.sh 脚本需要                                |
-| **LLM API 密钥**   | —                | ✅     | 至少一个 Provider（Anthropic、OpenAI、MiniMax、DeepSeek…） |
-| **内存**           | ≥ 4 GB           | —      | 同时运行前端+后端建议 8 GB+                              |
-| **磁盘空间**       | ≥ 1 GB 空闲      | —      | 用于 .venv、node_modules 和运行时数据                   |
-
-✅ 必需 &emsp; ⚠️ 可选（缺失时功能降级） &emsp; — 仅供参考
-
-**支持 LLM Provider：** Anthropic、OpenAI、DeepSeek、MiniMax、SiliconFlow、智谱 GLM、阿里百炼 Qwen、Moonshot (Kimi)、Google Gemini、Groq、OpenRouter、Ollama (本地)。
+- Python ≥ 3.10
+- 一个 LLM API Key（Anthropic、OpenAI、DeepSeek、MiniMax 等）
+- Docker（可选，用于沙箱隔离）
 
 ### 安装
 
@@ -215,387 +164,158 @@ git clone https://github.com/gzhzk/nanodeer
 cd nanodeer
 
 cp .env.example .env
-# 编辑 .env，填入 API Key
+# 编辑 .env 填入 API Key
 
 pip install -e .
 ```
 
-### 运行
+### 启动（仅后端）
 
 ```bash
-# 一键启动后端 API + 前端开发服务器
-./scripts/dev.sh
-# 前端: http://127.0.0.1:20265
-# 后端: http://127.0.0.1:20266
+nanodeer          # 启动 API 服务 http://127.0.0.1:20266
+nanodeer-repl     # CLI REPL 调试
 ```
 
-### 检查
+### 测试
 
 ```bash
-# 运行 Python 测试；如果前端依赖已安装，也会运行 frontend lint
-python -m pip install -e '.[dev]'
-./scripts/check.sh
-
-# 只运行某个 Python 测试文件
-./scripts/check.sh tests/test_agent/test_react.py
+pip install -e '.[dev]'
+pytest
 ```
 
-### Benchmark Adapter Smoke
+### 演示前端
 
-NanoDeer 提供一个可选的 benchmark 旁路，用于接 Harbor / Terminal-Bench 2.0
-这类外部评测 harness。它不改变默认 API/UI 主链路，而是在 benchmark workspace
-里复用同一套 ReAct loop。
-
-不启动 Harbor、Docker 或 Terminal-Bench 镜像的本地 smoke：
+基于 Next.js 的演示前端位于 `demo/frontend/`：
 
 ```bash
-mkdir -p /tmp/nanodeer-smoke-workdir /tmp/nanodeer-smoke-logs
-printf '%s\n' \
-  'Create hello.txt containing exactly: NANODEER_BENCH_SMOKE_OK' \
-  > /tmp/nanodeer-smoke.md
-
-nanodeer-bench-run \
-  --instruction-file /tmp/nanodeer-smoke.md \
-  --workdir /tmp/nanodeer-smoke-workdir \
-  --logs-dir /tmp/nanodeer-smoke-logs \
-  --timeout-seconds 120
-```
-
-runner 会把任务文件写到 `--workdir`，并在 `--logs-dir` 下输出
-`run_result.json`、`final.txt`、NanoDeer trace JSONL 和 ATIF 风格的
-`trajectory.json`。
-
-Harbor / Terminal-Bench 2.0 则是另一层：需要在 Docker 可用的机器上安装 Harbor
-并运行，建议放到远程大磁盘机器，避免本地 Docker 镜像和 build cache 占用空间。
-自定义 agent import path：
-
-```text
-nanodeer.integrations.harbor.agent:NanoDeerHarborAgent
-```
-
-适配架构与推进计划见 [docs/benchmark_integrations.md](docs/benchmark_integrations.md)。
-
-手动调试时也可以分开启动：
-
-```bash
-# 终端 1：HTTP API 服务器
-.venv/bin/python -m nanodeer.cli.api
-
-# 终端 2：前端
-cd frontend
-npm run dev
-
-# 可选：CLI REPL 调试
-nanodeer-repl
-```
-
-### 前端
-
-```bash
-cd frontend
+cd demo/frontend
 npm install
-
-# 预构建 CSS（第一次必须，修改 src/app/globals.css 后需重新运行）
-npm run build:css
-
-# 启动开发服务器
-npm run dev
-# 打开 http://127.0.0.1:20265
+npm run dev       # 打开 http://127.0.0.1:20265
 ```
-
-前端会把 `/api/*` 代理到 `http://127.0.0.1:20266` 的后端服务。
-
-### 配置
-
-编辑 `config.yaml` 配置：
-- LLM Provider（MiniMax、Anthropic、OpenAI、SiliconFlow 等）
-- 沙箱设置（Docker 镜像、网络模式）
-- 线程存储路径
 
 ---
 
-## 背景
+## 项目结构
 
-去年年末，我开始接触 Agent 相关实践 —— 彼时理解还很粗浅，就是觉得 Agent 就是在 LLM 的基础上加上了一些工具、存储记忆等让 AI 帮自己干活。今年3月初，导师随口提了一句 "harness engineering 最近挺火的，多了解了解一下"，我开始四处找资料学习，也顺手用起了 Claude Code。
-
-3月底，**DeerFlow** 进入了我的视线：字节开源的这个项目让我第一次看到企业级 Agent 框架应该长什么样子——状态机、中间件链、沙箱隔离、分层记忆，每块各司其职。我反复读了好几篇介绍文章，心想：原来 Agent 可以这样工程化。
-
-本来故事可能到这里就结束了。但3月最后一天晚上，我去参加了字节的暑期招聘宣讲。印象很深的是那句字节的企业口号 —— *"和优秀的人，做有挑战的事"*。宣讲会进行中，手机屏幕上无意间闪过一行消息 —— Claude Code 开源了。那一刻突然有种说不清的冲动：DeerFlow 让我看到了框架该有的样子，Claude Code 让我看到了产品能做成什么样，再加上国内爆火的 OpenClaw 的启发，所有东西突然串在了一起。当晚回到宿舍，我写下了第一版设想。
-
-**核心思路**：提炼真正有效的模式 —— 原生 ReAct 循环、ContextManager 并行上下文加载、SandboxManager 容器生命周期管理、Docker 容器隔离、分层记忆 —— 构建一个每个模块职责单一、零间接的 Agent 底座。
+```
+nanodeer/
+├── pyproject.toml           # 构建配置 (hatchling)，入口点，依赖
+├── config.yaml              # 运行时配置 (LLM providers, 沙箱, 存储)
+├── config.yaml.example      # 模板 — 复制为 config.yaml 后编辑
+├── .env / .env.example      # API 密钥
+├── AGENTS.md                # Agent 开发指南 (Claude Code 上下文)
+├── LICENSE                  # MIT
+│
+├── src/nanodeer/            # Python 源码
+│   ├── __init__.py          # 包导出: NanoEngine, RuntimeFeatures, config
+│   ├── engine.py            # NanoEngine — 应用入口，执行器组装
+│   ├── config.py            # HarnessConfig — Pydantic 模型，YAML + 环境变量加载
+│   │
+│   ├── agent/               # 核心运行时
+│   │   ├── __init__.py
+│   │   ├── react.py         # ReActExecutor — 主循环 (~1160 行)
+│   │   ├── state.py         # ThreadState, TurnSignals, NextAction, SandboxState
+│   │   ├── context.py       # ContextManager — 记忆 + 文件上传，并行加载
+│   │   ├── prompt.py        # PromptConfig, build_base/lead_agent_prompt
+│   │   ├── llm.py           # ReasoningChatOpenAI (OpenAI 兼容包装)
+│   │   ├── messages.py      # HumanMessage, AIMessage, ToolMessage, ToolCall
+│   │   ├── sandbox_manager.py  # SandboxManager — acquire/release 生命周期
+│   │   ├── trace.py         # TraceCollector — 结构化事件发射
+│   │   ├── checkpoint/
+│   │   │   ├── __init__.py
+│   │   │   ├── base.py      # Checkpointer ABC
+│   │   │   └── sqlite.py    # SqliteCheckpointer — 消息 + 元数据持久化
+│   │   └── memory/
+│   │       ├── __init__.py
+│   │       └── storage.py   # MemoryStore — USER.md + MEMORY.md 扁平文件
+│   │
+│   ├── sandbox/             # 沙箱隔离
+│   │   ├── __init__.py      # SandboxProvider ABC, Sandbox, RunResult, get/set/clear
+│   │   ├── docker.py        # DockerSandboxProvider — 容器生命周期
+│   │   ├── local.py         # LocalSandboxProvider — 子进程回退
+│   │   ├── tools.py         # SandboxToolWrapper — 仅 bash，40 行
+│   │   └── path.py          # 路径验证 (外接模块保留)
+│   │
+│   ├── tools/               # 内置工具定义
+│   │   ├── __init__.py      # default_tools() → 8 个核心，外接工具可单独 import
+│   │   ├── read_file.py     # 核心: 读取文件
+│   │   ├── write_file.py    # 核心: 写入文件
+│   │   ├── edit_file.py     # 核心: 字符串替换编辑
+│   │   ├── bash.py          # 核心: 执行 Shell 命令 (沙箱包装)
+│   │   ├── web_search.py    # 核心: DuckDuckGo 搜索
+│   │   ├── web_fetch.py     # 核心: 获取 URL 内容
+│   │   ├── save_memory.py   # 核心: 写入 USER.md / MEMORY.md
+│   │   ├── search_memory.py # 核心: 读取 USER.md / MEMORY.md
+│   │   ├── ls.py            # 外接: 列出目录
+│   │   ├── glob.py          # 外接: 文件模式匹配
+│   │   ├── grep.py          # 外接: 搜索文件内容
+│   │   ├── git.py           # 外接: Git 操作
+│   │   ├── exec_python.py   # 外接: 执行 Python 代码
+│   │   ├── read_image.py    # 外接: 读取图片
+│   │   ├── invoke_skill.py  # 外接: 加载技能工作流
+│   │   ├── create_plan.py   # 外接: 创建计划
+│   │   ├── plan_step.py     # 外接: 添加/更新计划步骤
+│   │   ├── list_plans.py    # 外接: 列出计划
+│   │   ├── spawn_subagent.py # 外接: 派生子代理
+│   │   └── get_subagent_results.py # 外接: 收集子代理结果
+│   │
+│   ├── cli/
+│   │   ├── __init__.py
+│   │   ├── api.py           # FastAPI 应用, SSE /api/chat, 会话 CRUD
+│   │   └── repl.py          # 异步 CLI REPL 调试
+│   │
+│   ├── subagent/            # 外接: SubagentCoordinator, runner, types
+│   └── plan/                # 外接: PlanStore, Plan/Step types
+│
+├── scripts/
+│   ├── dev.sh               # 一键启动: 后端 (+ --with-frontend 演示前端)
+│   └── check.sh             # 运行测试 (pytest)
+│
+├── tests/                   # Python 测试套件 (115 项)
+│   ├── conftest.py          # 共享 fixtures
+│   ├── test_agent/          # ReAct, engine, state, messages 等
+│   ├── test_sandbox/        # Docker, 路径, 工具包装
+│   ├── test_agent_memory/   # MemoryStore
+│   ├── test_tools_integration/ # 工具集成测试
+│   ├── test_subagents/      # 外接测试
+│   ├── test_plan/           # 外接测试
+│   ├── test_skills/         # 外接测试
+│   ├── test_evaluation/     # 归档测试
+│   └── test_cli/            # API 上传测试
+│
+├── demo/frontend/           # Next.js + assistant-ui 演示前端 (独立关注点)
+├── evaluation/              # 评测框架 (归档)
+└── docs/                    # 设计文档
+    ├── harness_architecture.md
+    ├── runtime_architecture.md
+    ├── sandbox_design.md
+    ├── tools_design.md
+    ├── prompt_design.md
+    ├── memory_design.md
+    ├── nanodeer_blueprint_20260401.md
+    ├── refactoring_journey.md
+    └── archive/             # 已移除模块的文档归档
+```
 
 ---
 
-## 核心差异点
-
-NanoDeer 是一个轻量级 Agent 框架。与 LangGraph、CrewAI、AutoGen 的核心区别：
-
-### 1. 无 LangGraph — 原生 ReAct 循环
-
-没有图编译、没有节点、没有边。只有一个纯粹的 `while True` async 循环，没有 middleware 链：
-
-```
-ContextManager.load() → SandboxManager.acquire() → LLM.ainvoke()
-→ 内联 clarification 检查 → [工具循环 + 内联 bash 审计] → Checkpoint → 循环或终止
-```
-
-这不仅仅是为了简化——这意味着你可以在一个文件（[react.py](src/nanodeer/agent/react.py)）里读完整个执行路径，用标准 Python 工具调试，无需学习图 DSL。没有隐藏状态，没有黑盒序列化，没有框架锁定。
-
-### 2. 内联编排 + `WAIT` 拦截
-
-绝大多数框架把 middleware 作为 LLM 调用的前后钩子——引入复杂的钩子链和隐式控制流。NanoDeer **没有 middleware 链**，所有横切关注点都是内联函数或独立的 Manager：
-
-| 机制 | 实现方式 |
-|------|---------|
-| 宿主工具直通 | `save_memory`/`create_plan` 不在 `SANDBOX_TOOL_CONFIGS` 中，自然在宿主机直接运行，无需拦截 |
-| `WAIT` | `_check_clarification()` 内联检查 `[CLARIFICATION]` 标签，设置 `next_action = WAIT` |
-| 上下文加载 | `ContextManager.load()` 并行执行：建目录、加载记忆/计划、处理上传 |
-| 沙箱管理 | `SandboxManager.acquire()/release()` 幂等管理容器生命周期 |
-| bash 审计 | `_bash_safe()` 内联正则匹配，阻断高危命令 |
-| LLM 重试 | `_call_with_retry()` 指数退避处理 429/5xx/timeout |
-| 循环收敛 | 重复相同工具调用和最大轮数 guard 会合成最终回答，避免无限 ReAct |
-
-### 3. HTTP SSE API
-
-NanoDeer 提供 FastAPI 服务器，使用 Server-Sent Events 实现实时流式传输。前端（assistant-ui）通过标准 HTTP SSE 连接——无需自定义协议或进程管理。
-
-```
-浏览器 (assistant-ui)  ── HTTP SSE ──  api.py  ──  NanoEngine  ──  ReActExecutor
-```
-
-这意味着：
-- 前端可以是任意 HTTP 客户端——浏览器、curl、Postman
-- 标准 SSE 协议，无需自定义传输层
-- 独立部署：API 服务器可作为常驻服务运行
-
-### 4. 双层次沙箱架构
-
-三个设计层次，而非一个：
-
-| 层 | 文件 | 作用 |
-|-----|------|------|
-| **工具路由** | [sandbox/tools.py](src/nanodeer/sandbox/tools.py) | SandboxExecTool 在工厂组装时包装 9 个工具，透明路由到 Docker 或 Local |
-| **路径翻译** | [sandbox/path.py](src/nanodeer/sandbox/path.py) | 虚拟 `/mnt/user-data/...` ↔ 物理 `{base_path}/{exec_id}/user-data/...`，防路径穿越 |
-| **安全审计** | [react.py](src/nanodeer/agent/react.py) | `_bash_safe()` 内联函数审计 bash 命令，阻断高危模式 |
-
-`glob` 和 `grep` 的路径参数按 path 校验/翻译，pattern 用 base64 传输；这样 Docker 和 Local fallback 都能正确处理 `/mnt/user-data/...`。
-
-### 5. 内联错误处理
-
-`_call_with_retry()` 在 LLM 调用层直接处理重试：
-- 指数退避 2s → 4s → 8s
-- 处理 429/5xx/asyncio.TimeoutError
-- 最大重试 3 次后上抛
-
-工具执行层的错误直接本地 try/except 处理，无需 middleware 路由。
-
----
-
-## 架构
-
-### 5 层架构总览
-```
-    ┌────────────────────────────────────────────────────────────────────────────────────┐
-    │ Layer 5: HTTP API — FastAPI + SSE                                                  │
-    │   api.py — /api/chat (SSE), /api/chat/cancel, /api/conversations                   │
-    │   repl.py — 异步 CLI REPL（调试用）                                                 │
-    └────────────────────────────────────────────────────────────────────────────────────┘
-                             │  调用 engine.run_streaming()
-                             ▼
-    ┌────────────────────────────────────────────────────────────────────────────────────┐
-    │ Layer 4: NanoEngine — 应用入口                                                      │
-    │   engine.py — 创建 ThreadState，调用 executor                                       │
-    │   应用层压缩在此处理，不在 middleware 中                                             │
-    └────────────────────────────────────────────────────────────────────────────────────┘
-                             │  调用 executor.run_streaming()
-                             ▼
-    ┌────────────────────────────────────────────────────────────────────────────────────┐
-    │ Layer 3: Execution Core                                                            │
-    │   react.py            — 原生 async ReAct 循环                                       │
-    │   context.py          — ContextManager                                              │
-    │   sandbox_manager.py  — Sandbox 生命周期管理                                       │
-    └────────────────────────────────────────────────────────────────────────────────────┘
-                             │  在执行循环中调用 tools
-                             ▼
-    ┌────────────────────────────────────────────────────────────────────────────────────┐
-    │ Layer 2: Capabilities                                                              │
-    │   tools/             — 内置工具与执行能力面                                         │
-    │   prompt.py          — Prompt 构建                                                 │
-    │   subagent/          — SubagentCoordinator                                         │
-    └────────────────────────────────────────────────────────────────────────────────────┘
-                             │  tools.invoke()
-                             ▼
-    ┌────────────────────────────────────────────────────────────────────────────────────┐
-    │ Layer 1: Persistence / Isolation / Data                                            │
-    │   sandbox/   — DockerSandboxProvider、Local fallback、路径翻译                      │
-    │   memory/    — 基于文件的 MemoryStore（3 层）                                       │
-    │   checkpoint/— SqliteCheckpointer 会话恢复                                          │
-    └────────────────────────────────────────────────────────────────────────────────────┘
-```
-### 执行流程
-
-```
-用户输入（CLI / Web UI）
-  ↓
-api.py 接收请求，转发给 NanoEngine
-  ↓
-NanoEngine.run_streaming() → ReActExecutor.run()
-  ↓
-┌─ 每轮交互 ───────────────────────────────────────────────────────────┐
-│ ① ContextManager.load()  — 并行：建目录 + 加载记忆/计划/上传          │
-│ ② SandboxManager.acquire() — 幂等获取沙箱（复用 _sandbox_context）    │
-│ ③ 健康检查 — 沙箱释放则终止                                          │
-│ ④ LLM.ainvoke() — 带重试的 LLM 调用                                  │
-│ ⑤ _check_clarification() — 内联检测 [CLARIFICATION] → WAIT          │
-│ ⑥ 工具循环（无工具调用则 END）:                                       │
-│    for tc in tool_calls:                                             │
-│      _bash_safe() 审计 — 内联阻断高危模式                              │
-│      tool.ainvoke() — SandboxExecTool 路由到 Docker 或 Local         │
-│ ⑦ Checkpointer.save() — 持久化状态                                   │
-│ END → SandboxManager.release()        │ PROCESS → 继续下一轮          │
-│ WAIT → 返回调用方，等待用户响应                                        │
-└──────────────────────────────────────────────────────────────────────┘
-  ↓
-checkpoint 保存 → 下一轮或 END
-```
-
-这个流程中可见的关键设计决策：
-- **内联非中间件**——bash 审计、clarification 检测、LLM 重试都是 react.py 里的内联函数，零间接
-- **沙箱释放只在 END**——`PROCESS` 时容器保持存活供下一轮复用
-- **ContextManager 并行加载**——目录/记忆/计划/上传由 `asyncio.create_task` 并行执行
-- **SandboxManager 幂等**——先检查 state → `_sandbox_context` → provider，最后才 acquire
-
-### 存储路径
-
-所有运行时数据存放在 `~/.nanodeer/` 下。
+## 存储布局
 
 ```
 ~/.nanodeer/
-├── memory/                  # Agent 维护的知识
-│   ├── USER.md              # 用户偏好和上下文（LLM 主动写入）
-│   ├── MEMORY.md            # 传统扁平记忆（LLM 主动写入）
-│   ├── wiki/entries/        # 结构化 wiki 条目（JSON，带标签）
-│   └── episodic/            # 会话日志（自动追加，按日期分文件）
-│
-├── plans/
-│   ├── {plan_id}.json      # 完整 Plan 文档（目标、步骤、状态）
-│   └── index.json          # Plan 索引（快速列表）
-│
+├── memory/                    # 核心: 扁平文件记忆 (USER.md + MEMORY.md)
 ├── threads/
-│   ├── threads.db           # SQLite — ThreadState 快照（可恢复会话）
-│   └── {thread_id}/         # 每线程沙箱（临时）
-│       └── user-data/       # 挂载到容器内 /mnt/user-data/
+│   ├── threads.db             # SQLite — 消息 + 元数据持久化
+│   └── {thread_id}/
+│       └── user-data/         # 挂载到沙箱容器的卷
 │           ├── workspace/
 │           ├── uploads/
 │           └── outputs/
-│
 └── conversations/
-    └── {thread_id}.json     # 元数据索引（thread_id + 标题，不含消息）
+    └── {thread_id}.json       # 前端索引 (标题, 时间戳)
 ```
 
-| 路径 | 是否持久 | 用途 |
-|------|---------|------|
-| `~/.nanodeer/memory/` | 是 | Agent 知识（USER/MEMORY/wiki/episodic） |
-| `~/.nanodeer/plans/` | 是 | Plans + 嵌入步骤 |
-| `~/.nanodeer/threads/{id}/` | 否（临时） | 沙箱工作目录 |
-| `~/.nanodeer/threads/threads.db` | 是 | SQLite 会话快照（可恢复） |
-| `~/.nanodeer/conversations/` | 是 | Web UI 会话索引（thread_id + 元数据） |
-
-### 信号与状态设计
-
-NanoDeer 使用两个生命周期不同的数据载体：
-
-**TurnSignals** — 单 turn 临时数据：
-
-| 信号 | 写入方 | 读取方 | 作用 |
-|------|--------|--------|------|
-| `clarification_question` | react.py `_check_clarification()` | App 层 | 显示问题给用户，WAIT |
-| `memory_context` | ContextManager._load_memory() | Prompt 构建器 | 注入记忆到 LLM 上下文 |
-| `plan_context` | ContextManager._load_plan() | Prompt 构建器 | 注入 plan + step 进度到 LLM 上下文 |
-| `uploaded_files_list` | ContextManager._scan_uploads() | Prompt 构建器 | 注入已上传文件信息 |
-
-**ThreadState** — 跨 turn 持久化：
-
-| 字段 | 作用 |
-|------|------|
-| `messages` | 完整对话历史（Human/AI/Tool） |
-| `next_action` | `PROCESS` → 继续循环；`WAIT` → 返回调用方；`END` → 终止 |
-| `title` | 会话标题（前端列表展示） |
-| `sandbox` | 容器状态（container_id、status，runtime only，不持久化） |
-
----
-
-## 设计原则
-
-1. **单向依赖**：Agent → Harness。Harness 不知道 Agent 的业务逻辑。
-2. **无 Middleware 链**：所有横切关注点都是内联函数或独立 Manager，零间接。
-3. **内联错误处理**：LLM 调用层 `_call_with_retry()` 负责重试，工具层 try/except 覆盖异常。
-4. **Compression 在 App 层**：触发时机由 NanoEngine 决定，不在 ReAct 循环内部自动触发。
-5. **Prompt 按需渲染**：只在数据存在且功能开关打开时渲染对应 section。
-6. **Sandbox + Host 双路径**：敏感操作走容器，`save_memory`/`create_plan`/`add_step` 直连宿主机。
-7. **原生 ReAct 循环**：无 LangGraph 依赖。直接 `while True` 串起重试、澄清、工具执行和收敛 guard。
-8. **混合持久化**：memory/plan 使用文件（可检查、可审计），checkpoint 使用 SQLite（高效查询）。
-
----
-
-
-## 工具
-
-| 工具 | 分类 | 沙箱 |
-|------|------|------|
-| `read_file`、`write_file`、`ls`、`glob`、`grep`、`edit_file` | 文件 | ✅ Docker/Local |
-| `bash`、`git`、`exec_python` | Shell | ✅ Docker/Local |
-| `web_search`、`web_fetch`、`read_image` | 外部 / 上传 | ❌ 宿主机 |
-| `save_memory`、`search_memory` | 记忆 | ❌ 宿主机 |
-| `create_plan`、`add_step`、`update_step`、`list_plans` | 计划 | ❌ 宿主机（直接写入） |
-| `spawn_subagent`、`get_subagent_results` | 子 Agent | ✅ 每个 worker 独立沙箱 |
-| `invoke_skill` | 技能 | ❌ 宿主机 |
-
----
-
-## 项目状态与路线图
-
-**当前（v0.1.0）** — 核心框架稳定：
-- ✅ 原生 ReAct 循环（无 middleware 链）
-- ✅ Docker + Local 沙箱 + 路径隔离
-- ✅ 20 个内置工具
-- ✅ 文件型 memory/wiki 和 plan 存储
-- ✅ SQLite checkpoint 持久化，用于会话恢复
-- ✅ HTTP SSE API（FastAPI）+ 会话管理接口
-- ✅ 图片上传从前端/API 桥接到 `read_image`
-- ✅ assistant-ui 前端（Next.js + assistant-ui），包含 Projects/Plans/Memory/Wiki 侧边栏摘要
-- ✅ SubagentCoordinator，受限只读 worker
-- ✅ 技能工作流加载
-- ✅ 结构化 trace events + 分层 deterministic evaluation suites
-
-**开发中 / 规划中：**
-
-| 模块 | 状态 |
-|------|------|
-| **LLM 重试**（指数退避，已实现内联） | ✅ 已完成 |
-| **Subagent 只读工具**（_SUBAGENT_SAFE_TOOLS，已实现） | ✅ 已完成 |
-| 前端体验和 workspace 视图打磨 | 🔄 进行中 |
-| Plan/Memory/Wiki 详情页连接后端 API | 🔄 进行中 |
-| 外部 benchmark adapters（优先 Harbor / Terminal-Bench 2.0） | 🔄 初始适配 |
-| **长程任务链路** | 📝 规划 |
-|　├─ 焦点驱动上下文 | 📝 规划 |
-|　├─ 执行预算感知 | 📝 规划 |
-|　├─ 错误分析 + 经验提取 | 📝 规划 |
-|　├─ 会话反思 | 📝 规划 |
-|　└─ Plan-Memory 桥接（step 自判断 → wiki 沉淀） | 📝 规划 |
-| IM 机器人集成（飞书/企业微信） | 📝 规划 |
-| 多模型对比基准测试 | 📝 规划 |
-
----
-
-## 设计灵感来源
-
-| 来源 | 给我的启发 |
-|------|-----------|
-| **DeerFlow** | 中间件链 + 状态机设计思路；`next_action` 信号路由 |
-| **Claude Code** | 工具优先、clarification 驱动；`<clarification>` 标签暂停执行 |
-| **OpenClaw** | L1-L4 分层记忆；LLM 通过 `save_memory` 主动维护 wiki 结构化知识 |
-| **NanoClaw** | Docker 沙箱隔离；每线程独享容器、卷挂载、路径映射 |
+外接模块 (subagent, plan, wiki, layers) 使用时会创建额外目录，但核心模块默认不引用它们。
 
 ---
 
@@ -621,6 +341,19 @@ NanoDeer 使用两个生命周期不同的数据载体：
 
 [Andrej Karpathy](https://github.com/karpathy) —— [LLM wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) 概念的提出者，启发了本项目的 wiki 记忆系统：让 LLM 自主策展结构化知识库。
 
-## 许可证
+---
 
-本项目开源，基于 [MIT 许可证](LICENSE)。
+## 设计参考
+
+| 来源 | 参考的模式 |
+|------|-----------|
+| **DeerFlow** | 状态机 + `next_action` 信号路由 |
+| **Claude Code** | 工具优先设计、`[CLARIFICATION]` 澄清标签 |
+| **OpenClaw** | 分层记忆、Wiki 结构化知识 |
+| **NanoClaw** | Docker 沙箱、Volume mount、路径隔离 |
+
+---
+
+## License
+
+MIT

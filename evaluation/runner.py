@@ -21,9 +21,8 @@ from typing import Any
 
 import yaml
 
-from nanodeer.agent.factory import RuntimeFeatures
 from nanodeer.config import HarnessConfig, reset_config
-from nanodeer.engine import NanoEngine, RunResult
+from nanodeer.engine import NanoEngine, RunResult, RuntimeFeatures
 
 from .judges import evaluate_assertions
 from .reporters.json_reporter import write_json_report

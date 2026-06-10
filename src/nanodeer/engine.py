@@ -16,16 +16,41 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator
 
+"""NanoEngine — thin execution wrapper around ReActExecutor.
+
+Usage::
+
+    from nanodeer.engine import NanoEngine
+    from nanodeer.config import get_config
+
+    engine = NanoEngine(get_config())
+    result = await engine.run("Analyze this file")
+"""
+
+import asyncio
+import logging
+import time
+import uuid
+from dataclasses import dataclass, field
+from typing import Any, AsyncGenerator
+
 from langchain_core.messages import SystemMessage, HumanMessage as LCHumanMessage
 
 from .agent.state import NextAction, ThreadState
 from .agent.messages import HumanMessage, AIMessage
 from .config import HarnessConfig
-from .agent.factory import create_nanodeer_agent, RuntimeFeatures
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["NanoEngine", "RunResult"]
+__all__ = ["NanoEngine", "RunResult", "RuntimeFeatures"]
+
+
+@dataclass
+class RuntimeFeatures:
+    """Feature gates for NanoDeer agent assembly."""
+    sandbox: bool = True
+    prompt_profile: str = "default"
+    prompt_memory: bool = True
 
 
 @dataclass
@@ -135,10 +160,9 @@ class NanoEngine:
         self._sandbox_provider = sandbox_provider
         self._generate_titles = generate_titles
         self._executor = None
-        self._compression_mw = None
 
     def _get_executor(self):
-        """Lazy-load ReAct executor and compression middleware."""
+        """Lazy-build ReActExecutor with all its dependencies inline."""
         if self._executor is None:
             llm = _create_llm(self.config, self._model_name)
             if self._checkpointer is None:
@@ -149,13 +173,47 @@ class NanoEngine:
             if display_name is None:
                 cfg = self.config.agents.defaults
                 display_name = f"{cfg.provider}/{cfg.model}"
-            self._executor, self._compression_mw = create_nanodeer_agent(
-                model=llm,
-                tools=self._tools,
-                features=self._features,
+
+            from nanodeer.tools import default_tools
+            from nanodeer.agent.memory.storage import MemoryStore
+            from nanodeer.agent.context import ContextManager
+            from nanodeer.agent.sandbox_manager import SandboxManager
+            from nanodeer.agent.prompt import PromptConfig
+            from nanodeer.agent.react import ReActExecutor
+
+            feat = self._features or RuntimeFeatures()
+            tools = self._tools or default_tools()
+
+            # Sandbox setup
+            sandbox_provider = self._sandbox_provider
+            if feat.sandbox and sandbox_provider is None:
+                from nanodeer.sandbox import create_sandbox_provider
+                sandbox_provider = create_sandbox_provider()
+
+            sandbox_mgr = None
+            if feat.sandbox:
+                sandbox_mgr = SandboxManager(provider=sandbox_provider)
+
+            # Wrap sandbox-aware tools for execution
+            wrapped_tools = None
+            if sandbox_provider:
+                from nanodeer.sandbox.tools import wrap_tool_for_sandbox
+                wrapped_tools = [wrap_tool_for_sandbox(t, sandbox_provider) or t for t in tools]
+
+            context_mgr = ContextManager(memory_store=MemoryStore())
+
+            self._executor = ReActExecutor(
+                llm=llm,
+                tools=tools,
+                wrapped_tools=wrapped_tools,
+                prompt_config=PromptConfig(
+                    profile=feat.prompt_profile,
+                    memory=feat.prompt_memory,
+                ),
                 checkpointer=self._checkpointer,
                 model_name=display_name,
-                sandbox_provider=self._sandbox_provider,
+                context_manager=context_mgr,
+                sandbox_manager=sandbox_mgr,
             )
         return self._executor
 
@@ -204,12 +262,6 @@ class NanoEngine:
         # Fire-and-forget title generation for new or untitled conversations
         if self._generate_titles and final_state.thread_id and (is_new or not final_state.title):
             asyncio.create_task(self._generate_and_save_title(final_state))
-
-        # App-layer compression after turn completes
-        if self._compression_mw is not None:
-            compressed = self._compression_mw.compress(final_state.messages)
-            if compressed is not None:
-                final_state.messages = compressed
 
         end_ms = int(time.time() * 1000)
         return self._extract_result(final_state, events, thread_id, end_ms - start_ms)

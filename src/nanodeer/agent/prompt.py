@@ -18,9 +18,6 @@ if TYPE_CHECKING:
 class PromptConfig:
     profile: str = "default"
     memory: bool = True
-    plan: bool = True
-    skills: bool = True
-    subagent: bool = True
 
 
 _IDENTITY_CORE = """Act on requests directly — don't ask for confirmation unless the instruction is ambiguous or dangerous.
@@ -46,11 +43,8 @@ Tool choice:
 - read_file > glob for known file paths; glob is for discovery in sandbox only
 - Built-in tools (read_file, write_file, ls, glob, grep) preferred over bash equivalents
 - Use bash for compile, run, install, git operations
+- Bash commands: use full paths, avoid shell chaining (&&, ;, ||, |, >, <, \`, $()) that gets blocked by security audit. Do ONE thing per bash call.
 - web_search returns snippets — if you need more detail, use web_fetch to open a specific URL"""
-
-_SKILLS_SHORT = "Use invoke_skill(skill_name) to load skill workflows."
-
-_SUBAGENT_SHORT = "Use spawn_subagent(task) for parallel execution (max 3 concurrent). Use get_subagent_results() to collect results."
 
 _MEMORY_SHORT = """Use save_memory to persist knowledge across conversations.
 Use search_memory to find relevant entries from past conversations.
@@ -58,8 +52,6 @@ Use search_memory to find relevant entries from past conversations.
 Targets:
 - target="user" → USER.md. Personal info: name, profession, preferences, habits.
 - target="memory" → MEMORY.md. Flat notes, facts, cross-session context.
-- target="wiki/<category>/<name>" → Structured wiki. Project docs, code conventions, domain knowledge.
-  Examples: "wiki/project/lang", "wiki/dev/coding_style".
 
 Save: technical decisions, conventions, project context, user preferences.
 Don't save: ephemeral task details, status updates, transient context."""
@@ -112,14 +104,6 @@ def _benchmark_identity_section(model_name: str = "") -> str:
     )
 
 
-def _skills_section() -> str:
-    return f"<skills>\n{_SKILLS_SHORT}\n</skills>"
-
-
-def _subagent_section() -> str:
-    return f"<subagent>\n{_SUBAGENT_SHORT}\n</subagent>"
-
-
 def _working_directory_section() -> str:
     return """<working_directory>
 Sandbox (writable — glob/ls/grep/bash scope):
@@ -155,10 +139,6 @@ def _memory_section(memory_context: str) -> str:
     return f"<memory>\n{memory_context}\n</memory>"
 
 
-def _plan_section(plan_context: str) -> str:
-    return f"<plan>\n{plan_context}\n</plan>"
-
-
 def build_base_system_prompt(
     config: PromptConfig | None = None,
     model_name: str = "",
@@ -181,10 +161,6 @@ def build_base_system_prompt(
             _identity_section(model_name),
             _working_directory_section(),
         ]
-    if config.skills:
-        sections.append(_skills_section())
-    if config.subagent:
-        sections.append(_subagent_section())
     if config.memory:
         sections.append(_memory_instructions_section())
 
@@ -199,11 +175,11 @@ def build_lead_agent_prompt(
 ) -> str:
     """Build full prompt: cached static base + fresh dynamic injection.
 
-    Static base (identity + skills + subagent + working_dir + output)
+    Static base (identity + working_dir + memory instructions)
     built once and cached in state.system_prompt. Tool schemas are
     provided natively via llm.bind_tools().
 
-    Dynamic content (plan + memory + uploaded_files + date) built fresh each turn.
+    Dynamic content (memory + uploaded_files + date) built fresh each turn.
     """
     if config is None:
         config = PromptConfig()
@@ -212,8 +188,6 @@ def build_lead_agent_prompt(
         state.system_prompt = build_base_system_prompt(config, model_name)
 
     dynamic = []
-    if config.plan and signals and signals.plan_context:
-        dynamic.append(_plan_section(signals.plan_context))
     if config.memory and signals and signals.memory_context:
         dynamic.append(_memory_section(signals.memory_context))
     if signals and signals.uploaded_files_list:

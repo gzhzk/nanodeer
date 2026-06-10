@@ -2,15 +2,14 @@
 
 # NanoDeer
 
-**A Lightweight Agent Harness for Building, Running, and Evaluating LLM Agents**
+**A Reference Implementation for Agent Runtime Engineering**
 
 [![MIT License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 [![Python 3.13](https://img.shields.io/badge/Python-3.13-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.135-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![Docker](https://img.shields.io/badge/Docker-optional-2496ED?style=flat-square&logo=docker&logoColor=white)](https://docker.com)
-[![Version 0.1.0](https://img.shields.io/badge/Version-0.1.0-orange?style=flat-square)](https://github.com/gzhzk/nanodeer)
 
-Runtime · Tool Use · Memory · Sandbox · Checkpoint
+ReAct Loop · Tool Use · Sandbox · Checkpoint · Memory · SSE Streaming
 
 *Exploring the runtime behind LLM agents.*
 
@@ -20,298 +19,9 @@ English | [中文](./README_zh.md)
 
 ---
 
-NanoDeer is a lightweight runtime harness for building, running, and evaluating LLM applications and agents.
+NanoDeer is an open-source reference implementation for agent runtime engineering — not another product competing with Claude Code or Cursor, but a walkthrough that takes the agent runtime apart and shows how each core pattern is implemented.
 
-Unlike workflow-oriented frameworks that focus on orchestration, NanoDeer focuses on runtime engineering: how an agent reasons, acts, remembers, recovers, and interacts with tools.
-
-Instead of relying on workflow graphs or middleware chains, NanoDeer implements its own runtime primitives: ReAct execution, tool routing, memory, sandboxing, and checkpoint recovery.
-
-NanoDeer serves both as a practical agent framework and a playground for exploring agent runtime design.
-
-Core Capabilities:
-- Native async ReAct runtime with streaming HTTP SSE chat and conversation management.
-- Tool routing with Docker-first sandbox execution and Local fallback.
-- File-backed memory, wiki, and plan tools with inspectable storage.
-- SQLite checkpoint recovery and structured trace events.
-- Layered evaluation harness for regression testing.
-- Next.js assistant-ui frontend and an image upload bridge to `read_image`.
-
-Core Path:
-
-```text
-HTTP / UI
-  ↓
-NanoEngine
-  ↓
-ReActExecutor
-  ↓
-Tools / Sandbox
-  ↓
-Memory / Plan
-  ↓
-Checkpoint
-```
-
-## Table of Contents
-
-- [Project Structure](#project-structure)
-- [Quick Start](#quick-start)
-- [Background](#background)
-- [Key Differentiators](#key-differentiators)
-- [Architecture](#architecture)
-  - [5-Layer Overview](#5-layer-overview)
-  - [Execution Flow](#execution-flow)
-  - [Storage Paths](#storage-paths)
-  - [Signal & State Design](#signal--state-design)
-- [Design Principles](#design-principles)
-- [Tools](#tools)
-- [Project Status & Roadmap](#project-status--roadmap)
-- [Design Inspirations](#design-inspirations)
-- [Acknowledgments](#acknowledgments)
-- [License](#license)
-
----
-
-## Project Structure
-
-```
-nanodeer/
-├── pyproject.toml           # Build config, entry points, dependencies
-├── config.yaml              # Runtime config (LLM, sandbox, memory, thread…)
-├── config.yaml.example      # Template — copy to config.yaml and edit
-├── .env.example             # Template for API keys — copy to .env and fill in
-├── .gitignore               # Git ignore rules
-├── LICENSE                  # MIT License
-├── AGENTS.md                # Agent workflow documentation
-├── README.md                # This file (English)
-├── README_zh.md             # 中文版文档
-│
-├── scripts/
-│   ├── dev.sh               # One-command launch: backend + frontend
-│   └── check.sh             # Run tests + lint
-│
-├── src/nanodeer/            # Backend source (Python)
-│   ├── cli/
-│   │   ├── api.py           # Layer 5: FastAPI + SSE HTTP server
-│   │   └── repl.py          # Layer 5: Debug REPL
-│   ├── engine.py            # Layer 4: NanoEngine — Application scheduler
-│   ├── agent/
-│   │   ├── factory.py       # Layer 3-4 bridge: NanoDeerFactory assembler
-│   │   ├── react.py         # Layer 3: ReActExecutor — main loop (core)
-│   │   ├── state.py         # ThreadState / TurnSignals data models
-│   │   ├── context.py       # Layer 3: ContextManager — context assembly
-│   │   ├── prompt.py        # Layer 2: Static+dynamic dual-layer prompt builder
-│   │   ├── sandbox_manager.py # Layer 3: Sandbox lifecycle manager
-│   │   ├── compression.py   # Layer 4½: Conversation compression
-│   │   ├── trace.py         # Runtime observability (structured events)
-│   │   ├── checkpoint/      # Layer 1: SQLite session persistence
-│   │   └── memory/          # Layer 1: File-based layered memory (L1-L4)
-│   ├── sandbox/
-│   │   ├── __init__.py      # SandboxProvider ABC + module-level context
-│   │   ├── docker.py        # Docker sandbox provider
-│   │   ├── local.py         # Local subprocess fallback
-│   │   ├── path.py          # Virtual→physical path translation + security
-│   │   └── tools.py         # SandboxExecTool — routes tools into container
-│   ├── tools/               # Built-in tool definitions (20 tools)
-│   ├── subagent/            # Semaphore-based subagent coordinator
-│   ├── plan/                # File-based JSON plan storage
-│   ├── skills/              # .md skill loading system
-│   ├── integrations/        # Optional benchmark / external harness adapters
-│   └── config.py            # Pydantic config model + global singleton
-│
-├── frontend/                # Web UI (Next.js + assistant-ui)
-│   ├── app/                 # Next.js App Router pages
-│   ├── components/          # React components (chat, sidebar, settings)
-│   ├── lib/                 # Frontend utilities and API client
-│   ├── hooks/               # Custom React hooks
-│   ├── package.json         # Node dependencies
-│   ├── next.config.ts       # Next.js configuration
-│   ├── tsconfig.json        # TypeScript configuration
-│   ├── biome.json           # Linter/formatter config
-│   ├── postcss.config.mjs   # PostCSS configuration
-│   ├── components.json      # shadcn/ui component registry
-│   └── .env.example         # Frontend environment template
-│
-├── sandbox/                 # Docker sandbox image build
-│   ├── Dockerfile           # Minimal Python 3.11 sandbox image
-│   ├── build.sh             # Image build script
-│   └── README.md            # Sandbox setup guide (Chinese)
-│
-├── tests/                   # Python test suite
-│   ├── conftest.py          # Shared pytest fixtures
-│   ├── test_agent/          # ReAct executor & state tests
-│   ├── test_agent_memory/   # Memory system tests
-│   ├── test_cli/            # API endpoint & REPL tests
-│   ├── test_integration/    # End-to-end integration tests
-│   ├── test_plan/           # Plan storage tests
-│   ├── test_sandbox/        # Sandbox provider tests
-│   ├── test_skills/         # Skill loader tests
-│   ├── test_subagents/      # Subagent coordinator tests
-│   ├── test_evaluation/     # Evaluation task tests
-│   └── test_tools_integration/ # Tool execution integration tests
-│
-├── evaluation/              # Evaluation harness and task suites
-│   ├── runner.py            # Evaluation runner
-│   ├── tasks/contracts/     # Runtime/API/trace protocol checks
-│   ├── tasks/capabilities/  # Tool and module capability checks
-│   ├── tasks/behaviors/     # Agent behavior and policy checks
-│   ├── tasks/scenarios/     # End-to-end workflow checks
-│   ├── judges.py            # Deterministic assertion evaluators
-│   ├── reporters/           # Output reporters (JSON, etc.)
-│   └── fixtures/            # Evaluation data fixtures
-│
-├── docs/                    # Design documentation (Chinese)
-│   ├── nanodeer_blueprint_20260401.md  # Project blueprint
-│   ├── runtime_architecture.md        # Runtime architecture
-│   ├── harness_architecture.md        # Harness architecture
-│   ├── memory_design.md               # Memory system design
-│   ├── sandbox_design.md              # Sandbox design
-│   ├── subagent_design.md             # Subagent design
-│   ├── plan_design.md                 # Plan system design
-│   ├── tools_design.md                # Tools design
-│   ├── skills_design.md               # Skills design
-│   ├── prompt_design.md               # Prompt engineering design
-│   ├── observability_design.md        # Observability & tracing
-│   ├── benchmark_integrations.md      # Harbor/TB2 benchmark adapter design
-│   ├── evaluation_harness.md          # Layered evaluation harness
-│   ├── evaluation_plan.md             # Evaluation plan
-│   ├── long_horizon_design.md         # Long-horizon task design
-│   ├── refactoring_journey.md         # Refactoring journey notes
-│   └── ref/                           # Reference architecture reports
-│
-├── examples/                # Usage examples (coming soon)
-│
-├── .agents/                 # Agent orchestration configs (internal)
-├── .codex/                  # Codex metadata (internal)
-└── .claude/                 # Claude Code project settings (internal)
-```
-
----
-
-## Quick Start
-
-### Environment Requirements
-
-| Dependency        | Version         | Required | Notes                                                  |
-|-------------------|-----------------|----------|--------------------------------------------------------|
-| **OS**            | Linux / macOS   | ✅       | WSL2 recommended on Windows                            |
-| **Python**        | ≥ 3.10          | ✅       | 3.11+ preferred; sandbox Docker image uses 3.11        |
-| **Node.js**       | ≥ 18            | ⚠️       | Only needed for frontend development                   |
-| **npm**           | (comes w/ Node) | ⚠️       | Frontend dependency management                         |
-| **Docker**        | ≥ 24.0          | ⚠️       | Required for sandbox isolation; Local fallback works without |
-| **curl**          | any             | ⚠️       | Required by dev/check scripts                          |
-| **LLM API Key**   | —               | ✅       | At least one provider (Anthropic, OpenAI, MiniMax, DeepSeek…) |
-| **RAM**           | ≥ 4 GB          | —        | 8 GB+ recommended when running frontend + backend      |
-| **Disk**          | ≥ 1 GB free     | —        | For .venv, node_modules, and runtime data              |
-
-✅ Required &emsp; ⚠️ Optional (missing features degrade gracefully) &emsp; — Informational
-
-**Supported LLM Providers:** Anthropic, OpenAI, DeepSeek, MiniMax, SiliconFlow, Zhipu (GLM), DashScope (Qwen), Moonshot (Kimi), Google Gemini, Groq, OpenRouter, Ollama (local).
-
-### Install
-
-```bash
-git clone https://github.com/gzhzk/nanodeer
-cd nanodeer
-
-cp .env.example .env
-# Edit .env with your API key
-
-pip install -e .
-```
-
-### Run
-
-```bash
-# Start backend API + frontend dev server
-./scripts/dev.sh
-# Frontend: http://127.0.0.1:20265
-# Backend:  http://127.0.0.1:20266
-```
-
-### Check
-
-```bash
-# Run Python tests and frontend lint when dependencies are installed
-python -m pip install -e '.[dev]'
-./scripts/check.sh
-
-# Run a focused Python test file
-./scripts/check.sh tests/test_agent/test_react.py
-```
-
-### Benchmark Adapter Smoke
-
-NanoDeer includes an optional benchmark side path for harnesses such as Harbor /
-Terminal-Bench 2.0. This path keeps the normal API/UI runtime unchanged while
-running the same ReAct loop in a benchmark workspace.
-
-Local smoke test without Harbor, Docker, or Terminal-Bench images:
-
-```bash
-mkdir -p /tmp/nanodeer-smoke-workdir /tmp/nanodeer-smoke-logs
-printf '%s\n' \
-  'Create hello.txt containing exactly: NANODEER_BENCH_SMOKE_OK' \
-  > /tmp/nanodeer-smoke.md
-
-nanodeer-bench-run \
-  --instruction-file /tmp/nanodeer-smoke.md \
-  --workdir /tmp/nanodeer-smoke-workdir \
-  --logs-dir /tmp/nanodeer-smoke-logs \
-  --timeout-seconds 120
-```
-
-The runner writes task files in `--workdir` and emits `run_result.json`,
-`final.txt`, NanoDeer trace JSONL, and an ATIF-style `trajectory.json` under
-`--logs-dir`.
-
-Harbor / Terminal-Bench 2.0 is intentionally separate: install Harbor and run it
-on a Docker-capable machine, preferably remote with large disk space for task
-images and build cache. The custom agent import path is:
-
-```text
-nanodeer.integrations.harbor.agent:NanoDeerHarborAgent
-```
-
-See [docs/benchmark_integrations.md](docs/benchmark_integrations.md) for the
-adapter architecture and rollout notes.
-
-For manual debugging:
-
-```bash
-# Terminal 1: HTTP API server
-.venv/bin/python -m nanodeer.cli.api
-
-# Terminal 2: frontend
-cd frontend
-npm run dev
-
-# Optional CLI REPL
-nanodeer-repl
-```
-
-### Frontend
-
-```bash
-cd frontend
-npm install
-
-# Pre-build CSS (required once, re-run when changing src/app/globals.css)
-npm run build:css
-
-# Start dev server
-npm run dev
-# Opens at http://127.0.0.1:20265
-```
-
-The frontend proxies `/api/*` to the backend at `http://127.0.0.1:20266`.
-
-### Configuration
-
-Edit `config.yaml` to configure:
-- LLM provider (MiniMax, Anthropic, OpenAI, SiliconFlow, etc.)
-- Sandbox settings (Docker image, network mode)
-- Thread storage paths
+At its core is a straightforward ReAct loop — no middleware chain, no graph DSL, no framework lock-in. Each core module demonstrates exactly one pattern. Non-core modules (subagent, plan, skills, wiki, layers) are kept as **extensions** — the code stays on disk but is not in the default load path.
 
 ---
 
@@ -327,288 +37,302 @@ The story might have ended there. But on the last evening of March, I attended B
 
 ---
 
-## Key Differentiators
+## Design Philosophy
 
-NanoDeer is a lightweight Agent harness built from scratch. What makes it different from LangGraph, CrewAI, and AutoGen:
+### 1. No middleware chain
 
-### 1. No LangGraph — Native ReAct Loop
+Most agent frameworks route cross-cutting concerns as pre/post hooks. NanoDeer does **none of that**. Every concern is handled inline in the ReAct loop or via standalone Managers:
 
-No graph compilation, no nodes, no edges. Just a pure `while True` async loop with inline orchestration:
+| Concern | Implementation |
+|---------|---------------|
+| Context loading | `ContextManager.load()` — parallel I/O |
+| Sandbox lifecycle | `SandboxManager.acquire()/release()` — idempotent |
+| Bash audit | `_bash_safe()` — inline regex, blocks dangerous patterns |
+| LLM retry | `_call_with_retry()` — exponential backoff for 429/5xx/timeout |
+| Clarification | `_check_clarification()` — checks `[CLARIFICATION]` tag |
+| Convergence guard | Repeated identical tool calls capped, max turn limit |
 
-```
-ContextManager.load() → SandboxManager.acquire() → LLM.ainvoke()
-→ Clarification check → [Tool loop + bash audit] → Checkpoint → loop or end
-```
+This means you can read the entire execution path in [react.py](src/nanodeer/agent/react.py) and understand control flow without learning a graph DSL.
 
-This is not a simplification for its own sake — it means you can read the entire execution path in one file ([react.py](src/nanodeer/agent/react.py)), debug with standard Python tooling, and understand control flow without learning a graph DSL. No hidden state, no opaque serialization, no framework lock-in.
+### 2. Core + Extension split
 
-### 2. Inline Orchestration + `WAIT` Interception
+The project is explicitly divided into two layers:
 
-Most Agent frameworks route middleware as pre/post hooks around the LLM call. NanoDeer **has no middleware chain** — all cross-cutting concerns are inline functions or standalone Managers:
+- **Core** (always loaded): ReAct loop, 8 tools, checkpoint, flat-file memory, sandbox, SSE API
+- **Extension** (on disk, not default): subagent, plan, skills, wiki, memory layers, 12 additional tools
 
-| Mechanism | Implementation |
-|-----------|---------------|
-| `WAIT` | `_check_clarification()` inline checks `[CLARIFICATION]` tag, sets `next_action = WAIT` |
-| Context loading | `ContextManager.load()` parallel-executes: mkdir, memory load, plan load, upload processing |
-| Sandbox lifecycle | `SandboxManager.acquire()/release()` idempotent container lifecycle management |
-| Bash audit | `_bash_safe()` inline regex, blocks dangerous patterns |
-| LLM retry | `_call_with_retry()` exponential backoff for 429/5xx/timeout |
-| Loop convergence | repeated identical tool calls and max-turn guard synthesize a final answer instead of spinning forever |
+This was a deliberate cleanup from an earlier version that loaded everything by default. Keeping extension code on disk means exploration work isn't wasted — it's just not in the critical path. Users who need those patterns can activate them manually.
 
-### 3. HTTP SSE API
+### 3. Why only bash goes through the sandbox
 
-NanoDeer exposes a FastAPI server with Server-Sent Events for real-time streaming. The frontend (assistant-ui) connects via standard HTTP SSE — no custom protocols, no process management.
+File tools (read/write/edit) run on the host because workspace directories are **volume-mounted** into the container — both host and container see the same files. Only bash needs to execute inside the container to isolate arbitrary command execution. This simplifies the sandbox wrapper from 263 lines (with per-tool templates, base64 encoding, and virtual path translation) to 40 lines.
 
-```
-Browser (assistant-ui)  ── HTTP SSE ──  api.py  ──  NanoEngine  ──  ReActExecutor
-```
+### 4. Why flat-file memory
 
-This means:
-- Frontend can be any HTTP client — browser, curl, Postman
-- Standard SSE protocol, no custom transport
-- Independent deployment: API server can run as a service
+The original L1-L4 layered memory model (episodic → semantic → wiki → user) was a beautiful concept but added complexity disproportionate to its practical value. The simplified version uses two flat files: `USER.md` for preferences and `MEMORY.md` for facts. The layered model remains as an extension for those who want it.
 
-### 4. Dual-Layer Sandbox Architecture
+### 5. Why ToolManager was replaced with a dict
 
-Three design layers, not one:
+The original `ToolManager` + `groups.py` system handled progressive tool exposure (core tools first, request more via `request_tools()` meta-tool). This solved a problem that doesn't exist for modern LLMs — they handle 20 tools just fine. The dict lookup is simpler, has zero dependencies, and is immediately readable.
 
-| Layer | File | Role |
-|-------|------|------|
-| **Tool Routing** | [sandbox/tools.py](src/nanodeer/sandbox/tools.py) | SandboxExecTool wraps 9 tools at factory assembly, routes to Docker or Local transparently |
-| **Path Translation** | [sandbox/path.py](src/nanodeer/sandbox/path.py) | Virtual `/mnt/user-data/...` ↔ physical `{base_path}/{exec_id}/user-data/...`, traversal-protected |
-| **Security Audit** | [react.py](src/nanodeer/agent/react.py) | `_bash_safe()` inline regex audits commands, blocks dangerous patterns |
+### 6. Why factory was merged into engine
 
-For `glob` and `grep`, paths are validated/transformed as paths while patterns are base64-encoded. This keeps Docker and Local fallback behavior aligned for `/mnt/user-data/...`.
+`NanoDeerFactory` was a thin assembly layer that forwarded parameters from `NanoEngine` to `ReActExecutor`. One fewer indirection layer means less code to read when tracing how the executor is built.
+
+### 7. Reference implementation, not product
+
+This is the most important decision. NanoDeer does not compete with Claude Code, Cursor, Aider, or Continue. It exists to be **read** — to show how agent runtimes work, to be forked and modified, to serve as teaching material. The value is in the clarity of the code and the reasoning behind each design choice, not in the feature count.
 
 ---
 
-## Architecture
-
-### 5-Layer Overview
+## Core Architecture
 
 ```
-    ┌────────────────────────────────────────────────────────────────────────────────────┐
-    │ Layer 5: HTTP API — FastAPI + SSE                                                  │
-    │   api.py — /api/chat (SSE), /api/chat/cancel, /api/conversations                   │
-    │   repl.py — Async CLI REPL for debugging                                           │
-    └────────────────────────────────────────────────────────────────────────────────────┘
-                             │  calls engine.run_streaming()
-                             ▼
-    ┌────────────────────────────────────────────────────────────────────────────────────┐
-    │ Layer 4: NanoEngine — Application Entry                                            │
-    │   engine.py — creates ThreadState, calls executor                                  │
-    │   App-layer compression lives here, not in middleware                              │
-    └────────────────────────────────────────────────────────────────────────────────────┘
-                             │  calls executor.run_streaming()
-                             ▼
-    ┌────────────────────────────────────────────────────────────────────────────────────┐
-    │ Layer 3: Execution Core                                                            │
-    │   react.py   — Native async ReAct loop                                             │
-    │   context.py — ContextManager                                                      │
-    │   sandbox_manager.py — Sandbox lifecycle                                           │
-    └────────────────────────────────────────────────────────────────────────────────────┘
-                             │  invokes tools through the execution loop
-                             ▼
-    ┌────────────────────────────────────────────────────────────────────────────────────┐
-    │ Layer 2: Capabilities                                                              │
-    │   tools/     — Built-in tools and execution surfaces                               │
-    │   prompt.py  — Prompt construction                                                 │
-    │   subagent/  — SubagentCoordinator                                                 │
-    └────────────────────────────────────────────────────────────────────────────────────┘
-                             │  tools.invoke()
-                             ▼
-    ┌────────────────────────────────────────────────────────────────────────────────────┐
-    │ Layer 1: Persistence / Isolation / Data                                            │
-    │   sandbox/   — DockerSandboxProvider, Local fallback, path translation             │
-    │   memory/    — File-based MemoryStore (3 tiers)                                    │
-    │   checkpoint/— SqliteCheckpointer for session resume                               │
-    └────────────────────────────────────────────────────────────────────────────────────┘
+                      ┌──────────────────────────────┐
+                      │      CLI / API / SSE         │
+                      │  cli/api.py · cli/repl.py    │
+                      └──────────┬───────────────────┘
+                                 │
+                      ┌──────────▼───────────────────┐
+                      │  NanoEngine (engine.py)      │
+                      │  — LLM provider routing      │
+                      │  — Thread state create/resume│
+                      │  — Inline executor assembly  │
+                      └──────────┬───────────────────┘
+                                 │
+                      ┌──────────▼───────────────────┐
+                      │  ReActExecutor (react.py)    │
+                      │  1. ContextManager.load()    │
+                      │  2. SandboxManager.acquire() │
+                      │  3. LLM.ainvoke() + retry    │
+                      │  4. Clarification check      │
+                      │  5. Tool loop (bash audit)   │
+                      │  6. Checkpoint.save()        │
+                      └──────────────────────────────┘
 ```
 
-### Execution Flow
+**The 10 core patterns:**
 
-```
-User Input (HTTP / CLI REPL / Web UI)
-  ↓
-api.py receives HTTP POST /api/chat, calls NanoEngine
-  ↓
-NanoEngine.run_streaming() → ReActExecutor.run()
-  ↓
-┌─ ContextManager.load() (parallel I/O) ────────────────────────────────────┐
-│  _ensure_dirs()    Creates {thread_id}/user-data/{workspace,uploads,outputs} │
-│  _load_memory()    MemoryLayers.inject() — L1-L4 layered memory           │
-│  _load_plan()      Loads plans and step progress into context             │
-│  _process_uploads  Writes uploaded files to uploads/                      │
-└──────────────────────────────────────────────────────────────────────────┘
-  ↓
-┌─ SandboxManager.acquire() (idempotent) ──────────────────────────────────┐
-│  Checks state.sandbox → reuses or acquires fresh container               │
-└──────────────────────────────────────────────────────────────────────────┘
-  ↓
-LLM.ainvoke(prompt + messages)  ← with _call_with_retry() on 429/5xx/timeout
-  ↓
-┌─ _check_clarification() (inline) ────────────────────────────────────────┐
-│  Detects [CLARIFICATION] tag → sets WAIT → return to user                │
-└──────────────────────────────────────────────────────────────────────────┘
-  ↓
-[no tool_calls? → END → checkpoint + absorb → break]
-  ↓
-for each tool_call (individually, not batched):
-  ┌─ _bash_safe() (inline audit) ──────────────────────────────────────────┐
-  │  Hard blocks: shell metachar, rm -rf /, curl|bash                      │
-  │  Warns on: pip install, chmod 777                                      │
-  └────────────────────────────────────────────────────────────────────────┘
-  ↓
-  tool.ainvoke(args)  ← SandboxExecTool routes to Docker or Local
-  ↓  (try/except catches ValidationError + generic errors)
-┌─ Persistence ────────────────────────────────────────────────────────────┐
-│  Checkpointer.save()  → SQLite (messages + thread metadata)              │
-│  ContextManager.absorb() → episodic log (auto-appended)                  │
-└──────────────────────────────────────────────────────────────────────────┘
-  ↓
-PROCESS → next turn    END → SandboxManager.release() + break
-```
-
-Key design decisions visible in this flow:
-- **No middleware chain** — all cross-cutting concerns are inline functions or standalone Managers
-- **Sandbox release is END-only** — `PROCESS` keeps the container alive across turns
-- **SandboxManager.acquire() is idempotent** — checks `state.sandbox` before acquiring
-- **`save_memory` is not in SANDBOX_TOOL_CONFIGS** — runs on host naturally, no interception needed
-- **Checkpoint stores only messages + thread metadata** — system_prompt/sandbox/next_action reconstructed at runtime
-
-### Storage Paths
-
-All runtime data under `~/.nanodeer/`. Harness and App layers maintain separate subtrees.
-
-```
-~/.nanodeer/
-├── memory/                  # Agent-maintained knowledge
-│   ├── USER.md              # User preferences and context (LLM writes)
-│   ├── MEMORY.md            # Legacy flat-file memory (LLM writes)
-│   ├── wiki/entries/        # Structured wiki entries (JSON, tagged)
-│   └── episodic/            # Session logs (auto-appended, daily files)
-│
-├── plans/
-│   ├── {plan_id}.json      # Full Plan document (goal, steps, status)
-│   └── index.json          # Plan index for fast listing
-│
-├── threads/
-│   ├── threads.db           # SQLite — ThreadState snapshots (resumable)
-│   └── {thread_id}/         # Per-thread sandbox (ephemeral)
-│       └── user-data/       # Volume-mounted to container /mnt/user-data/
-│           ├── workspace/
-│           ├── uploads/
-│           └── outputs/
-│
-└── conversations/
-    └── {thread_id}.json     # Metadata index (thread_id + title, no messages)
-```
-
-| Path | Persists | Purpose |
-|------|----------|---------|
-| `~/.nanodeer/memory/` | Yes | Agent knowledge (USER/MEMORY/wiki/episodic) |
-| `~/.nanodeer/plans/` | Yes | Plans with embedded steps |
-| `~/.nanodeer/threads/{id}/` | No (ephemeral) | Sandbox working directory |
-| `~/.nanodeer/threads/threads.db` | Yes | SQLite session snapshots (resumable) |
-| `~/.nanodeer/conversations/` | Yes | Web UI session index (thread_id + metadata) |
-
-### Signal & State Design
-
-NanoDeer uses two data carriers with distinct lifetimes:
-
-**TurnSignals** — ephemeral, fresh each turn:
-
-| Signal | Written by | Read by | Effect |
-|--------|-----------|--------|--------|
-| `clarification_question` | react.py `_check_clarification()` | App layer | Display question to user, WAIT |
-| `memory_context` | MemoryLayers.inject() via ContextManager | Prompt builder | Inject memory into LLM context |
-| `plan_context` | ContextManager._load_plan() | Prompt builder | Inject plan + step progress into LLM context |
-| `uploaded_files_list` | ContextManager._scan_uploads() | Prompt builder | Inject uploaded file info |
-
-**ThreadState** — persistent across turns:
-
-| Field | Role |
-|-------|------|
-| `messages` | Full conversation history (Human/AI/Tool) |
-| `next_action` | `PROCESS` → continue loop; `WAIT` → return to caller; `END` → terminate |
-| `title` | Conversation title (for UI listing) |
-| `sandbox` | Container state (container_id, status; runtime only, not persisted) |
+| Module | Pattern | Lines |
+|--------|---------|-------|
+| `react.py` | ReAct loop — context → LLM → tools → checkpoint | ~1160 |
+| `state.py` | ThreadState / TurnSignals / NextAction data model | 43 |
+| `context.py` | Parallel context loading (memory + files) | 111 |
+| `prompt.py` | Static base + dynamic injection prompt assembly | 196 |
+| `llm.py` | Multi-provider LLM abstraction | 41 |
+| `sandbox/tools.py` | Sandbox tool wrapping (bash only, 40 lines) | 40 |
+| `memory/storage.py` | Flat-file memory (USER.md + MEMORY.md) | 97 |
+| `checkpoint/sqlite.py` | SQLite conversation persistence | 287 |
+| `cli/api.py` | SSE streaming API | ~336 |
+| `config.py` | YAML + env var configuration | ~195 |
 
 ---
-
-## Design Principles
-
-1. **One-way dependency**: Agent → Harness. Harness has no knowledge of Agent's business logic.
-2. **No middleware chain**: All cross-cutting concerns are inline functions or standalone Managers. Zero indirection.
-3. **Inline error handling**: `_call_with_retry()` for LLM calls, try/except for tool execution.
-4. **Compression is app-layer**: Timing decided by NanoEngine, not auto-triggered in the ReAct loop.
-5. **Prompt auto-detection**: Sections render only when data is present AND feature flag is True.
-6. **Sandbox + Host dual paths**: Sensitive ops through containers, `save_memory`/plan tools directly on host.
-7. **Native ReAct loop**: No LangGraph dependency. A direct `while True` loop with retry, clarification, tool execution, and convergence guards instead of a graph compiler.
-8. **Hybrid persistence**: Memory/plan uses files (inspectable, auditable). Checkpoint uses SQLite (efficient queries).
-
----
-
 
 ## Tools
 
-| Tool | Category | Sandbox |
+**8 core tools** (always available via `default_tools()`):
+
+| Tool | Category | Runs in |
 |------|----------|---------|
-| `read_file`, `write_file`, `ls`, `glob`, `grep`, `edit_file` | File | ✅ Docker/Local |
-| `bash`, `git`, `exec_python` | Shell | ✅ Docker/Local |
-| `web_search`, `web_fetch`, `read_image` | External / uploads | ❌ Host |
-| `save_memory`, `search_memory` | Memory | ❌ Host |
-| `create_plan`, `add_step`, `update_step`, `list_plans` | Plan | ❌ Host (direct write) |
-| `spawn_subagent`, `get_subagent_results` | Subagent | ✅ Own sandbox per worker |
-| `invoke_skill` | Skills | ❌ Host |
+| `read_file` | File | Host |
+| `write_file` | File | Host |
+| `edit_file` | File | Host |
+| `bash` | Shell | **Sandbox** (container) |
+| `web_search` | Web | Host |
+| `web_fetch` | Web | Host |
+| `save_memory` | Memory | Host |
+| `search_memory` | Memory | Host |
+
+**12 extension tools** (on disk, import individually):
+`ls`, `glob`, `grep`, `git`, `exec_python`, `read_image`,
+`create_plan`, `add_step`, `update_step`, `list_plans`,
+`spawn_subagent`, `get_subagent_results`, `invoke_skill`
 
 ---
 
-## Project Status & Roadmap
+## Quick Start
 
-**Current (v0.1.0)** — Core framework stable:
-- ✅ Native ReAct loop with inline orchestration
-- ✅ Docker + Local sandbox with path isolation
-- ✅ 20 built-in tools
-- ✅ File-based memory/wiki and plan storage
-- ✅ SQLite checkpoint persistence for conversation resume
-- ✅ HTTP SSE API (FastAPI) + conversation management endpoints
-- ✅ Image upload bridge through the frontend/API into `read_image`
-- ✅ CLI REPL
-- ✅ SubagentCoordinator with constrained read-only workers
-- ✅ Skill workflow loader
-- ✅ assistant-ui frontend (Next.js + assistant-ui), including Projects/Plans/Memory/Wiki sidebar summary
-- ✅ Structured trace events and layered deterministic evaluation suites
+### Requirements
+- Python ≥ 3.10
+- An LLM API key (Anthropic, OpenAI, DeepSeek, MiniMax, etc.)
+- Docker (optional, for sandbox isolation)
 
-**In progress / planned:**
+### Install
 
-| Area | Status |
-|------|--------|
-| Frontend polish and richer workspace views | 🔄 In progress |
-| Plan/Memory/Wiki detail pages wired to backend APIs | 🔄 In progress |
-| Inline: guardrail, timeout, fallback | 📝 Planned |
-| Inline: dangling tool call injection | 📝 Planned |
-| External benchmark adapters (Harbor / Terminal-Bench 2.0 first) | 🔄 Initial adapter |
-| **Long-horizon task loop** | 📝 Planned |
-|　├─ Focus (focus-driven context injection) | 📝 Planned |
-|　├─ TurnBudget (turn/duration budget) | 📝 Planned |
-|　├─ Learning (error analysis + lesson extraction) | 📝 Planned |
-|　├─ Reflection (session-end reflection) | 📝 Planned |
-|　└─ Plan-Memory bridge (step self-judgment → wiki) | 📝 Planned |
-| IM bot integration (Feishu/WeCom) | 📝 Planned |
-| Evaluation report history and failure taxonomy | 📝 Planned |
-| Multi-model comparison benchmarks | 📝 Planned |
+```bash
+git clone https://github.com/gzhzk/nanodeer
+cd nanodeer
+
+cp .env.example .env
+# Edit .env with your API key
+
+pip install -e .
+```
+
+### Run (backend only)
+
+```bash
+nanodeer          # Start API server at http://127.0.0.1:20266
+nanodeer-repl     # CLI REPL for debugging
+```
+
+### Test
+
+```bash
+pip install -e '.[dev]'
+pytest
+```
+
+### Demo frontend
+
+A Next.js demo frontend is available in `demo/frontend/`:
+
+```bash
+cd demo/frontend
+npm install
+npm run dev       # Opens at http://127.0.0.1:20265
+```
 
 ---
 
-## Design Inspirations
+## Project Structure
 
-| Source | What it taught me |
-|--------|-------------------|
-| **DeerFlow** | Middleware chain + state machine; `next_action` signal routing |
-| **Claude Code** | Tool-first design, clarification-driven pauses via `<clarification>` tags |
-| **OpenClaw** | Layered memory (L1-L4); wiki-structured knowledge curated by the LLM |
-| **NanoClaw** | Docker sandbox isolation; per-thread containers, volume mounts, path translation |
+```
+nanodeer/
+├── pyproject.toml           # Build config (hatchling), entry points, deps
+├── config.yaml              # Runtime config (LLM providers, sandbox, storage)
+├── config.yaml.example      # Template — copy to config.yaml and edit
+├── .env / .env.example      # API keys
+├── AGENTS.md                # Agent development guide (Claude Code context)
+├── LICENSE                  # MIT
+│
+├── src/nanodeer/            # Python source
+│   ├── __init__.py          # Package exports: NanoEngine, RuntimeFeatures, config
+│   ├── engine.py            # NanoEngine — app entry point, executor assembly
+│   ├── config.py            # HarnessConfig — Pydantic models, YAML + env loading
+│   │
+│   ├── agent/               # Core runtime
+│   │   ├── __init__.py
+│   │   ├── react.py         # ReActExecutor — main loop (~1160 lines)
+│   │   ├── state.py         # ThreadState, TurnSignals, NextAction, SandboxState
+│   │   ├── context.py       # ContextManager — memory + uploads, parallel load
+│   │   ├── prompt.py        # PromptConfig, build_base/lead_agent_prompt
+│   │   ├── llm.py           # ReasoningChatOpenAI (OpenAI-compatible wrapper)
+│   │   ├── messages.py      # HumanMessage, AIMessage, ToolMessage, ToolCall
+│   │   ├── sandbox_manager.py  # SandboxManager — acquire/release lifecycle
+│   │   ├── trace.py         # TraceCollector — structured event emission
+│   │   ├── checkpoint/
+│   │   │   ├── __init__.py
+│   │   │   ├── base.py      # Checkpointer ABC
+│   │   │   └── sqlite.py    # SqliteCheckpointer — message + metadata persistence
+│   │   └── memory/
+│   │       ├── __init__.py
+│   │       └── storage.py   # MemoryStore — USER.md + MEMORY.md flat files
+│   │
+│   ├── sandbox/             # Sandbox isolation
+│   │   ├── __init__.py      # SandboxProvider ABC, Sandbox, RunResult, get/set/clear
+│   │   ├── docker.py        # DockerSandboxProvider — container lifecycle
+│   │   ├── local.py         # LocalSandboxProvider — subprocess fallback
+│   │   ├── tools.py         # SandboxToolWrapper — bash only, 40 lines
+│   │   └── path.py          # Path validation (retained for extension use)
+│   │
+│   ├── tools/               # Built-in tool definitions
+│   │   ├── __init__.py      # default_tools() → 8 core, extension tools importable
+│   │   ├── read_file.py     # Core: read file content
+│   │   ├── write_file.py    # Core: write file content
+│   │   ├── edit_file.py     # Core: string replacement editing
+│   │   ├── bash.py          # Core: execute shell command (sandbox-wrapped)
+│   │   ├── web_search.py    # Core: DuckDuckGo search
+│   │   ├── web_fetch.py     # Core: fetch URL content
+│   │   ├── save_memory.py   # Core: persist to USER.md / MEMORY.md
+│   │   ├── search_memory.py # Core: recall from USER.md / MEMORY.md
+│   │   ├── ls.py            # Extension: list directory
+│   │   ├── glob.py          # Extension: file pattern match
+│   │   ├── grep.py          # Extension: search file contents
+│   │   ├── git.py           # Extension: git operations
+│   │   ├── exec_python.py   # Extension: execute Python code
+│   │   ├── read_image.py    # Extension: read image files
+│   │   ├── invoke_skill.py  # Extension: load skill workflow
+│   │   ├── create_plan.py   # Extension: create task plan
+│   │   ├── plan_step.py     # Extension: add/update plan step
+│   │   ├── list_plans.py    # Extension: list plans
+│   │   ├── spawn_subagent.py # Extension: fork worker agent
+│   │   └── get_subagent_results.py # Extension: collect worker results
+│   │
+│   ├── cli/
+│   │   ├── __init__.py
+│   │   ├── api.py           # FastAPI app, SSE /api/chat, conversation CRUD
+│   │   └── repl.py          # Async CLI REPL for debugging
+│   │
+│   ├── subagent/            # Extension: SubagentCoordinator, runner, types
+│   └── plan/                # Extension: PlanStore, Plan/Step types
+│
+├── scripts/
+│   ├── dev.sh               # One-command launch: backend (+ --with-frontend)
+│   └── check.sh             # Run tests (pytest)
+│
+├── tests/                   # Python test suite (115 tests)
+│   ├── conftest.py          # Shared fixtures (thread_id, alt_thread_id)
+│   ├── test_agent/          # ReAct, engine, state, messages, trace, factory
+│   ├── test_sandbox/        # Docker provider, path, tool wrapping, exec
+│   ├── test_agent_memory/   # MemoryStore (USER.md + MEMORY.md)
+│   ├── test_tools_integration/ # Tool schema + invocation tests
+│   ├── test_subagents/      # Extension test (SubagentCoordinator)
+│   ├── test_plan/           # Extension test (PlanStore)
+│   ├── test_skills/         # Extension test (skill loader)
+│   ├── test_evaluation/     # Archived test (evaluation runner)
+│   └── test_cli/            # API upload tests
+│
+├── demo/frontend/           # Next.js + assistant-ui demo (separate concern)
+├── evaluation/              # Evaluation harness (archived)
+└── docs/                    # Design documentation (中文)
+    ├── harness_architecture.md
+    ├── runtime_architecture.md
+    ├── sandbox_design.md
+    ├── tools_design.md
+    ├── prompt_design.md
+    ├── memory_design.md
+    ├── nanodeer_blueprint_20260401.md
+    ├── refactoring_journey.md
+    └── archive/             # Docs for removed modules
+```
+
+---
+
+## Storage Layout
+
+```
+~/.nanodeer/
+├── memory/                    # Core: flat-file memory (USER.md + MEMORY.md)
+├── threads/
+│   ├── threads.db             # SQLite — message + metadata persistence
+│   └── {thread_id}/
+│       └── user-data/         # Volume-mounted to sandbox container
+│           ├── workspace/
+│           ├── uploads/
+│           └── outputs/
+└── conversations/
+    └── {thread_id}.json       # UI metadata index (title, timestamps)
+```
+
+Extension modules (subagent, plan, wiki, layers) create additional directories under `~/.nanodeer/` when used, but nothing in core references them by default.
+
+---
+
+## Extension Modules
+
+The following modules exist as extension patterns — they are importable but not part of the default runtime chain:
+
+| Module | Files | What it demonstrates |
+|--------|-------|---------------------|
+| `subagent/` | coordinator, runner, types | Parallel worker orchestration |
+| `plan/` | storage, types | Structured plan with step tracking |
+| `skills/` | loader | Markdown-based skill workflow |
+| `memory/wiki.py` | WikiStore | LLM-curated structured knowledge |
+| `memory/layers.py` | MemoryLayers | L1-L4 tiered memory model |
+| Extension tools | Individual .py files | Additional tool patterns |
+
+To use an extension module, import and configure it manually.
 
 ---
 
@@ -634,6 +358,19 @@ To my mentor — for opening the door to Agent and Harness Engineering, and enco
 
 [Andrej Karpathy](https://github.com/karpathy) — for the LLM wiki concept that inspired the wiki memory system: letting the LLM curate its own structured knowledge base.
 
+---
+
+## Design Inspirations
+
+| Source | Pattern |
+|--------|---------|
+| **DeerFlow** | State machine + `next_action` signal routing |
+| **Claude Code** | Tool-first design, clarification via tags |
+| **OpenClaw** | Layered memory, wiki-structured knowledge |
+| **NanoClaw** | Docker sandbox, volume mounts, path isolation |
+
+---
+
 ## License
 
-This project is open source and available under the [MIT License](LICENSE).
+MIT

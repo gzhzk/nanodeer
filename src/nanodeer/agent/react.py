@@ -39,15 +39,6 @@ from .trace import (
     preview as trace_preview,
 )
 
-from ..tools.groups import (
-    AVAILABLE_GROUPS,
-    CORE_GROUP,
-    GROUP_DESCRIPTIONS,
-    REQUEST_TOOLS_TOOL_SCHEMA,
-    resolve_tools,
-    validate_groups,
-)
-
 logger = logging.getLogger(__name__)
 
 
@@ -415,50 +406,25 @@ class ReActExecutor:
         self,
         llm: BaseChatModel,
         tools: list[BaseTool],
+        wrapped_tools: list[BaseTool] | None = None,
         prompt_config: PromptConfig | None = None,
         checkpointer=None,
         model_name: str = "",
         context_manager: ContextManager | None = None,
         sandbox_manager: SandboxManager | None = None,
     ):
-        self._raw_llm = llm
-        self._tools = tools
-        self._tool_map = {t.name: t for t in tools}
+        self._llm = llm
+        # tools: original tool objects → for LLM bind_tools() schemas
+        self._tools: dict[str, BaseTool] = {t.name: t for t in tools}
+        # exec_tools: sandbox-wrapped (or same) → for actual execution
+        self._exec_tools: dict[str, BaseTool] = {
+            t.name: t for t in (wrapped_tools or tools)
+        }
         self._prompt_config = prompt_config or PromptConfig()
         self._checkpointer = checkpointer
         self._model_name = model_name
         self._context = context_manager or ContextManager()
         self._sandbox = sandbox_manager
-
-        # Progressive tool exposure
-        self._progressive_tools = True
-        self._active_groups: set[str] = {CORE_GROUP}
-        self._rebind_tools()
-
-    def _rebind_tools(self) -> None:
-        """Re-bind LLM with tools from active groups + request_tools."""
-        tool_names = resolve_tools(list(self._active_groups))
-        active = [t for t in self._tools if t.name in tool_names]
-        # request_tools is always available (it's a meta-tool, not a real tool)
-        schemas = active + [REQUEST_TOOLS_TOOL_SCHEMA]
-        self.llm = self._raw_llm.bind_tools(schemas)
-
-    def _handle_request_tools(self, args: dict[str, Any]) -> str:
-        """Process a request_tools call: activate groups, return status."""
-        groups = args.get("groups", [])
-        valid, invalid = validate_groups(groups)
-        if valid:
-            self._active_groups.update(valid)
-            self._rebind_tools()
-        parts = []
-        if valid:
-            parts.append(f"Activated groups: {', '.join(sorted(valid))}")
-        if invalid:
-            parts.append(f"Unknown groups: {', '.join(invalid)}")
-            parts.append(f"Available: {', '.join(sorted(AVAILABLE_GROUPS - {CORE_GROUP}))}")
-        if not parts:
-            parts.append("No groups specified.")
-        return "\n".join(parts)
 
     # -- Messages conversion --------------------------------------------------
 
@@ -596,7 +562,7 @@ class ReActExecutor:
                 state.next_action = NextAction.END
                 break
 
-            # 4. LLM call
+            # 4. LLM call — bind tools for current active groups
             prompt = build_lead_agent_prompt(state, signals, self._prompt_config, self._model_name)
             lc_messages = self._to_lc_messages(state, prompt)
             llm_start = time.monotonic()
@@ -607,8 +573,9 @@ class ReActExecutor:
                 prompt_chars=sum(len(str(getattr(m, "content", ""))) for m in lc_messages),
                 message_count=len(lc_messages),
             )
+            bound_llm = self._llm.bind_tools(list(self._tools.values()))
             resp = await _call_with_retry(
-                lambda: self.llm.ainvoke(lc_messages),
+                lambda: bound_llm.ainvoke(lc_messages),
                 f"turn={turn}",
                 on_retry=lambda attempt, delay, exc: collector.emit(
                     "llm_retry",
@@ -669,43 +636,11 @@ class ReActExecutor:
                         turn=turn,
                         duration_ms=_elapsed_ms(checkpoint_start),
                     )
-                absorb_start = time.monotonic()
-                if self._context:
-                    await self._context.absorb(state)
-                    collector.emit(
-                        "context_absorbed",
-                        turn=turn,
-                        duration_ms=_elapsed_ms(absorb_start),
-                    )
                 break
 
             exec_id = state.thread_id or "default"
             for call_index, tc in enumerate(raw_tcs):
-                # Intercept request_tools — meta-tool, not a real tool dispatch
-                if tc["name"] == "request_tools":
-                    content = self._handle_request_tools(tc.get("args", {}))
-                    state.messages.append(
-                        ToolMessage(
-                            content=content,
-                            tool_call_id=tc.get("id", ""),
-                            name="request_tools",
-                        )
-                    )
-                    collector.emit(
-                        "tool_result",
-                        turn=turn,
-                        call_index=call_index,
-                        name="request_tools",
-                        id=tc.get("id"),
-                        result=content,
-                        result_preview=content[:TRACE_PREVIEW_CHARS],
-                        result_bytes=len(content.encode()),
-                        success=True,
-                        duration_ms=0,
-                    )
-                    continue
-
-                tool = self._tool_map.get(tc["name"])
+                tool = self._exec_tools.get(tc["name"])
                 collector.emit(
                     "tool_call",
                     turn=turn,
@@ -847,14 +782,6 @@ class ReActExecutor:
                     turn=turn,
                     duration_ms=_elapsed_ms(checkpoint_start),
                 )
-            absorb_start = time.monotonic()
-            if self._context:
-                await self._context.absorb(state)
-                collector.emit(
-                    "context_absorbed",
-                    turn=turn,
-                    duration_ms=_elapsed_ms(absorb_start),
-                )
 
             logger.info("turn=%d after_tools next_action=%s turn_duration=%.2fs",
                         turn, state.next_action.value, time.monotonic() - turn_start)
@@ -977,7 +904,8 @@ class ReActExecutor:
             collected_reasoning = ""
             stream_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
 
-            async for chunk in _astream_with_retry(self.llm, lc_messages, f"turn={thread_id}"):
+            bound_llm = self._llm.bind_tools(list(self._tools.values()))
+            async for chunk in _astream_with_retry(bound_llm, lc_messages, f"turn={thread_id}"):
                 chunk_usage = _extract_usage(chunk)
                 if chunk_usage["total_tokens"]:
                     stream_usage = chunk_usage
@@ -1072,15 +1000,6 @@ class ReActExecutor:
                         threadId=thread_id,
                         turn=turn,
                     )
-                absorb_start = time.monotonic()
-                if self._context:
-                    await self._context.absorb(state)
-                    yield collector.emit(
-                        "context_absorbed",
-                        duration_ms=_elapsed_ms(absorb_start),
-                        threadId=thread_id,
-                        turn=turn,
-                    )
                 if self._sandbox:
                     release_start = time.monotonic()
                     await self._sandbox.release(state)
@@ -1093,31 +1012,7 @@ class ReActExecutor:
 
             exec_id = state.thread_id or "default"
             for call_index, tc in enumerate(raw_tcs):
-                # Intercept request_tools — meta-tool, not a real tool dispatch
-                if tc["name"] == "request_tools":
-                    content = self._handle_request_tools(tc.get("args", {}))
-                    state.messages.append(
-                        ToolMessage(
-                            content=content,
-                            tool_call_id=tc.get("id", ""),
-                            name="request_tools",
-                        )
-                    )
-                    collector.emit(
-                        "tool_result",
-                        turn=turn,
-                        call_index=call_index,
-                        name="request_tools",
-                        id=tc.get("id"),
-                        result=content,
-                        result_preview=content[:TRACE_PREVIEW_CHARS],
-                        result_bytes=len(content.encode()),
-                        success=True,
-                        duration_ms=0,
-                    )
-                    continue
-
-                tool = self._tool_map.get(tc["name"])
+                tool = self._exec_tools.get(tc["name"])
 
                 yield collector.emit(
                     "tool_call",
@@ -1252,15 +1147,6 @@ class ReActExecutor:
                 yield collector.emit(
                     "checkpoint_saved",
                     duration_ms=_elapsed_ms(checkpoint_start),
-                    threadId=thread_id,
-                    turn=turn,
-                )
-            absorb_start = time.monotonic()
-            if self._context:
-                await self._context.absorb(state)
-                yield collector.emit(
-                    "context_absorbed",
-                    duration_ms=_elapsed_ms(absorb_start),
                     threadId=thread_id,
                     turn=turn,
                 )

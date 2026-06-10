@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-FRONTEND_DIR="$ROOT_DIR/frontend"
+FRONTEND_DIR="$ROOT_DIR/demo/frontend"
 PYTHON_BIN="${PYTHON_BIN:-$ROOT_DIR/.venv/bin/python}"
 BACKEND_HOST="127.0.0.1"
 BACKEND_PORT="20266"
@@ -10,6 +10,7 @@ FRONTEND_PORT="20265"
 BACKEND_URL="http://${BACKEND_HOST}:${BACKEND_PORT}"
 FRONTEND_URL="http://127.0.0.1:${FRONTEND_PORT}"
 
+WITH_FRONTEND=false
 PIDS=()
 
 log() {
@@ -65,11 +66,13 @@ wait_for_http() {
 check_prerequisites() {
   require_cmd bash
   require_cmd curl
-  require_cmd npm
 
   [[ -x "$PYTHON_BIN" ]] || die "project Python not found at ${PYTHON_BIN}. Create it and install the package first."
-  [[ -d "$FRONTEND_DIR/node_modules" ]] || die "frontend dependencies missing. Run: cd frontend && npm install"
   [[ -f "$ROOT_DIR/config.yaml" ]] || die "config.yaml missing. Copy config.yaml.example and configure provider/API key."
+
+  if "$WITH_FRONTEND"; then
+    [[ -d "$FRONTEND_DIR/node_modules" ]] || die "frontend dependencies missing. Run: cd demo/frontend && npm install"
+  fi
 
   if [[ ! -f "$ROOT_DIR/.env" ]]; then
     log "warning: .env not found. Provider API keys must be available from the shell environment."
@@ -102,7 +105,7 @@ start_frontend() {
     return
   fi
 
-  log "starting frontend at ${FRONTEND_URL}"
+  log "starting demo frontend at ${FRONTEND_URL}"
   (
     cd "$FRONTEND_DIR"
     exec ./node_modules/.bin/next dev --turbopack -H 127.0.0.1 -p "$FRONTEND_PORT"
@@ -113,14 +116,23 @@ start_frontend() {
 }
 
 main() {
+  for arg in "$@"; do
+    case "$arg" in
+      --with-frontend) WITH_FRONTEND=true ;;
+    esac
+  done
+
   check_prerequisites
   start_backend
-  start_frontend
+
+  if "$WITH_FRONTEND"; then
+    start_frontend
+    log "frontend (demo): ${FRONTEND_URL}"
+  fi
 
   log "ready"
-  log "frontend: ${FRONTEND_URL}"
-  log "backend:  ${BACKEND_URL}"
-  log "press Ctrl-C to stop services started by this script"
+  log "backend: ${BACKEND_URL}"
+  log "press Ctrl-C to stop"
 
   wait
 }

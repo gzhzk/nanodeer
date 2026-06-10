@@ -1,9 +1,9 @@
 """Tests for NanoEngine — App layer entry point."""
 
 import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import MagicMock, AsyncMock
 
-from nanodeer.engine import NanoEngine, RunResult, _OPENAI_COMPATIBLE
+from nanodeer.engine import NanoEngine, RunResult, RuntimeFeatures, _OPENAI_COMPATIBLE
 from nanodeer.agent.state import NextAction
 
 
@@ -75,7 +75,7 @@ class TestNanoEngineInit:
 
     def test_stores_features(self):
         config = MagicMock()
-        features = MagicMock()
+        features = RuntimeFeatures()
         engine = NanoEngine(config, features=features)
         assert engine._features is features
 
@@ -90,7 +90,6 @@ class TestNanoEngineInit:
         config = MagicMock()
         engine = NanoEngine(config)
         assert engine._executor is None
-        assert engine._compression_mw is None
 
 
 class TestProviderRouting:
@@ -116,6 +115,8 @@ class TestProviderRouting:
 
 
 class TestNanoEngineRun:
+    """Injects mock executor directly (no factory mocking needed after v0.2 merge)."""
+
     @pytest.mark.asyncio
     async def test_returns_run_result(self):
         """run() returns a RunResult with correct thread_id."""
@@ -130,13 +131,9 @@ class TestNanoEngineRun:
         mock_executor = AsyncMock()
         mock_executor._checkpointer = None
         mock_executor.run = AsyncMock(return_value=(mock_state, []))
-        mock_compression = MagicMock()
-        mock_compression.compress = MagicMock(return_value=None)
+        engine._executor = mock_executor
 
-        with patch("nanodeer.engine.create_nanodeer_agent") as mock_factory:
-            mock_factory.return_value = (mock_executor, mock_compression)
-            with patch("nanodeer.engine._create_llm", return_value=MagicMock()):
-                result = await engine.run("hello", thread_id="t1")
+        result = await engine.run("hello", thread_id="t1")
 
         assert result.thread_id == "t1"
         assert result.message == "Hi"
@@ -155,84 +152,12 @@ class TestNanoEngineRun:
         mock_executor = AsyncMock()
         mock_executor._checkpointer = None
         mock_executor.run = AsyncMock(return_value=(mock_state, []))
-        mock_compression = MagicMock()
-        mock_compression.compress = MagicMock(return_value=None)
+        engine._executor = mock_executor
 
-        with patch("nanodeer.engine.create_nanodeer_agent") as mock_factory:
-            mock_factory.return_value = (mock_executor, mock_compression)
-            with patch("nanodeer.engine._create_llm", return_value=MagicMock()):
-                result = await engine.run("hello")
+        result = await engine.run("hello")
 
         assert result.thread_id is not None
         assert len(result.thread_id) > 0
-
-    @pytest.mark.asyncio
-    async def test_compression_middleware_called(self):
-        """Compression is called after executor.run()."""
-        config = MagicMock()
-        engine = NanoEngine(config)
-
-        mock_state = MagicMock()
-        mock_state.messages = [MagicMock(content="Hi")]
-        mock_state.next_action = NextAction.PROCESS
-
-        mock_executor = AsyncMock()
-        mock_executor._checkpointer = None
-        mock_executor.run = AsyncMock(return_value=(mock_state, []))
-        mock_compression = MagicMock()
-        mock_compression.compress = MagicMock(return_value=None)
-
-        with patch("nanodeer.engine.create_nanodeer_agent") as mock_factory:
-            mock_factory.return_value = (mock_executor, mock_compression)
-            with patch("nanodeer.engine._create_llm", return_value=MagicMock()):
-                await engine.run("hello")
-
-        mock_compression.compress.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_compression_replaces_messages(self):
-        """Compression result replaces state.messages."""
-        config = MagicMock()
-        engine = NanoEngine(config)
-
-        mock_state = MagicMock()
-        mock_state.messages = [MagicMock(content="Hi")]
-        mock_state.next_action = NextAction.PROCESS
-
-        mock_executor = AsyncMock()
-        mock_executor._checkpointer = None
-        mock_executor.run = AsyncMock(return_value=(mock_state, []))
-        compressed = [MagicMock(content="Summarized")]
-        mock_compression = MagicMock()
-        mock_compression.compress = MagicMock(return_value=compressed)
-
-        with patch("nanodeer.engine.create_nanodeer_agent") as mock_factory:
-            mock_factory.return_value = (mock_executor, mock_compression)
-            with patch("nanodeer.engine._create_llm", return_value=MagicMock()):
-                await engine.run("hello")
-
-        assert mock_state.messages == compressed
-
-    @pytest.mark.asyncio
-    async def test_no_compression_when_none(self):
-        """No compression attempted when compression_mw is None."""
-        config = MagicMock()
-        engine = NanoEngine(config)
-
-        mock_state = MagicMock()
-        mock_state.messages = [MagicMock(content="Hi")]
-        mock_state.next_action = NextAction.PROCESS
-
-        mock_executor = AsyncMock()
-        mock_executor._checkpointer = None
-        mock_executor.run = AsyncMock(return_value=(mock_state, []))
-
-        with patch("nanodeer.engine.create_nanodeer_agent") as mock_factory:
-            mock_factory.return_value = (mock_executor, None)
-            with patch("nanodeer.engine._create_llm", return_value=MagicMock()):
-                result = await engine.run("hello")
-
-        assert result.message == "Hi"
 
     @pytest.mark.asyncio
     async def test_uploaded_files_passed_to_executor(self):
@@ -247,15 +172,10 @@ class TestNanoEngineRun:
         mock_executor = AsyncMock()
         mock_executor._checkpointer = None
         mock_executor.run = AsyncMock(return_value=(mock_state, []))
-        mock_compression = MagicMock()
-        mock_compression.compress = MagicMock(return_value=None)
+        engine._executor = mock_executor
 
         files = [{"name": "test.txt", "content": "hello"}]
-
-        with patch("nanodeer.engine.create_nanodeer_agent") as mock_factory:
-            mock_factory.return_value = (mock_executor, mock_compression)
-            with patch("nanodeer.engine._create_llm", return_value=MagicMock()):
-                await engine.run("hello", uploaded_files=files)
+        await engine.run("hello", uploaded_files=files)
 
         mock_executor.run.assert_called_once()
         call_kwargs = mock_executor.run.call_args[1]
@@ -274,13 +194,8 @@ class TestNanoEngineRun:
         mock_executor = AsyncMock()
         mock_executor._checkpointer = None
         mock_executor.run = AsyncMock(return_value=(mock_state, []))
-        mock_compression = MagicMock()
-        mock_compression.compress = MagicMock(return_value=None)
+        engine._executor = mock_executor
 
-        with patch("nanodeer.engine.create_nanodeer_agent") as mock_factory:
-            mock_factory.return_value = (mock_executor, mock_compression)
-            with patch("nanodeer.engine._create_llm", return_value=MagicMock()):
-                result = await engine.run("hello")
+        result = await engine.run("hello")
 
-        # duration_ms is set from time measurement
         assert result.duration_ms >= 0
