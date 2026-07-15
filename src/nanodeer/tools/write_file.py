@@ -5,11 +5,9 @@ on the host is equivalent to writing inside the sandbox. Only bash needs to run
 inside the container for command isolation.
 """
 
-import os
-
 from langchain_core.tools import tool
 
-from nanodeer.sandbox import resolve_virtual_path
+from nanodeer.workspace import WorkspacePathError, resolve_workspace_path
 
 
 @tool
@@ -21,17 +19,19 @@ def write_file(file_path: str, content: str) -> str:
     the same files.
 
     Args:
-        file_path: Path to the file (use /mnt/user-data/ for sandbox workspace).
+        file_path: Writable path under /workspace or /outputs.
         content: Text content to write.
 
     Returns:
         Success message or error description.
     """
-    resolved = resolve_virtual_path(file_path)
-    os.makedirs(os.path.dirname(resolved), exist_ok=True)
     try:
-        with open(resolved, "w", encoding="utf-8") as f:
+        resolved = resolve_workspace_path(file_path, access="write")
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+        with resolved.open("w", encoding="utf-8") as f:
             f.write(content)
         return f"Written {len(content)} bytes to {file_path}"
+    except WorkspacePathError as e:
+        return f"Error: access denied for {file_path}: {e}"
     except OSError as e:
         return f"Error writing {file_path}: {e}"

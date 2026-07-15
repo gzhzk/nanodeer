@@ -1,17 +1,16 @@
 """Sandbox tool wrappers — routes bash into container, others run on host.
 
 Key insight: workspace directories are volume-mounted into the container.
-File tools (read/write/edit) can safely run on the host because both
-host and container see the same files. Only bash needs to execute in
-the container to isolate the command.
+File tools (read/write/edit) use the thread-bound Workspace directly. Only
+bash needs an isolated execution backend, and it never falls back to host
+execution unless trusted local mode was explicitly enabled.
 
 No more base64 encoding, no virtual path translation, no per-tool configs.
 """
 
-import asyncio
 import logging
 
-from . import SandboxCommand, get_sandbox
+from . import get_sandbox
 
 logger = logging.getLogger(__name__)
 
@@ -24,33 +23,27 @@ class SandboxToolWrapper:
         self._provider = provider
         # Marker for _invoke_tool in react.py — signals that exec_id is needed
         self.get_sandbox_command = True
+        self.requires_sandbox = True
 
     @property
     def name(self) -> str:
         return self._tool.name
 
     async def ainvoke(self, args: dict, exec_id: str | None = None):
-        """Run in container if sandbox available, otherwise fall back to host."""
+        """Run in the isolated backend selected for the current thread."""
         cmd = args.get("command", "")
         if not cmd:
             return ""
 
         sandbox = get_sandbox(exec_id) if (self._provider and exec_id) else None
         if sandbox is None:
-            return await self._run_host(args)
+            return "Error: isolated execution backend is unavailable"
 
-        result = await self._provider.run(sandbox, cmd, timeout=30)
+        timeout = max(1, min(int(args.get("timeout", 30)), 120))
+        result = await self._provider.run(sandbox, cmd, timeout=timeout)
         if result.returncode != 0:
             return f"Error: {result.stderr or result.stdout}"
         return result.stdout
-
-    async def _run_host(self, args: dict) -> str:
-        """Fallback: run the underlying tool directly on host."""
-        result = self._tool.ainvoke(args)
-        if asyncio.iscoroutine(result):
-            result = await result
-        return str(result)
-
 
 def wrap_tool_for_sandbox(tool, provider):
     """Wrap bash for sandbox execution. Other tools pass through (return None)."""

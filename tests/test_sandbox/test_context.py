@@ -2,7 +2,14 @@
 import base64
 import pytest
 import threading
-from nanodeer.sandbox import set_sandbox, get_sandbox, clear_sandbox, create_sandbox_provider, Sandbox
+from nanodeer.sandbox import (
+    LazySandboxProvider,
+    Sandbox,
+    clear_sandbox,
+    create_sandbox_provider,
+    get_sandbox,
+    set_sandbox,
+)
 from nanodeer.sandbox.local import LocalSandboxProvider
 
 
@@ -21,7 +28,7 @@ def sandbox_a(thread_id):
     return Sandbox(
         exec_id=thread_id,
         container_id=f"container-{thread_id}",
-        working_dir=f"/tmp/{thread_id}",
+        working_dir=f"/tmp/{thread_id}/user-data/workspace",
     )
 
 
@@ -30,7 +37,7 @@ def sandbox_b(alt_thread_id):
     return Sandbox(
         exec_id=alt_thread_id,
         container_id=f"container-{alt_thread_id}",
-        working_dir=f"/tmp/{alt_thread_id}",
+        working_dir=f"/tmp/{alt_thread_id}/user-data/workspace",
     )
 
 
@@ -137,13 +144,24 @@ class TestSandboxContextThreadSafety:
 
 
 class TestSandboxProviderFactory:
-    def test_falls_back_to_local_when_docker_unavailable(self, monkeypatch):
-        """Factory should not require the optional docker extra to be installed."""
+    def test_factory_is_lazy(self):
+        """Creating the runtime does not probe Docker before a command needs it."""
+        provider = create_sandbox_provider()
+
+        assert isinstance(provider, LazySandboxProvider)
+        assert provider._provider is None
+
+    @pytest.mark.asyncio
+    async def test_docker_failure_does_not_implicitly_execute_on_host(self, monkeypatch):
+        """Local shell fallback requires an explicit trusted-mode opt-in."""
+        monkeypatch.delenv("NANODEER_ALLOW_LOCAL_EXECUTION", raising=False)
+
         try:
             import docker
         except Exception:
             provider = create_sandbox_provider()
-            assert isinstance(provider, LocalSandboxProvider)
+            with pytest.raises(RuntimeError, match="Docker sandbox is unavailable"):
+                await provider.acquire("thread-no-docker")
             return
 
         class UnavailableDockerClient:
@@ -153,7 +171,8 @@ class TestSandboxProviderFactory:
         monkeypatch.setattr(docker.client, "from_env", lambda: UnavailableDockerClient())
 
         provider = create_sandbox_provider()
-        assert isinstance(provider, LocalSandboxProvider)
+        with pytest.raises(RuntimeError, match="Docker sandbox is unavailable"):
+            await provider.acquire("thread-no-docker")
 
 
 class TestLocalSandboxPathTranslation:
@@ -162,7 +181,8 @@ class TestLocalSandboxPathTranslation:
 
         translated = provider._translate_cmd("ls /mnt/user-data/reports", sandbox_a)
 
-        assert translated == f"ls {sandbox_a.working_dir}/reports"
+        expected_root = sandbox_a.working_dir.removesuffix("/workspace")
+        assert translated == f"ls {expected_root}/reports"
 
     def test_b64_shell_payload_virtual_user_data_path_translates(self, sandbox_a):
         provider = LocalSandboxProvider()
@@ -177,4 +197,5 @@ class TestLocalSandboxPathTranslation:
         translated = provider._translate_cmd(cmd, sandbox_a)
         translated_payload = base64.b64decode(translated.rsplit(" ", 1)[1]).decode()
 
-        assert translated_payload == f"ls -la {sandbox_a.working_dir}/ 2>&1"
+        expected_root = sandbox_a.working_dir.removesuffix("/workspace")
+        assert translated_payload == f"ls -la {expected_root}/ 2>&1"

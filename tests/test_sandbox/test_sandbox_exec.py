@@ -57,15 +57,15 @@ class TestSandboxToolWrapper:
             clear_sandbox("t1")
 
     @pytest.mark.asyncio
-    async def test_falls_back_to_host_without_sandbox(self):
-        """Without sandbox, falls through to the underlying tool."""
+    async def test_refuses_host_fallback_without_sandbox(self):
+        """Arbitrary shell execution never falls back to the host implicitly."""
         tool = _mock_tool("bash")
         tool.ainvoke = AsyncMock(return_value="host result")
         wrapper = SandboxToolWrapper(tool, provider=None)
 
         result = await wrapper.ainvoke({"command": "echo hi"})
-        assert result == "host result"
-        tool.ainvoke.assert_called_once_with({"command": "echo hi"})
+        assert "unavailable" in result
+        tool.ainvoke.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_empty_command_returns_empty_string(self):

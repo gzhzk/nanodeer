@@ -2,12 +2,12 @@
 
 Each thread gets its own sandbox (Docker container).
 """
+import asyncio
 import logging
+import os
 import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-
-from ..agent.state import SandboxState
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +43,33 @@ class SandboxProvider(ABC):
     async def run(self, sandbox: Sandbox, command: str, timeout: int = 30) -> RunResult: ...
 
 
-# Module-level context (can't serialize Sandbox into ThreadState)
+class LazySandboxProvider(SandboxProvider):
+    """Create the concrete execution backend only when a command needs it."""
+
+    def __init__(self):
+        self._provider: SandboxProvider | None = None
+        self._lock = asyncio.Lock()
+
+    async def _get_provider(self) -> SandboxProvider:
+        if self._provider is not None:
+            return self._provider
+        async with self._lock:
+            if self._provider is None:
+                self._provider = _create_concrete_sandbox_provider()
+        return self._provider
+
+    async def acquire(self, exec_id: str) -> Sandbox:
+        return await (await self._get_provider()).acquire(exec_id)
+
+    async def release(self, sandbox: Sandbox) -> None:
+        if self._provider is not None:
+            await self._provider.release(sandbox)
+
+    async def run(self, sandbox: Sandbox, command: str, timeout: int = 30) -> RunResult:
+        return await (await self._get_provider()).run(sandbox, command, timeout)
+
+
+# Execution lookup for sandbox-wrapped tools; never serialized into AgentState.
 _sandbox_context: dict[str, Sandbox] = {}
 _sandbox_lock = threading.Lock()
 
@@ -64,35 +90,14 @@ def clear_sandbox(exec_id: str) -> None:
 
 
 def resolve_virtual_path(virtual_path: str) -> str:
-    """Resolve /mnt/user-data/ paths to real host filesystem paths.
+    """Resolve a path through the active thread Workspace (legacy helper)."""
+    from nanodeer.workspace import resolve_workspace_path
 
-    File tools (read_file/write_file/edit_file) run on the host. The sandbox
-    uses virtual paths like /mnt/user-data/workspace/ for consistency between
-    host and container. This function translates those virtual paths to the
-    actual host working directory of the active sandbox.
-
-    Without an active sandbox, falls back to ~/.nanodeer/threads/default/user-data/.
-    """
-    if not virtual_path.startswith("/mnt/user-data"):
-        return virtual_path
-
-    rel = virtual_path.removeprefix("/mnt/user-data")
-
-    # Check active sandbox for the real host path
-    for _sid, sb in list(_sandbox_context.items()):
-        wd = sb.working_dir.rstrip("/")
-        return f"{wd}{rel}"
-
-    # No sandbox active — use a reasonable default
-    from pathlib import Path
-    base = Path.home() / ".nanodeer" / "threads" / "default" / "user-data"
-    result = str(base) + rel
-    base.mkdir(parents=True, exist_ok=True)  # ensures the directory tree exists
-    return result
+    return str(resolve_workspace_path(virtual_path))
 
 
-def create_sandbox_provider() -> SandboxProvider:
-    """Try Docker sandbox, fall back to LocalSandboxProvider on failure."""
+def _create_concrete_sandbox_provider() -> SandboxProvider:
+    """Create an isolated backend; local host execution requires explicit opt-in."""
     from .local import LocalSandboxProvider
     from ..config import get_config
 
@@ -107,6 +112,18 @@ def create_sandbox_provider() -> SandboxProvider:
             network_mode=cfg.sandbox.network_mode,
             base_path=cfg.sandbox.base_path,
         )
-    except Exception:
-        logger.info("Docker unavailable, falling back to LocalSandboxProvider")
-        return LocalSandboxProvider()
+    except Exception as exc:
+        if os.getenv("NANODEER_ALLOW_LOCAL_EXECUTION", "").lower() in {
+            "1", "true", "yes", "on",
+        }:
+            logger.warning("Docker unavailable; using explicitly enabled local execution")
+            return LocalSandboxProvider()
+        raise RuntimeError(
+            "Docker sandbox is unavailable. Set NANODEER_ALLOW_LOCAL_EXECUTION=1 "
+            "only for an explicitly trusted local environment."
+        ) from exc
+
+
+def create_sandbox_provider() -> SandboxProvider:
+    """Return a provider that defers Docker probing until first command execution."""
+    return LazySandboxProvider()

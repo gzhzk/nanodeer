@@ -1,7 +1,7 @@
-"""LocalSandboxProvider — fallback when Docker is unavailable.
+"""LocalSandboxProvider — explicitly trusted local execution.
 
-Provides sandbox execution via subprocess on the local machine.
-Used automatically when Docker is not accessible (Windows, no Docker, etc.).
+Provides execution via subprocess on the local machine. This backend is never
+selected implicitly; it requires NANODEER_ALLOW_LOCAL_EXECUTION=1.
 
 Security: asyncio subprocess with env scrubbing and path hardening.
 For production, always use DockerSandboxProvider.
@@ -12,11 +12,11 @@ import base64
 import logging
 import os
 import re
-import shutil
 import time
 from pathlib import Path
 
 from . import Sandbox, SandboxProvider, RunResult
+from nanodeer.workspace import WorkspaceManager
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 class LocalSandboxProvider(SandboxProvider):
     """Execute sandbox commands locally via asyncio subprocess.
 
-    No container isolation — only use when Docker is unavailable.
+    No container isolation — only use in an explicitly trusted environment.
     Uses async subprocess + env scrubbing for better security.
     """
 
@@ -43,14 +43,12 @@ class LocalSandboxProvider(SandboxProvider):
         """Create a local workspace directory for the exec context."""
         t0 = time.monotonic()
         from ..config import get_config
-        safe_id = re.sub(r'[^a-zA-Z0-9_-]', '', exec_id)
         base = get_config().thread.storage_path
-        working_dir = base / safe_id / "user-data"
-        working_dir.mkdir(parents=True, exist_ok=True)
+        workspace = WorkspaceManager(base).open(exec_id)
         sandbox = Sandbox(
             exec_id=exec_id,
-            container_id=f"local-{safe_id}",
-            working_dir=str(working_dir),
+            container_id=f"local-{workspace.root.parent.name}",
+            working_dir=str(workspace.files),
         )
         logger.info("acquire exec_id=%s provider=local container=%s duration=%.2fs",
                     exec_id, sandbox.container_id, time.monotonic() - t0)
@@ -111,12 +109,7 @@ class LocalSandboxProvider(SandboxProvider):
         return result
 
     def _translate_cmd(self, cmd: str, sandbox: Sandbox) -> str:
-        """Replace virtual /mnt/user-data/ paths with actual sandbox working_dir.
-
-        Tool commands use /mnt/user-data/... as virtual paths (Docker container mount).
-        In local mode, subprocess runs directly on host where those paths don't exist.
-        This method translates them to the actual sandbox working_dir path.
-        """
+        """Translate canonical and legacy virtual paths for local execution."""
         translated = self._translate_b64_payload(cmd, sandbox)
         return self._translate_virtual_paths(translated, sandbox)
 
@@ -141,50 +134,21 @@ class LocalSandboxProvider(SandboxProvider):
         return f"{match.group('prefix')}{encoded}{match.group('suffix')}"
 
     def _translate_virtual_paths(self, text: str, sandbox: Sandbox) -> str:
-        text = text.replace("/mnt/user-data/", sandbox.working_dir + "/")
-        return text.replace("/mnt/user-data", sandbox.working_dir)
+        files = Path(sandbox.working_dir)
+        root = files.parent
+        replacements = {
+            "/mnt/user-data": str(root),
+            "/workspace": str(files),
+            "/uploads": str(root / "uploads"),
+            "/outputs": str(root / "outputs"),
+        }
+        pattern = re.compile(
+            r"(?:/mnt/user-data|/workspace|/uploads|/outputs)(?=/|$)"
+        )
+        return pattern.sub(lambda match: replacements[match.group(0)], text)
 
     async def release(self, sandbox: Sandbox) -> None:
-        """Persist outputs, then clean up workspace directory."""
+        """Release the execution lease while preserving the persistent Workspace."""
         t0 = time.monotonic()
-        if os.getenv("NANODEER_KEEP_LOCAL_SANDBOX") == "1":
-            logger.info(
-                "release exec_id=%s container=%s skipped cleanup duration=%.2fs",
-                sandbox.exec_id,
-                sandbox.container_id,
-                time.monotonic() - t0,
-            )
-            return
-
-        def _persist_and_cleanup():
-            from ..config import get_config
-            cfg = get_config()
-            base = cfg.thread.storage_path
-            workspace = Path(sandbox.working_dir).resolve()
-
-            # Only operate on workspaces under storage_path (symlink attack defense)
-            if not (workspace.exists() and base in workspace.parents):
-                return
-
-            # Persist outputs/ to storage_path/{exec_id}/outputs/ before cleanup
-            outputs_src = workspace / "outputs"
-            if outputs_src.is_dir():
-                outputs_dst = base / sandbox.exec_id / "outputs"
-                outputs_dst.mkdir(parents=True, exist_ok=True)
-                for item in outputs_src.iterdir():
-                    try:
-                        dst = outputs_dst / item.name
-                        if item.is_file():
-                            shutil.copy2(item, dst)
-                        elif item.is_dir():
-                            shutil.copytree(item, dst, dirs_exist_ok=True)
-                    except Exception:
-                        pass
-
-            # Clean up workspace
-            shutil.rmtree(workspace, ignore_errors=True)
-
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, _persist_and_cleanup)
         logger.info("release exec_id=%s container=%s duration=%.2fs",
                     sandbox.exec_id, sandbox.container_id, time.monotonic() - t0)

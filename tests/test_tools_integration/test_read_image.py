@@ -1,16 +1,28 @@
 """Tests for read_image tool."""
+
 import pytest
 from pathlib import Path
 
 from nanodeer.tools.read_image import read_image
+from nanodeer.workspace import WorkspaceManager, bind_workspace
+
+
+@pytest.fixture(autouse=True)
+def workspace_scope(tmp_path):
+    workspace = WorkspaceManager(
+        tmp_path / "threads",
+        host_read_roots=(tmp_path,),
+    ).open("image-tests")
+    with bind_workspace(workspace):
+        yield
 
 
 class TestReadImageTool:
     def test_invoke_nonexistent_file(self):
-        """Nonexistent file returns error."""
+        """Unconfigured absolute host paths are denied without leaking existence."""
         result = read_image.invoke({"image_path": "/nonexistent/image.png"})
         assert "Error" in result
-        assert "not found" in result
+        assert "access denied" in result
 
     def test_invoke_unsupported_format(self, tmp_path):
         """Unsupported format returns error."""

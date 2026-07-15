@@ -10,6 +10,7 @@ from pathlib import Path
 import docker
 
 from . import Sandbox, SandboxProvider, RunResult
+from nanodeer.workspace import WorkspaceManager, safe_thread_key
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +24,8 @@ class DockerSandboxProvider(SandboxProvider):
     """Ephemeral containers: created fresh per thread, destroyed on release.
 
     Security: network=none, read-only rootfs, tmpfs for /tmp.
-    Host files (uploads, user-data) accessible via volume mount at /mnt/user-data.
+    Persistent data is mounted at /workspace, /uploads, and /outputs;
+    /mnt/user-data remains available as a compatibility mount.
     """
 
     def __init__(
@@ -103,8 +105,9 @@ class DockerSandboxProvider(SandboxProvider):
         # Cleanup stale containers on each acquire attempt
         self._cleanup_stale_containers()
 
-        container_name = f"{self.container_prefix}-{exec_id}"
-        working_dir = f"/workspace/{exec_id}"
+        safe_id = safe_thread_key(exec_id)
+        container_name = f"{self.container_prefix}-{safe_id}"
+        working_dir = "/workspace"
 
         loop = asyncio.get_event_loop()
 
@@ -131,12 +134,13 @@ class DockerSandboxProvider(SandboxProvider):
 
         await loop.run_in_executor(None, self._pull_image)
 
-        # Volume mount: host {base_path}/{exec_id}/user-data → container /mnt/user-data
-        # This makes uploads written by ContextManager visible inside the container
-        # at the virtual path /mnt/user-data/uploads/.
         base_path = self._get_base_path()
+        workspace = WorkspaceManager(base_path).open(exec_id)
         volumes = {
-            str(base_path / exec_id / "user-data"): {"bind": "/mnt/user-data", "mode": "rw"},
+            str(workspace.root): {"bind": "/mnt/user-data", "mode": "rw"},
+            str(workspace.files): {"bind": "/workspace", "mode": "rw"},
+            str(workspace.uploads): {"bind": "/uploads", "mode": "ro"},
+            str(workspace.outputs): {"bind": "/outputs", "mode": "rw"},
         }
 
         container = await loop.run_in_executor(
@@ -181,11 +185,12 @@ class DockerSandboxProvider(SandboxProvider):
         # Persist outputs before container goes away
         try:
             base_path = self._get_base_path()
-            outputs_src = base_path / sandbox.exec_id / "user-data" / "outputs"
+            workspace = WorkspaceManager(base_path).open(sandbox.exec_id)
+            outputs_src = workspace.outputs
             if outputs_src.is_dir():
                 from ..config import get_config
-                storage = get_config().thread.storage_path
-                outputs_dst = storage / sandbox.exec_id / "outputs"
+                storage = Path(get_config().thread.storage_path).expanduser()
+                outputs_dst = storage / safe_thread_key(sandbox.exec_id) / "outputs"
                 outputs_dst.mkdir(parents=True, exist_ok=True)
                 for item in outputs_src.iterdir():
                     try:
