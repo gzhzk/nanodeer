@@ -80,7 +80,7 @@ NanoDeer 是 **Agent Runtime 工程的开源参考实现**——不是又一个�
 
 ### 6. 为什么 factory 合并进 engine
 
-`NanoDeerFactory` 只是个薄参数转发层。现在由 `NanoEngine` 组装依赖，并把模块顶层 `agent_loop()` 注入每个 `NanoAgent`；保留的 `ReActExecutor` 只承担兼容包装。少一层所有权，生产主链更直接。
+`NanoDeerFactory` 只是个薄参数转发层。现在由 `NanoEngine` 通过 `create_agent_loop()` 绑定依赖，并把得到的 callable 直接交给每个 `NanoAgent`；Agent 与 Loop 之间不再存在 executor 对象或另一套 run API。
 
 ### 7. 参考实现，不是产品
 
@@ -218,13 +218,13 @@ nanodeer/
 │
 ├── src/nanodeer/            # Python 源码
 │   ├── __init__.py          # 包导出: NanoEngine, RuntimeFeatures, config
-│   ├── engine.py            # NanoEngine — 应用入口，执行器组装
+│   ├── engine.py            # NanoEngine — 应用入口，Loop 组装
 │   ├── config.py            # HarnessConfig — Pydantic 模型，YAML + 环境变量加载
 │   │
 │   ├── agent/               # 核心运行时
 │   │   ├── __init__.py
 │   │   ├── agent.py         # NanoAgent — State owner + execution lock
-│   │   ├── react.py         # 唯一 Agent loop + 兼容 wrapper
+│   │   ├── react.py         # 唯一 agent_loop + 依赖绑定函数
 │   │   ├── state.py         # AgentState, NextAction, WaitState
 │   │   ├── context.py       # ContextView + transform/上传边界
 │   │   ├── provider.py      # Provider 编解码/归一化边界

@@ -253,8 +253,8 @@ EvalResult 必须绑定 `run_id / evaluator / evaluator_version / score / dimens
 |---|---|
 | `NanoEngine` | 兼容 façade 与 Agent 装配 |
 | `ThreadState` | AgentState |
-| `ReActExecutor` | `agent_loop()`；临时保留兼容 wrapper |
-| `ContextManager` | 上传入口函数 + `transform_context()` |
+| `ReActExecutor` | 已删除；`create_agent_loop()` 绑定依赖，`agent_loop()` 推进 State |
+| `ContextManager` | 已删除；上传入口函数 + `transform_context()` |
 | `TurnSignals` | 已由 Loop 局部 `ContextView` 替代 |
 | `WorkspaceManager` | Workspace 数据对象 + 小 factory |
 | `SandboxManager` | Tool execution backend |
@@ -281,7 +281,7 @@ Memory 使用 Context + Tool + subscriber；Skills 使用资源发现和 Context
 
 2. 统一 State Owner：新增薄 Agent，集中 load/create/append/resume/cancel。所有状态推进进入同一个 execution lock。
 
-3. 收敛唯一 Loop：把共享执行主线统一为 `agent_loop()`，ReActExecutor 暂作兼容壳。仓库只保留一个 while、Tool 顺序和 FINISH/WAIT 判定。
+3. 收敛唯一 Loop：把共享执行主线统一为 `agent_loop()`，由 `create_agent_loop()` 绑定依赖。仓库只保留一个 while、Tool 顺序和 FINISH/WAIT 判定。
 
 4. 固定 Commit Barrier：实现四个提交屏障和 revision。用崩溃恢复测试验证意图、结果和完成 Event 的时序。
 
@@ -301,7 +301,7 @@ Memory 使用 Context + Tool + subscriber；Skills 使用资源发现和 Context
 
 12. 建立外围 Eval：离线消费 State snapshot、Trace 和环境结果。在线判断若改变 Loop，必须显式成为 Tool、Guard 或 Policy。
 
-13. 删除旧壳：合同全部通过后删除 ReActExecutor wrapper、ContextManager、TurnSignals、持久 SandboxState 和重复 checkpoint load。最后再整理目录，避免无意义的大范围迁移。
+13. 删除旧壳（已完成）：合同通过后删除 ReActExecutor wrapper、ContextManager、TurnSignals、持久 SandboxState 字段和重复 checkpoint load；外接能力改由 Context、Tool、Event 合同承接。
 
 ---
 

@@ -55,7 +55,8 @@ AgentState(
 ### 2.2 Loop：唯一推进器
 
 模块顶层 `agent_loop()` 是唯一真正推进 State 的 ReAct `while`。streaming、
-non-streaming 和 resume 都进入它；`ReActExecutor` 仅保留为依赖容器与旧调用 wrapper。
+non-streaming 和 resume 都进入它；`create_agent_loop()` 只绑定依赖并返回 callable，
+不提供 executor 身份或另一套 run API。
 
 ### 2.3 Context：本轮模型视图
 

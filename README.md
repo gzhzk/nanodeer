@@ -80,7 +80,7 @@ The original `ToolManager` + `groups.py` system handled progressive tool exposur
 
 ### 6. Why factory was merged into engine
 
-`NanoDeerFactory` was a thin assembly layer. `NanoEngine` now assembles dependencies and injects the module-level `agent_loop()` into each `NanoAgent`; the remaining `ReActExecutor` is only a compatibility wrapper. One fewer ownership layer makes the production path explicit.
+`NanoDeerFactory` was a thin assembly layer. `NanoEngine` now binds dependencies with `create_agent_loop()` and gives the resulting callable directly to each `NanoAgent`. There is no executor object or alternate run API between Agent and Loop.
 
 ### 7. Reference implementation, not product
 
@@ -218,13 +218,13 @@ nanodeer/
 │
 ├── src/nanodeer/            # Python source
 │   ├── __init__.py          # Package exports: NanoEngine, RuntimeFeatures, config
-│   ├── engine.py            # NanoEngine — app entry point, executor assembly
+│   ├── engine.py            # NanoEngine — app entry point, Loop assembly
 │   ├── config.py            # HarnessConfig — Pydantic models, YAML + env loading
 │   │
 │   ├── agent/               # Core runtime
 │   │   ├── __init__.py
 │   │   ├── agent.py         # NanoAgent — State owner + execution lock
-│   │   ├── react.py         # Canonical Agent loop + compatibility wrapper
+│   │   ├── react.py         # Canonical agent_loop + dependency binder
 │   │   ├── state.py         # AgentState, NextAction, WaitState
 │   │   ├── context.py       # ContextView + transform/upload boundary
 │   │   ├── provider.py      # Provider encode/normalize boundary

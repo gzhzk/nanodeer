@@ -23,8 +23,8 @@ agent_loop(state)
 FINISH / WAIT
 ```
 
-核心只有一份活跃 State 和一个 while loop。`ReActExecutor`、`ContextManager`、
-`ThreadState` 仍作为兼容名称存在，但不再拥有第二条执行链或第二份事实。
+核心只有一份活跃 State 和一个 while loop。`ReActExecutor` 与 `ContextManager` 已删除；
+`ThreadState` 只保留为 `AgentState` 的外部 import alias，不产生第二份事实。
 
 ## 2. 数据与所有权
 
@@ -81,7 +81,7 @@ def get_agent(thread_id):
     if thread_id not in agents:
         agents[thread_id] = NanoAgent(
             thread_id,
-            executor=shared_executor,
+            loop=shared_loop,
             checkpointer=checkpointer,
         )
     return agents[thread_id]
@@ -114,7 +114,7 @@ async def agent_run(prompt, uploads):
             append(HumanMessage(prompt))
             await commit_state(state)          # Barrier 1
 
-            final_state, events = await executor.run(state, uploads)
+            final_state, events = await loop(state, uploads)
             assert final_state is state
             return state, events
         except:
@@ -255,8 +255,8 @@ uploaded_files_context(workspace)
 transform_context(state, signals, memory_store, workspace)
 ```
 
-Context 只生成本轮模型视图，不追加 Message，也不替换 State。`ContextManager.load()`
-只为自定义旧入口和扩展事件兼容保留。
+Context 只生成本轮模型视图，不追加 Message，也不替换 State。自定义扩展通过
+`NanoEngine(context_transform=...)` 注入同签名 callable，不再建立 Manager 或平行链路。
 
 ## 8. Provider 边界
 
@@ -304,7 +304,7 @@ WAIT   = 缺少只能由用户或外部系统提供的信息，已持久暂停
 WAIT 只能由本轮唯一的显式 `wait` ToolCall 产生，并要求非空 `question`。运行时不检查
 自然语言问号，不识别 `[CLARIFICATION]`，也没有第三个 clarification 状态。
 
-直接调用 Executor 且传入未被 Agent 消费的 WAIT checkpoint 时，Loop 只重发
+直接调用绑定后的 Loop 且传入未被 Agent 消费的 WAIT checkpoint 时，Loop 只重发
 `wait(restored=true)`，不会调用 Provider。
 
 ## 11. Event、Trace 与 SSE
@@ -328,19 +328,19 @@ tool_result / wait / end` 等事件名。Delta 可以先发送；`assistant_resp
 SSE subscriber 与 Agent task 已解耦：客户端断开只停止消费 Event，后台 Loop 继续持有
 execution lock 直到 FINISH/WAIT。只有 `/api/chat/cancel` 调用 `Agent.cancel()` 才取消任务。
 
-## 12. 当前兼容壳
+## 12. 当前边界
 
-为保证外接功能不丢失，以下名称暂时保留：
+旧壳清扫后只保留这些明确边界：
 
 ```text
-ThreadState       → AgentState alias
-ReActExecutor     → 顶层 agent_loop 的兼容依赖容器与 public wrapper
-ContextManager    → 旧自定义 context adapter
-SandboxManager    → Tool backend lifecycle adapter
+ThreadState          → AgentState 的 import alias
+create_agent_loop()  → 绑定依赖并返回 callable
+context_transform    → 自定义 Context 扩展 callable
+SandboxManager       → ExecutionResources 的真实 lease lifecycle
 ```
 
-只有行为合同、旧 SQLite、扩展和 API 测试全部稳定后才删除这些壳。删除名字不能先于
-所有权迁移，也不能改变 Tool、Memory、Plan、Skills、Subagent 或 Office 扩展的接入方式。
+`ReActExecutor`、executor fallback 和 `ContextManager` 不再存在于生产或兼容路径。
+Tool、Memory、Plan、Skills、Subagent 与 Office 能力仍通过 Context、Tool 或 Event 接入。
 
 ## 13. 不变量
 
