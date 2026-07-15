@@ -18,10 +18,12 @@ from .tools import (
     grep,
     invoke_skill,
     ls,
+    office_artifact,
     read_file,
     read_image,
     save_memory,
     search_memory,
+    tasks,
     wait,
     web_fetch,
     web_search,
@@ -70,7 +72,7 @@ PROFILES: dict[str, Profile] = {
             "For office work, preserve the user's structure and data, write final artifacts "
             "under /outputs, and inspect generated files before finishing."
         ),
-        tools=(read_file, write_file, ls, read_image),
+        tools=(read_file, write_file, ls, read_image, office_artifact),
         skills=("office_artifacts", "excel_analysis"),
     ),
     "daily": Profile(
@@ -79,7 +81,7 @@ PROFILES: dict[str, Profile] = {
             "For daily work, turn requests into concrete next actions, keep dates explicit, "
             "and persist only information that remains useful across conversations."
         ),
-        tools=(save_memory, search_memory, read_file, write_file, ls),
+        tools=(tasks, save_memory, search_memory, read_file, write_file, ls),
         skills=("daily_planning",),
     ),
 }

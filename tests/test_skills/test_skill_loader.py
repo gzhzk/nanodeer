@@ -175,3 +175,16 @@ def test_built_in_coding_and_research_skills_use_real_tool_names():
     assert "ExecPython" not in coding.tools
     assert research is not None
     assert {"web_search", "web_fetch", "write_file"} <= set(research.tools)
+
+
+def test_built_in_office_and_daily_skills_use_compact_effect_tools():
+    skills_root = Path(__file__).parents[2] / "src" / "nanodeer" / "skills"
+    loader = SkillLoader(skills_root)
+
+    office = loader.get("office_artifacts")
+    daily = loader.get("daily_planning")
+
+    assert office is not None
+    assert "office_artifact" in office.tools
+    assert daily is not None
+    assert {"tasks", "save_memory"} <= set(daily.tools)

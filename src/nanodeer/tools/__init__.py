@@ -20,6 +20,8 @@ from .web_fetch import web_fetch
 from .save_memory import save_memory
 from .search_memory import search_memory
 from .wait import wait
+from .office_artifact import office_artifact
+from .tasks import tasks
 
 # Extension tools — importable individually, not in default_tools()
 from .ls import ls
@@ -65,6 +67,8 @@ __all__ = [
     "save_memory",
     "search_memory",
     "wait",
+    "office_artifact",
+    "tasks",
     # extension (importable by name)
     "ls",
     "glob",

@@ -13,7 +13,15 @@ def test_default_bundle_combines_all_domains_without_duplicate_tools():
 
     assert profile.capabilities == DEFAULT_CAPABILITIES
     assert len(names) == len(set(names))
-    assert {"bash", "web_search", "save_memory", "invoke_skill", "wait"} <= set(names)
+    assert {
+        "bash",
+        "web_search",
+        "office_artifact",
+        "tasks",
+        "save_memory",
+        "invoke_skill",
+        "wait",
+    } <= set(names)
     assert {"code_project", "research_report", "office_artifacts", "daily_planning"} <= set(
         profile.skills
     )
