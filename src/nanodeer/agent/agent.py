@@ -23,14 +23,12 @@ class NanoAgent:
         self,
         thread_id: str,
         *,
-        executor: Any,
+        loop: Any,
         checkpointer: Any | None = None,
-        loop: Any | None = None,
     ) -> None:
         if not thread_id:
             raise ValueError("thread_id is required")
         self.thread_id = thread_id
-        self._executor = executor
         self._loop = loop
         self._checkpointer = checkpointer
         self._execution_lock = asyncio.Lock()
@@ -141,24 +139,12 @@ class NanoAgent:
         stream_llm: bool,
         sink=None,
     ):
-        if self._loop is not None:
-            return await self._loop(
-                state,
-                uploaded_files,
-                stream_llm=stream_llm,
-                sink=sink,
-            )
-        if stream_llm:
-            events = []
-            async for event in self._executor.run_streaming(
-                state,
-                uploaded_files=uploaded_files,
-            ):
-                events.append(event)
-                if sink is not None:
-                    await sink(event)
-            return state, events
-        return await self._executor.run(state, uploaded_files=uploaded_files)
+        return await self._loop(
+            state,
+            uploaded_files,
+            stream_llm=stream_llm,
+            sink=sink,
+        )
 
     async def run(
         self,

@@ -1,11 +1,11 @@
-"""Tests for ReActExecutor — native async ReAct loop (no middleware chain)."""
+"""Tests for the native async Agent Loop (no middleware chain)."""
 
 import asyncio
 
 import pytest
 from unittest.mock import MagicMock, AsyncMock
 
-from nanodeer.agent.react import ReActExecutor, _bash_safe, _tool_success, agent_loop
+from nanodeer.agent.react import create_agent_loop, _bash_safe, _tool_success
 from nanodeer.agent.state import NextAction, ThreadState
 from nanodeer.agent.messages import HumanMessage, SystemMessage, AIMessage, ToolMessage
 from nanodeer.agent.prompt import PromptConfig
@@ -26,8 +26,10 @@ class MockLLM:
         self._tool_calls = tool_calls
         self.usage_metadata = usage_metadata or {}
         self.call_count = 0
+        self.bound_tools = []
 
     def bind_tools(self, tools):
+        self.bound_tools = tools
         return self
 
     async def ainvoke(self, messages):
@@ -186,15 +188,15 @@ class MockContext:
     def __init__(self):
         self.load_count = 0
 
-    async def load(self, state, signals):
+    async def __call__(self, state, signals):
         self.load_count += 1
 
 
 class ExtensionContext(MockContext):
     """Context extension that uses the stable plan and event hooks."""
 
-    async def load(self, state, signals):
-        await super().load(state, signals)
+    async def __call__(self, state, signals):
+        await super().__call__(state, signals)
         signals.plan_context = "one active plan"
         signals.events.append({"event": "extension_context_loaded", "source": "test"})
 
@@ -211,21 +213,26 @@ class MockSandboxManager:
         self.release_count += 1
 
 
-class TestReActExecutorInit:
-    def test_binds_tools_to_llm(self):
-        """Tools are bound to LLM at init."""
+class TestAgentLoopBinding:
+    @pytest.mark.asyncio
+    async def test_binds_tools_to_llm(self):
+        """Capability schemas and the wait control schema reach the provider."""
         llm = MockLLM()
         tools = [MockTool("tool_a"), MockTool("tool_b")]
-        executor = ReActExecutor(llm, tools)
+        loop = create_agent_loop(llm, tools, context_transform=MockContext())
+        state = ThreadState(thread_id="binding", messages=[HumanMessage(content="Hi")])
 
-        assert executor._llm is llm
-        assert sorted(executor._tools.keys()) == ["tool_a", "tool_b", "wait"]
+        await loop(state)
+
+        assert sorted(tool.name for tool in llm.bound_tools) == [
+            "tool_a",
+            "tool_b",
+            "wait",
+        ]
 
     def test_prompt_config_default(self):
-        """Default PromptConfig has memory flag True."""
-        llm = MockLLM()
-        executor = ReActExecutor(llm, [])
-        assert executor._prompt_config.memory is True
+        """Binding the default prompt configuration returns one callable Loop."""
+        assert callable(create_agent_loop(MockLLM(), []))
 
 
 class TestReActLoop:
@@ -234,10 +241,10 @@ class TestReActLoop:
         """Loop ends when LLM returns no tool calls."""
         llm = MockLLM(response_content="Final answer")
         tools = [MockTool()]
-        executor = ReActExecutor(llm, tools, context_manager=MockContext())
+        loop = create_agent_loop(llm, tools, context_transform=MockContext())
 
         state = ThreadState(thread_id="t1", messages=[HumanMessage(content="Hi")])
-        final, _events = await executor.run(state)
+        final, _events = await loop(state)
 
         assert len(final.messages) == 2  # HumanMessage + AIMessage
         assert final.next_action == NextAction.FINISH
@@ -252,14 +259,14 @@ class TestReActLoop:
     )
     async def test_question_like_text_is_a_final_answer(self, content):
         """Text has no hidden pause semantics after removing the legacy protocol."""
-        executor = ReActExecutor(
+        loop = create_agent_loop(
             MockLLM(response_content=content),
             [wait],
-            context_manager=MockContext(),
+            context_transform=MockContext(),
         )
         state = ThreadState(thread_id="t-text-question", messages=[HumanMessage(content="Hi")])
 
-        final, events = await executor.run(state)
+        final, events = await loop(state)
 
         assert final.next_action == NextAction.FINISH
         assert final.wait is None
@@ -275,14 +282,14 @@ class TestReActLoop:
             },
             "id": "call-wait",
         }
-        executor = ReActExecutor(
+        loop = create_agent_loop(
             MockLLM(tool_calls=[tc]),
             [wait],
-            context_manager=MockContext(),
+            context_transform=MockContext(),
         )
         state = ThreadState(thread_id="t-wait", messages=[HumanMessage(content="Continue")])
 
-        final, events = await executor.run(state)
+        final, events = await loop(state)
 
         assert final.next_action == NextAction.WAIT
         assert final.finish_reason == "wait"
@@ -302,17 +309,17 @@ class TestReActLoop:
         }
         work_call = {"name": "mock_tool", "args": {}, "id": "call-work"}
         work = MockTool(name="mock_tool", result="worked")
-        executor = ReActExecutor(
+        loop = create_agent_loop(
             SequenceResponseLLM([
                 ("", [wait_call, work_call]),
                 ("Recovered.", None),
             ]),
             [wait, work],
-            context_manager=MockContext(),
+            context_transform=MockContext(),
         )
         state = ThreadState(thread_id="t-mixed-wait", messages=[HumanMessage(content="Go")])
 
-        final, _events = await executor.run(state)
+        final, _events = await loop(state)
 
         assert final.next_action == NextAction.FINISH
         assert final.wait is None
@@ -328,18 +335,18 @@ class TestReActLoop:
             "id": "call-wait",
         }
         sandbox = MockSandboxManager()
-        executor = ReActExecutor(
+        loop = create_agent_loop(
             SequenceResponseLLM([
                 ("", [execute_call]),
                 ("", [wait_call]),
             ]),
             [RequiresSandboxTool(), wait],
-            context_manager=MockContext(),
+            context_transform=MockContext(),
             sandbox_manager=sandbox,
         )
         state = ThreadState(thread_id="t-wait-release", messages=[HumanMessage(content="Go")])
 
-        final, _events = await executor.run(state)
+        final, _events = await loop(state)
 
         assert final.next_action == NextAction.WAIT
         assert sandbox.acquire_count == 1
@@ -348,7 +355,7 @@ class TestReActLoop:
     @pytest.mark.asyncio
     async def test_paused_checkpoint_cannot_resume_without_external_input(self):
         llm = MockLLM(response_content="must not run")
-        executor = ReActExecutor(llm, [], context_manager=MockContext())
+        loop = create_agent_loop(llm, [], context_transform=MockContext())
         state = ThreadState(
             thread_id="t-still-waiting",
             messages=[HumanMessage(content="Original request")],
@@ -361,7 +368,7 @@ class TestReActLoop:
             },
         )
 
-        final, events = await executor.run(state)
+        final, events = await loop(state)
 
         assert final.next_action == NextAction.WAIT
         assert llm.call_count == 0
@@ -376,10 +383,10 @@ class TestReActLoop:
 
         llm = MockLLM(response_content="Thinking...", tool_calls=[tc])
         tools = [MockTool(name="mock_tool", result="tool result")]
-        executor = ReActExecutor(llm, tools, context_manager=MockContext())
+        loop = create_agent_loop(llm, tools, context_transform=MockContext())
 
         state = ThreadState(thread_id="t1", messages=[HumanMessage(content="Hi")])
-        final, _events = await executor.run(state)
+        final, _events = await loop(state)
 
         # After tool execution, LLM runs again:
         # Human + AIMessage(tc) + ToolMessage + AIMessage(final)
@@ -395,14 +402,14 @@ class TestReActLoop:
             ("Should I inspect this first?", [tc]),
             ("Inspection complete.", None),
         ])
-        executor = ReActExecutor(
+        loop = create_agent_loop(
             llm,
             [MockTool(name="mock_tool", result="inspected")],
-            context_manager=MockContext(),
+            context_transform=MockContext(),
         )
 
         state = ThreadState(thread_id="t-question", messages=[HumanMessage(content="Inspect")])
-        final, _events = await executor.run(state)
+        final, _events = await loop(state)
 
         assert final.next_action == NextAction.FINISH
         assert final.finish_reason == "completed"
@@ -413,14 +420,14 @@ class TestReActLoop:
         """Provider tool calls without IDs remain a valid assistant/tool pair."""
         tc = {"name": "mock_tool", "args": {"path": "a.txt"}}
         llm = MockLLM(response_content="Inspecting", tool_calls=[tc])
-        executor = ReActExecutor(
+        loop = create_agent_loop(
             llm,
             [MockTool(name="mock_tool", result="ok")],
-            context_manager=MockContext(),
+            context_transform=MockContext(),
         )
 
         state = ThreadState(thread_id="t-id", messages=[HumanMessage(content="Inspect")])
-        final, events = await executor.run(state)
+        final, events = await loop(state)
 
         assistant_call = final.messages[1].tool_calls[0]
         tool_result = final.messages[2]
@@ -436,14 +443,14 @@ class TestReActLoop:
         """A blocked command still receives a matching ToolMessage before END."""
         tc = {"name": "bash", "args": {"command": "rm -rf /"}, "id": "call-danger"}
         llm = MockLLM(response_content="Running command", tool_calls=[tc])
-        executor = ReActExecutor(
+        loop = create_agent_loop(
             llm,
             [MockTool(name="bash", result="must not run")],
-            context_manager=MockContext(),
+            context_transform=MockContext(),
         )
 
         state = ThreadState(thread_id="t-block", messages=[HumanMessage(content="Run")])
-        final, events = await executor.run(state)
+        final, events = await loop(state)
 
         assert final.next_action == NextAction.FINISH
         assert final.finish_reason == "bash_blocked"
@@ -458,10 +465,10 @@ class TestReActLoop:
 
         llm = MockLLM(response_content="Thinking...", tool_calls=[tc])
         tool = SyncInvokeTool(name="sync_tool", result="sync result")
-        executor = ReActExecutor(llm, [tool], context_manager=MockContext())
+        loop = create_agent_loop(llm, [tool], context_transform=MockContext())
 
         state = ThreadState(thread_id="t1", messages=[HumanMessage(content="Hi")])
-        final, _events = await executor.run(state)
+        final, _events = await loop(state)
 
         assert tool.invoked is True
         assert final.messages[-2].content == "sync result"
@@ -473,10 +480,10 @@ class TestReActLoop:
 
         llm = RepeatingToolLLM(tc)
         tool = MockTool(name="mock_tool", result="DONE_123")
-        executor = ReActExecutor(llm, [tool], context_manager=MockContext())
+        loop = create_agent_loop(llm, [tool], context_transform=MockContext())
 
         state = ThreadState(thread_id="t1", messages=[HumanMessage(content="Hi")])
-        final, events = await executor.run(state)
+        final, events = await loop(state)
 
         assert final.next_action == NextAction.FINISH
         assert llm.call_count == 3
@@ -497,10 +504,10 @@ class TestReActLoop:
 
         llm = SequenceToolLLM([write_tc, read_tc])
         tools = [MockTool(name="mock_tool", result="log contents")]
-        executor = ReActExecutor(llm, tools, context_manager=MockContext())
+        loop = create_agent_loop(llm, tools, context_transform=MockContext())
 
         state = ThreadState(thread_id="t1", messages=[HumanMessage(content="Hi")])
-        final, _events = await executor.run(state)
+        final, _events = await loop(state)
 
         assert final.next_action == NextAction.FINISH
         assert "ERROR_COUNT=2" in final.messages[-1].content
@@ -513,10 +520,10 @@ class TestReActLoop:
 
         llm = MockLLM(response_content="Thinking...", tool_calls=[tc], usage_metadata=usage)
         tools = [MockTool(name="mock_tool", result="tool result")]
-        executor = ReActExecutor(llm, tools, context_manager=MockContext())
+        loop = create_agent_loop(llm, tools, context_transform=MockContext())
 
         state = ThreadState(thread_id="t1", messages=[HumanMessage(content="Hi")])
-        _final, events = await executor.run(state)
+        _final, events = await loop(state)
 
         names = [event["event"] for event in events]
         assert names.count("turn_start") == 2
@@ -547,18 +554,18 @@ class TestReActLoop:
                 return None
 
         tool_call = {"name": "mock_tool", "args": {}, "id": "barrier-call"}
-        executor = ReActExecutor(
+        loop = create_agent_loop(
             SequenceResponseLLM([
                 ("Using a tool", [tool_call]),
                 ("Finished", None),
             ]),
             [MockTool(name="mock_tool", result="result")],
-            context_manager=MockContext(),
+            context_transform=MockContext(),
             checkpointer=RecordingCheckpointer(),
         )
         state = ThreadState(thread_id="t-barrier", messages=[HumanMessage(content="Go")])
 
-        _final, events = await executor.run(state)
+        _final, events = await loop(state)
         names = [event["event"] for event in events]
 
         first_assistant = names.index("assistant_response")
@@ -570,17 +577,17 @@ class TestReActLoop:
 
     @pytest.mark.asyncio
     async def test_event_subscriber_failure_does_not_change_run_result(self):
-        executor = ReActExecutor(
+        loop = create_agent_loop(
             MockLLM(response_content="Done"),
             [],
-            context_manager=MockContext(),
+            context_transform=MockContext(),
         )
         state = ThreadState(thread_id="t-subscriber", messages=[HumanMessage(content="Hi")])
 
         async def broken_subscriber(_event):
             raise RuntimeError("client gone")
 
-        final, events = await executor.agent_loop(
+        final, events = await loop(
             state,
             None,
             stream_llm=False,
@@ -597,16 +604,16 @@ class TestReActLoop:
                 raise RuntimeError("checkpoint unavailable")
 
         tool = MockTool(name="mock_tool")
-        executor = ReActExecutor(
+        loop = create_agent_loop(
             MockLLM(tool_calls=[{"name": "mock_tool", "args": {}, "id": "call-1"}]),
             [tool],
-            context_manager=MockContext(),
+            context_transform=MockContext(),
             checkpointer=FailingCheckpointer(),
         )
         state = ThreadState(thread_id="t-crash-before-tool", messages=[HumanMessage(content="Go")])
 
         with pytest.raises(RuntimeError, match="checkpoint unavailable"):
-            await executor.run(state)
+            await loop(state)
 
         assert tool.call_count == 0
         assert state.revision == 0
@@ -624,17 +631,17 @@ class TestReActLoop:
 
         llm = MockLLM(tool_calls=[{"name": "mock_tool", "args": {}, "id": "call-1"}])
         tool = MockTool(name="mock_tool")
-        executor = ReActExecutor(
+        loop = create_agent_loop(
             llm,
             [tool],
-            context_manager=MockContext(),
+            context_transform=MockContext(),
             checkpointer=FailSecondCommit(),
         )
         state = ThreadState(thread_id="t-crash-after-tool", messages=[HumanMessage(content="Go")])
         observed = []
 
         with pytest.raises(RuntimeError, match="result checkpoint failed"):
-            await executor.agent_loop(
+            await loop(
                 state,
                 None,
                 stream_llm=False,
@@ -649,14 +656,14 @@ class TestReActLoop:
     @pytest.mark.asyncio
     async def test_context_extension_hooks_are_preserved(self):
         """Optional plan/context integrations can still add state and trace events."""
-        executor = ReActExecutor(
+        loop = create_agent_loop(
             MockLLM(response_content="Done"),
             [],
-            context_manager=ExtensionContext(),
+            context_transform=ExtensionContext(),
         )
         state = ThreadState(thread_id="t-extension", messages=[HumanMessage(content="Hi")])
 
-        _final, events = await executor.run(state)
+        _final, events = await loop(state)
 
         context_event = next(event for event in events if event["event"] == "context_loaded")
         extension_event = next(
@@ -668,7 +675,7 @@ class TestReActLoop:
         assert extension_event["turn"] == 1
 
     @pytest.mark.asyncio
-    async def test_executor_uses_thread_id_for_exec_id(self):
+    async def test_loop_uses_thread_id_for_exec_id(self):
         """Tool calls use state.thread_id as exec_id."""
         exec_ids_seen = []
 
@@ -681,15 +688,15 @@ class TestReActLoop:
         tc = {"name": "mock", "args": {}, "id": "call-1"}
 
         llm = MockLLM(response_content="Thinking", tool_calls=[tc])
-        executor = ReActExecutor(llm, [TrackingTool()], context_manager=MockContext())
+        loop = create_agent_loop(llm, [TrackingTool()], context_transform=MockContext())
 
         state = ThreadState(thread_id="thread-abc", messages=[HumanMessage(content="Hi")])
-        await executor.run(state)
+        await loop(state)
 
         assert exec_ids_seen == ["thread-abc"]
 
     @pytest.mark.asyncio
-    async def test_executor_falls_back_to_default_exec_id(self):
+    async def test_loop_falls_back_to_default_exec_id(self):
         """None thread_id uses 'default' as exec_id."""
         exec_ids_seen = []
 
@@ -702,10 +709,10 @@ class TestReActLoop:
         tc = {"name": "mock", "args": {}, "id": "call-1"}
 
         llm = MockLLM(response_content="Thinking", tool_calls=[tc])
-        executor = ReActExecutor(llm, [TrackingTool()], context_manager=MockContext())
+        loop = create_agent_loop(llm, [TrackingTool()], context_transform=MockContext())
 
         state = ThreadState(thread_id=None, messages=[HumanMessage(content="Hi")])
-        await executor.run(state)
+        await loop(state)
 
         assert exec_ids_seen == ["default"]
 
@@ -716,15 +723,15 @@ class TestReActLoop:
         llm = MockLLM(response_content="Executing", tool_calls=[call])
         tool = RequiresSandboxTool()
         sandbox = MockSandboxManager()
-        executor = ReActExecutor(
+        loop = create_agent_loop(
             llm,
             [tool],
-            context_manager=MockContext(),
+            context_transform=MockContext(),
             sandbox_manager=sandbox,
         )
 
         state = ThreadState(thread_id="t-lazy", messages=[HumanMessage(content="Run")])
-        _final, events = await executor.run(state)
+        _final, events = await loop(state)
 
         assert tool.exec_ids == ["t-lazy"]
         assert sandbox.acquire_count == 1
@@ -737,14 +744,14 @@ class TestReActLoop:
         """Disabling sandbox cannot silently execute or report host-shell success."""
         call = {"name": "execute", "args": {}, "id": "call-no-backend"}
         tool = RequiresSandboxTool()
-        executor = ReActExecutor(
+        loop = create_agent_loop(
             MockLLM(response_content="Executing", tool_calls=[call]),
             [tool],
-            context_manager=MockContext(),
+            context_transform=MockContext(),
         )
         state = ThreadState(thread_id="t-no-backend", messages=[HumanMessage(content="Run")])
 
-        final, events = await executor.run(state)
+        final, events = await loop(state)
 
         assert tool.exec_ids == []
         assert "execution backend is unavailable" in final.messages[-2].content
@@ -760,15 +767,15 @@ class TestReActLoop:
             "id": "call-write",
         }
         manager = WorkspaceManager(tmp_path / "threads", host_read_roots=(tmp_path,))
-        executor = ReActExecutor(
+        loop = create_agent_loop(
             MockLLM(response_content="Writing", tool_calls=[call]),
             [write_file],
-            context_manager=MockContext(),
+            context_transform=MockContext(),
             workspace_manager=manager,
         )
         state = ThreadState(thread_id="thread-bound", messages=[HumanMessage(content="Write")])
 
-        await executor.run(state)
+        await loop(state)
 
         output = manager.open("thread-bound").files / "note.txt"
         assert output.read_text(encoding="utf-8") == "thread data"
@@ -784,15 +791,15 @@ class TestReActStreamingLoop:
             "args": {"value": 7},
             "id": "parity-call",
         }
-        collected_executor = ReActExecutor(
+        collected_loop = create_agent_loop(
             SequenceResponseLLM([
                 ("", [tool_call]),
                 ("Final answer", None),
             ]),
             [MockTool(name="mock_tool", result="same result")],
-            context_manager=MockContext(),
+            context_transform=MockContext(),
         )
-        streaming_executor = ReActExecutor(
+        streaming_loop = create_agent_loop(
             SequenceStreamingLLM([
                 [MockStreamChunk(tool_call_chunks=[{
                     "index": 0,
@@ -803,7 +810,7 @@ class TestReActStreamingLoop:
                 [MockStreamChunk(content="Final answer")],
             ]),
             [MockTool(name="mock_tool", result="same result")],
-            context_manager=MockContext(),
+            context_transform=MockContext(),
         )
         collected_state = ThreadState(
             thread_id="t-parity",
@@ -811,10 +818,13 @@ class TestReActStreamingLoop:
         )
         streaming_state = collected_state.model_copy(deep=True)
 
-        final_collected, collected_events = await collected_executor.run(collected_state)
-        streaming_events = [
-            event async for event in streaming_executor.run_streaming(streaming_state)
-        ]
+        final_collected, collected_events = await collected_loop(collected_state)
+        streaming_events = []
+        await streaming_loop(
+            streaming_state,
+            stream_llm=True,
+            sink=streaming_events.append,
+        )
 
         assert streaming_state.messages == final_collected.messages
         assert streaming_state.next_action == final_collected.next_action
@@ -833,15 +843,16 @@ class TestReActStreamingLoop:
         llm = MockStreamingLLM([MockStreamChunk(content="Final answer")])
         context = MockContext()
         sandbox = MockSandboxManager()
-        executor = ReActExecutor(
+        loop = create_agent_loop(
             llm,
             [],
-            context_manager=context,
+            context_transform=context,
             sandbox_manager=sandbox,
         )
 
         state = ThreadState(thread_id="t-stream", messages=[HumanMessage(content="Hi")])
-        events = [event async for event in executor.run_streaming(state)]
+        events = []
+        await loop(state, stream_llm=True, sink=events.append)
 
         assert [event["event"] for event in events].count("end") == 1
         assert events[-1]["event"] == "end"
@@ -862,15 +873,16 @@ class TestReActStreamingLoop:
             }])
         ])
         sandbox = MockSandboxManager()
-        executor = ReActExecutor(
+        loop = create_agent_loop(
             llm,
             [wait],
-            context_manager=MockContext(),
+            context_transform=MockContext(),
             sandbox_manager=sandbox,
         )
         state = ThreadState(thread_id="t-wait", messages=[HumanMessage(content="Inspect")])
 
-        events = [event async for event in executor.run_streaming(state)]
+        events = []
+        await loop(state, stream_llm=True, sink=events.append)
 
         assert state.next_action == NextAction.WAIT
         assert state.wait.question == "Which file should I inspect?"
@@ -894,7 +906,7 @@ class TestReActStreamingLoop:
 
         checkpointer = BlockingCheckpointer()
         sandbox = MockSandboxManager()
-        executor = ReActExecutor(
+        loop = create_agent_loop(
             MockStreamingLLM([
                 MockStreamChunk(tool_call_chunks=[{
                     "index": 0,
@@ -904,14 +916,14 @@ class TestReActStreamingLoop:
                 }])
             ]),
             [wait],
-            context_manager=MockContext(),
+            context_transform=MockContext(),
             sandbox_manager=sandbox,
             checkpointer=checkpointer,
         )
         state = ThreadState(thread_id="t-cancel-wait", messages=[HumanMessage(content="Inspect")])
 
         async def consume():
-            return [event async for event in executor.run_streaming(state)]
+            return await loop(state, stream_llm=True)
 
         consumer = asyncio.create_task(consume())
         await checkpointer.save_started.wait()
@@ -934,14 +946,15 @@ class TestReActStreamingLoop:
             }])],
             [MockStreamChunk(content="Final answer")],
         ])
-        executor = ReActExecutor(
+        loop = create_agent_loop(
             llm,
             [MockTool(name="mock_tool", result="stream result")],
-            context_manager=MockContext(),
+            context_transform=MockContext(),
         )
 
         state = ThreadState(thread_id="t-stream-tool", messages=[HumanMessage(content="Hi")])
-        events = [event async for event in executor.run_streaming(state)]
+        events = []
+        await loop(state, stream_llm=True, sink=events.append)
 
         names = [event["event"] for event in events]
         assert llm.call_count == 2
@@ -964,22 +977,22 @@ class TestReActStreamingLoop:
                 raise RuntimeError("provider failed")
 
         sandbox = MockSandboxManager()
-        executor = ReActExecutor(
+        loop = create_agent_loop(
             FailingStreamingLLM(),
             [],
-            context_manager=MockContext(),
+            context_transform=MockContext(),
             sandbox_manager=sandbox,
         )
         state = ThreadState(thread_id="t-stream-error", messages=[HumanMessage(content="Hi")])
 
         with pytest.raises(RuntimeError, match="provider failed"):
-            _events = [event async for event in executor.run_streaming(state)]
+            await loop(state, stream_llm=True)
 
         assert sandbox.acquire_count == 0
         assert sandbox.release_count == 0
 
 
-class TestReActExecutorToolNotFound:
+class TestAgentLoopToolNotFound:
     @pytest.mark.asyncio
     async def test_unknown_tool_returns_error_message(self):
         """Tool not in tool map returns error ToolMessage."""
@@ -987,10 +1000,10 @@ class TestReActExecutorToolNotFound:
 
         llm = MockLLM(response_content="Calling tool", tool_calls=[tc])
         tools = [MockTool(name="some_other_tool")]
-        executor = ReActExecutor(llm, tools, context_manager=MockContext())
+        loop = create_agent_loop(llm, tools, context_transform=MockContext())
 
         state = ThreadState(thread_id="t1", messages=[HumanMessage(content="Hi")])
-        final, _events = await executor.run(state)
+        final, _events = await loop(state)
 
         tool_msg = final.messages[-2]
         assert "not found" in tool_msg.content
@@ -1001,34 +1014,29 @@ class TestReActExecutorToolNotFound:
         tc = {"name": "nonexistent_tool", "args": {}, "id": "call-1"}
 
         llm = MockLLM(response_content="Calling tool", tool_calls=[tc])
-        executor = ReActExecutor(
+        loop = create_agent_loop(
             llm,
             [MockTool(name="some_other_tool")],
-            context_manager=MockContext(),
+            context_transform=MockContext(),
         )
 
         state = ThreadState(thread_id="t1", messages=[HumanMessage(content="Hi")])
-        _final, events = await executor.run(state)
+        _final, events = await loop(state)
 
         tool_result = next(event for event in events if event["event"] == "tool_result")
         assert tool_result["success"] is False
 
 
 @pytest.mark.asyncio
-async def test_module_level_agent_loop_is_the_canonical_entrypoint():
-    executor = ReActExecutor(
+async def test_bound_agent_loop_is_the_canonical_entrypoint():
+    loop = create_agent_loop(
         MockLLM(response_content="Done"),
         [],
-        context_manager=MockContext(),
+        context_transform=MockContext(),
     )
     state = ThreadState(thread_id="top-level", messages=[HumanMessage(content="Hi")])
 
-    final, events = await agent_loop(
-        executor,
-        state,
-        None,
-        stream_llm=False,
-    )
+    final, events = await loop(state)
 
     assert final is state
     assert final.next_action == NextAction.FINISH
@@ -1049,22 +1057,16 @@ async def test_runtime_error_is_committed_before_error_event():
             return None
 
     observed = []
-    executor = ReActExecutor(
+    loop = create_agent_loop(
         FailingLLM(),
         [],
-        context_manager=MockContext(),
+        context_transform=MockContext(),
         checkpointer=Store(),
     )
     state = ThreadState(thread_id="error-path", messages=[HumanMessage(content="Hi")])
 
     with pytest.raises(ValueError, match="provider rejected request"):
-        await agent_loop(
-            executor,
-            state,
-            None,
-            stream_llm=False,
-            sink=observed.append,
-        )
+        await loop(state, sink=observed.append)
 
     names = [event["event"] for event in observed]
     assert state.next_action == NextAction.FINISH
@@ -1090,20 +1092,14 @@ async def test_explicit_cancel_is_committed_before_cancelled_event():
             return None
 
     observed = []
-    executor = ReActExecutor(
+    loop = create_agent_loop(
         BlockingLLM(),
         [],
-        context_manager=MockContext(),
+        context_transform=MockContext(),
         checkpointer=Store(),
     )
     state = ThreadState(thread_id="cancel-path", messages=[HumanMessage(content="Hi")])
-    task = asyncio.create_task(agent_loop(
-        executor,
-        state,
-        None,
-        stream_llm=False,
-        sink=observed.append,
-    ))
+    task = asyncio.create_task(loop(state, sink=observed.append))
 
     await started.wait()
     task.cancel()

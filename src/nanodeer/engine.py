@@ -10,7 +10,6 @@ Usage::
 """
 
 import asyncio
-from functools import partial
 import logging
 import time
 import uuid
@@ -117,6 +116,7 @@ class NanoEngine:
         model_name: str | None = None,
         features: RuntimeFeatures | None = None,
         tools: list | None = None,
+        context_transform: Any | None = None,
         checkpointer=None,
         sandbox_provider=None,
         generate_titles: bool = True,
@@ -128,6 +128,7 @@ class NanoEngine:
             model_name: Optional model override.
             features: Optional RuntimeFeatures for feature gating.
             tools: Optional custom tool list. None = use default tools.
+            context_transform: Optional callable that populates one ContextView.
             checkpointer: Optional Checkpointer instance. Defaults to SqliteCheckpointer.
             sandbox_provider: Optional sandbox provider override for integrations.
             generate_titles: Whether to generate conversation titles after new turns.
@@ -136,15 +137,16 @@ class NanoEngine:
         self._model_name = model_name
         self._features = features
         self._tools = tools
+        self._context_transform = context_transform
         self._checkpointer = checkpointer
         self._sandbox_provider = sandbox_provider
         self._generate_titles = generate_titles
-        self._executor = None
+        self._loop = None
         self._agents: dict[str, NanoAgent] = {}
 
-    def _get_executor(self):
-        """Lazy-build the dependency runtime used by top-level agent_loop()."""
-        if self._executor is None:
+    def _get_loop(self):
+        """Lazy-bind dependencies into the one callable Agent Loop."""
+        if self._loop is None:
             llm = _create_llm(self.config, self._model_name)
             if self._checkpointer is None:
                 if self.config.thread.checkpointer_type == "sqlite":
@@ -159,7 +161,7 @@ class NanoEngine:
             from nanodeer.agent.memory.storage import MemoryStore
             from nanodeer.agent.sandbox_manager import SandboxManager
             from nanodeer.agent.prompt import PromptConfig
-            from nanodeer.agent.react import ReActExecutor
+            from nanodeer.agent.react import create_agent_loop
             from nanodeer.workspace import WorkspaceManager
 
             feat = self._features or RuntimeFeatures()
@@ -184,7 +186,7 @@ class NanoEngine:
 
             workspace_mgr = WorkspaceManager(self.config.thread.storage_path)
 
-            self._executor = ReActExecutor(
+            self._loop = create_agent_loop(
                 llm=llm,
                 tools=tools,
                 wrapped_tools=wrapped_tools,
@@ -194,11 +196,12 @@ class NanoEngine:
                 ),
                 checkpointer=self._checkpointer,
                 model_name=display_name,
+                context_transform=self._context_transform,
                 memory_store=MemoryStore(),
                 sandbox_manager=sandbox_mgr,
                 workspace_manager=workspace_mgr,
             )
-        return self._executor
+        return self._loop
 
     def get_agent(self, thread_id: str) -> NanoAgent:
         """Return the sole in-process State owner for ``thread_id``."""
@@ -208,17 +211,11 @@ class NanoEngine:
         if agent is not None:
             return agent
 
-        executor = self._get_executor()
-        checkpointer = self._checkpointer or getattr(executor, "_checkpointer", None)
-        from nanodeer.agent.react import ReActExecutor, agent_loop
-
-        loop = partial(agent_loop, executor) if isinstance(executor, ReActExecutor) else None
-
+        loop = self._get_loop()
         agent = NanoAgent(
             thread_id,
-            executor=executor,
-            checkpointer=checkpointer,
             loop=loop,
+            checkpointer=self._checkpointer,
         )
         self._agents[thread_id] = agent
         return agent

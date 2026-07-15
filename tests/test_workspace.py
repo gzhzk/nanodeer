@@ -10,7 +10,6 @@ from nanodeer.tools.ls import ls
 from nanodeer.tools.read_file import read_file
 from nanodeer.tools.write_file import write_file
 from nanodeer.agent.context import (
-    ContextManager,
     ContextView,
     save_uploaded_files,
     transform_context,
@@ -193,19 +192,20 @@ async def test_context_ingests_safe_uploads_and_reports_virtual_paths(manager, t
         def load_for_prompt(self, context_hint=None):
             return ""
 
-    context = ContextManager(
-        memory_store=EmptyMemory(),
-        workspace_manager=manager,
-    )
     state = ThreadState(thread_id="thread-upload")
     signals = ContextView(uploaded_files=[
         {"name": "notes.txt", "content": "hello", "mime_type": "text/plain"},
         {"name": "../escape.txt", "content": "blocked", "mime_type": "text/plain"},
     ])
 
-    await context.load(state, signals)
-
     workspace = manager.open("thread-upload")
+    await save_uploaded_files(workspace, signals.uploaded_files)
+    await transform_context(
+        state,
+        signals,
+        memory_store=EmptyMemory(),
+        workspace=workspace,
+    )
     assert (workspace.uploads / "notes.txt").read_text(encoding="utf-8") == "hello"
     assert not (tmp_path / "escape.txt").exists()
     assert "/uploads/notes.txt" in signals.uploaded_files_list

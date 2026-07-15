@@ -86,11 +86,19 @@ class TestNanoEngineInit:
         engine = NanoEngine(config, tools=tools)
         assert engine._tools == tools
 
-    def test_lazy_executor_init(self):
-        """Executor not created until run() is called."""
+    def test_stores_context_transform_extension(self):
+        config = MagicMock()
+        transform = AsyncMock()
+
+        engine = NanoEngine(config, context_transform=transform)
+
+        assert engine._context_transform is transform
+
+    def test_lazy_loop_init(self):
+        """Loop dependencies are not bound until first use."""
         config = MagicMock()
         engine = NanoEngine(config)
-        assert engine._executor is None
+        assert engine._loop is None
 
 
 class TestProviderRouting:
@@ -116,14 +124,12 @@ class TestProviderRouting:
 
 
 class TestNanoEngineRun:
-    """Injects mock executor directly (no factory mocking needed after v0.2 merge)."""
+    """Injects the callable Loop boundary directly."""
 
     def test_get_agent_returns_one_owner_per_thread(self):
         config = MagicMock()
         engine = NanoEngine(config)
-        executor = MagicMock()
-        executor._checkpointer = None
-        engine._executor = executor
+        engine._loop = MagicMock()
 
         first = engine.get_agent("thread-1")
         second = engine.get_agent("thread-1")
@@ -141,16 +147,14 @@ class TestNanoEngineRun:
         config = MagicMock()
         engine = NanoEngine(config)
 
-        mock_executor = AsyncMock()
-        mock_executor._checkpointer = None
-
-        async def complete(state, uploaded_files=None):
+        async def complete(
+            state, uploaded_files=None, *, stream_llm=False, sink=None
+        ):
             state.messages.append(MagicMock(content="Hi"))
             state.next_action = NextAction.FINISH
             return state, []
 
-        mock_executor.run = AsyncMock(side_effect=complete)
-        engine._executor = mock_executor
+        engine._loop = AsyncMock(side_effect=complete)
 
         result = await engine.run("hello", thread_id="t1")
 
@@ -164,16 +168,14 @@ class TestNanoEngineRun:
         config = MagicMock()
         engine = NanoEngine(config)
 
-        mock_executor = AsyncMock()
-        mock_executor._checkpointer = None
-
-        async def complete(state, uploaded_files=None):
+        async def complete(
+            state, uploaded_files=None, *, stream_llm=False, sink=None
+        ):
             state.messages.append(MagicMock(content="Done"))
             state.next_action = NextAction.FINISH
             return state, []
 
-        mock_executor.run = AsyncMock(side_effect=complete)
-        engine._executor = mock_executor
+        engine._loop = AsyncMock(side_effect=complete)
 
         result = await engine.run("hello")
 
@@ -181,28 +183,26 @@ class TestNanoEngineRun:
         assert len(result.thread_id) > 0
 
     @pytest.mark.asyncio
-    async def test_uploaded_files_passed_to_executor(self):
-        """uploaded_files are passed to executor.run()."""
+    async def test_uploaded_files_passed_to_loop(self):
+        """uploaded_files cross the Agent-to-Loop boundary."""
         config = MagicMock()
         engine = NanoEngine(config)
 
-        mock_executor = AsyncMock()
-        mock_executor._checkpointer = None
-
-        async def complete(state, uploaded_files=None):
+        async def complete(
+            state, uploaded_files=None, *, stream_llm=False, sink=None
+        ):
             state.messages.append(MagicMock(content="Hi"))
             state.next_action = NextAction.FINISH
             return state, []
 
-        mock_executor.run = AsyncMock(side_effect=complete)
-        engine._executor = mock_executor
+        loop = AsyncMock(side_effect=complete)
+        engine._loop = loop
 
         files = [{"name": "test.txt", "content": "hello"}]
         await engine.run("hello", uploaded_files=files)
 
-        mock_executor.run.assert_called_once()
-        call_kwargs = mock_executor.run.call_args[1]
-        assert call_kwargs["uploaded_files"] == files
+        loop.assert_called_once()
+        assert loop.call_args.args[1] == files
 
     @pytest.mark.asyncio
     async def test_duration_ms_measured(self):
@@ -210,16 +210,14 @@ class TestNanoEngineRun:
         config = MagicMock()
         engine = NanoEngine(config)
 
-        mock_executor = AsyncMock()
-        mock_executor._checkpointer = None
-
-        async def complete(state, uploaded_files=None):
+        async def complete(
+            state, uploaded_files=None, *, stream_llm=False, sink=None
+        ):
             state.messages.append(MagicMock(content="Hi"))
             state.next_action = NextAction.FINISH
             return state, []
 
-        mock_executor.run = AsyncMock(side_effect=complete)
-        engine._executor = mock_executor
+        engine._loop = AsyncMock(side_effect=complete)
 
         result = await engine.run("hello")
 
@@ -243,7 +241,9 @@ class TestNanoEngineRun:
         engine._checkpointer = AsyncMock()
         engine._checkpointer.load = AsyncMock(return_value=saved)
 
-        async def complete(state, uploaded_files=None):
+        async def complete(
+            state, uploaded_files=None, *, stream_llm=False, sink=None
+        ):
             assert state.next_action is None
             assert state.wait is None
             assert state.finish_reason == "running"
@@ -252,9 +252,7 @@ class TestNanoEngineRun:
             state.finish_reason = "completed"
             return state, []
 
-        executor = MagicMock()
-        executor.run = AsyncMock(side_effect=complete)
-        engine._executor = executor
+        engine._loop = AsyncMock(side_effect=complete)
 
         result = await engine.run("account-42", thread_id="t-wait")
 

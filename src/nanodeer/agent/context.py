@@ -1,15 +1,13 @@
-"""Read-only turn-context transformation with a compatibility wrapper."""
+"""Read-only functions that build one ephemeral turn context."""
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
 
-from nanodeer.agent.memory.storage import MemoryStore
 from nanodeer.agent.messages import HumanMessage
 from nanodeer.agent.state import AgentState
-from nanodeer.config import get_config
-from nanodeer.workspace import Workspace, WorkspaceManager, WorkspacePathError
+from nanodeer.workspace import Workspace, WorkspacePathError
 
 logger = logging.getLogger(__name__)
 
@@ -98,30 +96,7 @@ async def transform_context(
     signals.uploaded_files_list = uploaded_files_context(workspace)
 
 
-class ContextManager:
-    """Compatibility adapter; new code should use the module functions."""
-
-    def __init__(self, memory_store=None, workspace_manager: WorkspaceManager | None = None):
-        self._memory_store = memory_store or MemoryStore()
-        self._cfg = get_config()
-        self._workspaces = workspace_manager or WorkspaceManager(self._cfg.thread.storage_path)
-
-    async def load(self, state: AgentState, signals: ContextView) -> None:
-        if not state.thread_id:
-            return
-        workspace = self._workspaces.open(state.thread_id)
-        if signals.uploaded_files:
-            await save_uploaded_files(workspace, signals.uploaded_files)
-        await transform_context(
-            state,
-            signals,
-            memory_store=self._memory_store,
-            workspace=workspace,
-        )
-
-
 __all__ = [
-    "ContextManager",
     "ContextView",
     "save_uploaded_files",
     "transform_context",

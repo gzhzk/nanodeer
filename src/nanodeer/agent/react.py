@@ -17,8 +17,7 @@ import logging
 import os
 import time
 from collections.abc import Awaitable, Callable
-from contextlib import suppress
-from typing import Any, AsyncGenerator
+from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
@@ -40,7 +39,6 @@ from .tooling import (
     tool_success as _tool_success,
 )
 from .context import (
-    ContextManager,
     ContextView,
     save_uploaded_files,
     transform_context,
@@ -270,17 +268,14 @@ async def _astream_with_retry(llm, messages, logger_prefix: str = "", on_retry=N
             await asyncio.sleep(delay)
 
 
-# -- ReActExecutor ------------------------------------------------------------
+# -- Private loop dependencies ------------------------------------------------
 
-class ReActExecutor:
-    """Native ReAct loop — no middleware chain.
+class _LoopRuntime:
+    """Private dependency holder for the module-level ``agent_loop``.
 
-    Lifecycle per turn:
-      1. transform_context()   — memory/files in persistent Workspace
-      2. LLM call             — provider normalization and retry
-      3. WAIT decision        — explicit sole wait control-tool call
-      4. Tool loop            — audit and invoke; sandbox is lazy
-      5. Checkpoint.save()    — persist the complete turn barrier
+    This object owns no AgentState and exposes no alternate run API.  It keeps
+    provider, tool, persistence, resource, and event dependencies out of the
+    loop signature without becoming another domain-level runtime owner.
     """
 
     def __init__(
@@ -291,7 +286,9 @@ class ReActExecutor:
         prompt_config: PromptConfig | None = None,
         checkpointer=None,
         model_name: str = "",
-        context_manager: ContextManager | None = None,
+        context_transform: Callable[
+            [AgentState, ContextView], Awaitable[None] | None
+        ] | None = None,
         memory_store=None,
         sandbox_manager: SandboxManager | None = None,
         workspace_manager: WorkspaceManager | None = None,
@@ -311,12 +308,33 @@ class ReActExecutor:
         self._prompt_config = prompt_config or PromptConfig()
         self._checkpointer = checkpointer
         self._model_name = model_name
-        # Compatibility contexts can still inject extension events. Production
-        # uses the function boundary directly; no Manager owns Context.
-        self._legacy_context = context_manager
+        self._context_transform = context_transform
         self._memory_store = memory_store
         self._sandbox = sandbox_manager
         self._workspaces = workspace_manager
+
+    async def _load_context(
+        self,
+        state: AgentState,
+        view: ContextView,
+        workspace,
+    ) -> None:
+        """Apply one normalized Context transform outside the main loop body."""
+        if self._context_transform is not None:
+            result = self._context_transform(state, view)
+            if inspect.isawaitable(result):
+                await result
+            return
+        if workspace is None or self._memory_store is None:
+            return
+        if view.uploaded_files:
+            await save_uploaded_files(workspace, view.uploaded_files)
+        await transform_context(
+            state,
+            view,
+            memory_store=self._memory_store,
+            workspace=workspace,
+        )
 
     # -- Unified loop ----------------------------------------------------------
 
@@ -566,79 +584,61 @@ class ReActExecutor:
             status="released",
         )
 
-    async def agent_loop(
-        self,
+def create_agent_loop(
+    llm: BaseChatModel,
+    tools: list[BaseTool],
+    wrapped_tools: list[BaseTool] | None = None,
+    prompt_config: PromptConfig | None = None,
+    checkpointer=None,
+    model_name: str = "",
+    context_transform: Callable[
+        [AgentState, ContextView], Awaitable[None] | None
+    ] | None = None,
+    memory_store=None,
+    sandbox_manager: SandboxManager | None = None,
+    workspace_manager: WorkspaceManager | None = None,
+) -> Callable[..., Awaitable[tuple[AgentState, list[dict]]]]:
+    """Bind dependencies once and return the one callable Agent Loop.
+
+    The returned callable accepts ``(state, uploaded_files=None, *,
+    stream_llm=False, sink=None)``.  Engine and Agent depend only on that
+    callable; the private dependency holder never becomes a State owner.
+    """
+    runtime = _LoopRuntime(
+        llm=llm,
+        tools=tools,
+        wrapped_tools=wrapped_tools,
+        prompt_config=prompt_config,
+        checkpointer=checkpointer,
+        model_name=model_name,
+        context_transform=context_transform,
+        memory_store=memory_store,
+        sandbox_manager=sandbox_manager,
+        workspace_manager=workspace_manager,
+    )
+
+    async def bound_agent_loop(
         state: AgentState,
-        uploaded_files: list[dict] | None,
+        uploaded_files: list[dict] | None = None,
         *,
-        stream_llm: bool,
+        stream_llm: bool = False,
         sink: Callable[[dict], Awaitable[None] | None] | None = None,
     ) -> tuple[AgentState, list[dict]]:
-        """Compatibility method forwarding to the module-level loop."""
         return await agent_loop(
-            self,
+            runtime,
             state,
             uploaded_files,
             stream_llm=stream_llm,
             sink=sink,
         )
 
-    # -- Public API ------------------------------------------------------------
-
-    async def run(
-        self,
-        state: AgentState,
-        uploaded_files: list[dict] | None = None,
-    ) -> tuple[AgentState, list[dict]]:
-        """Run through the canonical loop and collect its normalized events."""
-        return await self.agent_loop(
-            state,
-            uploaded_files,
-            stream_llm=False,
-        )
-
-    async def run_streaming(
-        self,
-        state: AgentState,
-        uploaded_files: list[dict] | None = None,
-    ) -> AsyncGenerator[dict, None]:
-        """Stream events produced by the same canonical loop used by run()."""
-        queue: asyncio.Queue[dict | object] = asyncio.Queue()
-        done = object()
-
-        async def sink(event: dict) -> None:
-            await queue.put(event)
-
-        async def drive() -> tuple[AgentState, list[dict]]:
-            try:
-                return await self.agent_loop(
-                    state,
-                    uploaded_files,
-                    stream_llm=True,
-                    sink=sink,
-                )
-            finally:
-                queue.put_nowait(done)
-
-        task = asyncio.create_task(drive())
-        try:
-            while True:
-                item = await queue.get()
-                if item is done:
-                    break
-                yield item  # type: ignore[misc]
-            await task
-        finally:
-            if not task.done():
-                task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await task
+    return bound_agent_loop
 
 
 # -- Canonical top-level loop -------------------------------------------------
 
 async def agent_loop(
-    runtime: "ReActExecutor",
+    runtime: _LoopRuntime,
     state: AgentState,
     uploaded_files: list[dict] | None,
     *,
@@ -697,17 +697,7 @@ async def agent_loop(
             )
 
             context_start = time.monotonic()
-            if runtime._legacy_context is not None:
-                await runtime._legacy_context.load(state, signals)
-            elif workspace is not None and runtime._memory_store is not None:
-                if signals.uploaded_files:
-                    await save_uploaded_files(workspace, signals.uploaded_files)
-                await transform_context(
-                    state,
-                    signals,
-                    memory_store=runtime._memory_store,
-                    workspace=workspace,
-                )
+            await runtime._load_context(state, signals, workspace)
             await runtime._emit_event(
                 collector,
                 sink,

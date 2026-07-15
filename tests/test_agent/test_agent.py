@@ -24,15 +24,20 @@ class MemoryCheckpointer:
         self.saves.append(state.model_copy(deep=True))
 
 
-class InPlaceExecutor:
+class InPlaceLoop:
     def __init__(self):
         self.state_ids = []
         self.active = 0
         self.max_active = 0
 
-    async def run(self, state, uploaded_files=None):
+    async def __call__(
+        self, state, uploaded_files=None, *, stream_llm=False, sink=None
+    ):
         if state.next_action == NextAction.WAIT:
-            return state, [{"event": "wait", "question": state.wait.question}]
+            event = {"event": "wait", "question": state.wait.question}
+            if sink is not None:
+                await sink(event)
+            return state, [event]
         self.state_ids.append(id(state))
         self.active += 1
         self.max_active = max(self.max_active, self.active)
@@ -46,14 +51,14 @@ class InPlaceExecutor:
 @pytest.mark.asyncio
 async def test_agent_loads_once_and_keeps_one_state_identity():
     checkpointer = MemoryCheckpointer()
-    executor = InPlaceExecutor()
-    agent = NanoAgent("thread-1", executor=executor, checkpointer=checkpointer)
+    loop = InPlaceLoop()
+    agent = NanoAgent("thread-1", loop=loop, checkpointer=checkpointer)
 
     await agent.run("first")
     await agent.run("second")
 
     assert checkpointer.loads == 1
-    assert len(set(executor.state_ids)) == 1
+    assert len(set(loop.state_ids)) == 1
     assert [message.content for message in agent.state.messages] == ["first", "second"]
     assert checkpointer.saves[0].messages[-1].content == "first"
     assert checkpointer.saves[1].messages[-1].content == "second"
@@ -61,12 +66,12 @@ async def test_agent_loads_once_and_keeps_one_state_identity():
 
 @pytest.mark.asyncio
 async def test_agent_execution_lock_serializes_same_thread_prompts():
-    executor = InPlaceExecutor()
-    agent = NanoAgent("thread-1", executor=executor)
+    loop = InPlaceLoop()
+    agent = NanoAgent("thread-1", loop=loop)
 
     await asyncio.gather(agent.run("first"), agent.run("second"))
 
-    assert executor.max_active == 1
+    assert loop.max_active == 1
     assert [message.content for message in agent.state.messages] == ["first", "second"]
 
 
@@ -80,8 +85,8 @@ async def test_user_input_consumes_durable_wait_before_loop():
         wait=WaitState(question="Which account?", tool_call_id="wait-1"),
     )
     checkpointer = MemoryCheckpointer(paused)
-    executor = InPlaceExecutor()
-    agent = NanoAgent("thread-wait", executor=executor, checkpointer=checkpointer)
+    loop = InPlaceLoop()
+    agent = NanoAgent("thread-wait", loop=loop, checkpointer=checkpointer)
 
     await agent.run("account-42")
 
@@ -94,11 +99,13 @@ async def test_user_input_consumes_durable_wait_before_loop():
 
 @pytest.mark.asyncio
 async def test_loop_cannot_replace_agent_state():
-    class ReplacingExecutor:
-        async def run(self, state, uploaded_files=None):
+    class ReplacingLoop:
+        async def __call__(
+            self, state, uploaded_files=None, *, stream_llm=False, sink=None
+        ):
             return AgentState(thread_id=state.thread_id), []
 
-    agent = NanoAgent("thread-1", executor=ReplacingExecutor())
+    agent = NanoAgent("thread-1", loop=ReplacingLoop())
 
     with pytest.raises(RuntimeError, match="replaced the active AgentState"):
         await agent.run("hello")
@@ -109,16 +116,21 @@ async def test_stream_disconnect_does_not_cancel_agent_run():
     started = asyncio.Event()
     release = asyncio.Event()
 
-    class StreamingExecutor:
-        async def run_streaming(self, state, uploaded_files=None):
+    class StreamingLoop:
+        async def __call__(
+            self, state, uploaded_files=None, *, stream_llm=False, sink=None
+        ):
             started.set()
-            yield {"event": "started"}
+            events = [{"event": "started"}]
+            await sink(events[-1])
             await release.wait()
             state.next_action = NextAction.FINISH
             state.finish_reason = "completed"
-            yield {"event": "end"}
+            events.append({"event": "end"})
+            await sink(events[-1])
+            return state, events
 
-    agent = NanoAgent("thread-stream", executor=StreamingExecutor())
+    agent = NanoAgent("thread-stream", loop=StreamingLoop())
     stream = agent.run_streaming("hello")
 
     assert await anext(stream) == {"event": "started"}
@@ -136,13 +148,15 @@ async def test_stream_disconnect_does_not_cancel_agent_run():
 async def test_explicit_cancel_stops_background_stream_run():
     started = asyncio.Event()
 
-    class BlockingStreamingExecutor:
-        async def run_streaming(self, state, uploaded_files=None):
+    class BlockingStreamingLoop:
+        async def __call__(
+            self, state, uploaded_files=None, *, stream_llm=False, sink=None
+        ):
             started.set()
-            yield {"event": "started"}
+            await sink({"event": "started"})
             await asyncio.Event().wait()
 
-    agent = NanoAgent("thread-cancel", executor=BlockingStreamingExecutor())
+    agent = NanoAgent("thread-cancel", loop=BlockingStreamingLoop())
     stream = agent.run_streaming("hello")
     assert await anext(stream) == {"event": "started"}
 
@@ -165,14 +179,16 @@ async def test_run_failure_discards_uncommitted_in_memory_state():
         async def save(self, thread_id, state):
             return None
 
-    class FailingExecutor:
-        async def run(self, state, uploaded_files=None):
+    class FailingLoop:
+        async def __call__(
+            self, state, uploaded_files=None, *, stream_llm=False, sink=None
+        ):
             state.messages.append(AIMessage(content="not committed"))
             raise RuntimeError("provider failed")
 
     agent = NanoAgent(
         "thread-failure",
-        executor=FailingExecutor(),
+        loop=FailingLoop(),
         checkpointer=SnapshotStore(),
     )
 
@@ -196,15 +212,15 @@ async def test_recovery_pauses_before_consuming_input_or_replaying_dangling_effe
         revision=2,
     )
     store = MemoryCheckpointer(dangling)
-    executor = InPlaceExecutor()
-    agent = NanoAgent("thread-recovery", executor=executor, checkpointer=store)
+    loop = InPlaceLoop()
+    agent = NanoAgent("thread-recovery", loop=loop, checkpointer=store)
 
     first_state, _events, _ = await agent.run("unrelated new request")
 
     assert first_state.next_action == NextAction.WAIT
     assert first_state.wait.reason == "unknown_tool_effect"
     assert "unrelated new request" not in [message.content for message in first_state.messages]
-    assert executor.state_ids == []
+    assert loop.state_ids == []
 
     await agent.run("The change happened; do not retry it")
 
