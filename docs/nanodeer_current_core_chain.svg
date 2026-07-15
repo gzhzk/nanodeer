@@ -1,0 +1,212 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1160" viewBox="0 0 1600 1160" role="img" aria-labelledby="title desc">
+  <title id="title">NanoDeer v0.3 core runtime</title>
+  <desc id="desc">NanoEngine assembles dependencies, NanoAgent owns AgentState, the module-level agent_loop advances it through Context, Provider and Tool boundaries, and Event exposes committed facts to SSE, Trace and Metrics.</desc>
+
+  <defs>
+    <style>
+      .bg { fill: #f7f9fc; }
+      .panel { fill: #ffffff; stroke: #c9d2e3; stroke-width: 1.5; }
+      .blue { fill: #edf4ff; stroke: #3568d4; stroke-width: 1.8; }
+      .teal { fill: #ecfaf7; stroke: #168878; stroke-width: 1.8; }
+      .violet { fill: #f5f1ff; stroke: #7358d5; stroke-width: 1.8; }
+      .orange { fill: #fff5e9; stroke: #d27623; stroke-width: 1.8; }
+      .green { fill: #eff9ef; stroke: #3a8b48; stroke-width: 1.8; }
+      .red { fill: #fff1f1; stroke: #c44d4d; stroke-width: 1.8; }
+      .gray { fill: #f4f6f9; stroke: #8995a8; stroke-width: 1.5; }
+      .gold { fill: #fff9e9; stroke: #c38b1c; stroke-width: 1.8; }
+      .title { font: 700 34px Inter, "Noto Sans CJK SC", Arial, sans-serif; fill: #10244f; }
+      .subtitle { font: 16px Inter, "Noto Sans CJK SC", Arial, sans-serif; fill: #52617a; }
+      .section { font: 700 19px Inter, "Noto Sans CJK SC", Arial, sans-serif; fill: #10244f; }
+      .box-title { font: 700 16px Inter, "Noto Sans CJK SC", Arial, sans-serif; fill: #16294f; }
+      .body { font: 14px Inter, "Noto Sans CJK SC", Arial, sans-serif; fill: #2b3b56; }
+      .small { font: 12px Inter, "Noto Sans CJK SC", Arial, sans-serif; fill: #59667b; }
+      .mono { font: 13px "SFMono-Regular", Consolas, monospace; fill: #263a5d; }
+      .chip { font: 700 11px Inter, Arial, sans-serif; fill: #ffffff; }
+      .arrow { stroke: #3568d4; stroke-width: 2.2; fill: none; marker-end: url(#arrow-blue); }
+      .arrow-teal { stroke: #168878; stroke-width: 2.1; fill: none; marker-end: url(#arrow-teal); }
+      .arrow-orange { stroke: #d27623; stroke-width: 2.1; fill: none; marker-end: url(#arrow-orange); }
+      .arrow-gray { stroke: #7d899d; stroke-width: 1.7; fill: none; marker-end: url(#arrow-gray); }
+      .dash { stroke-dasharray: 7 6; }
+    </style>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#1d3157" flood-opacity="0.10"/>
+    </filter>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+      <path d="M0,0 L10,4 L0,8 Z" fill="#3568d4"/>
+    </marker>
+    <marker id="arrow-teal" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+      <path d="M0,0 L10,4 L0,8 Z" fill="#168878"/>
+    </marker>
+    <marker id="arrow-orange" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+      <path d="M0,0 L10,4 L0,8 Z" fill="#d27623"/>
+    </marker>
+    <marker id="arrow-gray" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+      <path d="M0,0 L10,4 L0,8 Z" fill="#7d899d"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" width="1600" height="1160"/>
+  <text class="title" x="800" y="48" text-anchor="middle">NanoDeer v0.3 Core Runtime / 核心运行链路</text>
+  <text class="subtitle" x="800" y="79" text-anchor="middle">Agent owns facts · Loop advances facts · Tool changes the world · Event makes it visible</text>
+
+  <!-- Entry and assembly -->
+  <rect class="blue" x="410" y="108" width="320" height="60" rx="12" filter="url(#shadow)"/>
+  <text class="box-title" x="570" y="134" text-anchor="middle">API / SSE</text>
+  <text class="small" x="570" y="154" text-anchor="middle">chat · cancel · conversations</text>
+
+  <rect class="blue" x="870" y="108" width="320" height="60" rx="12" filter="url(#shadow)"/>
+  <text class="box-title" x="1030" y="134" text-anchor="middle">CLI / Python</text>
+  <text class="small" x="1030" y="154" text-anchor="middle">REPL · run · run_streaming</text>
+
+  <rect class="panel" x="510" y="202" width="580" height="78" rx="14" filter="url(#shadow)"/>
+  <text class="section" x="800" y="230" text-anchor="middle">NanoEngine</text>
+  <text class="body" x="800" y="254" text-anchor="middle">dependency assembly · get_agent(thread_id) · Agent registry</text>
+  <text class="small" x="800" y="272" text-anchor="middle">does not load or advance State</text>
+
+  <path class="arrow" d="M570,168 L570,185 L700,185 L700,202"/>
+  <path class="arrow" d="M1030,168 L1030,185 L900,185 L900,202"/>
+
+  <!-- Agent owner -->
+  <rect class="teal" x="450" y="316" width="700" height="86" rx="14" filter="url(#shadow)"/>
+  <text class="section" x="800" y="345" text-anchor="middle">NanoAgent — sole State owner</text>
+  <text class="body" x="800" y="370" text-anchor="middle">load once · execution lock · prompt / resume / cancel · subscriber lifecycle</text>
+  <text class="small" x="800" y="390" text-anchor="middle">one active AgentState per thread; different threads may run concurrently</text>
+  <path class="arrow" d="M800,280 L800,316"/>
+
+  <rect class="teal" x="55" y="308" width="315" height="104" rx="13"/>
+  <text class="box-title" x="212" y="335" text-anchor="middle">AgentState · durable facts</text>
+  <text class="mono" x="212" y="359" text-anchor="middle">messages · FINISH / WAIT</text>
+  <text class="mono" x="212" y="379" text-anchor="middle">WaitState · title · revision</text>
+  <text class="small" x="212" y="399" text-anchor="middle">no Workspace, Sandbox, task or Context</text>
+  <path class="arrow-teal" d="M450,359 L370,359"/>
+  <text class="small" x="410" y="349" text-anchor="middle">owns</text>
+
+  <!-- Main loop -->
+  <rect class="panel" x="390" y="452" width="820" height="506" rx="18" filter="url(#shadow)"/>
+  <text class="section" x="800" y="482" text-anchor="middle">module-level agent_loop(state) — the only State advancer</text>
+
+  <rect class="teal" x="455" y="510" width="690" height="54" rx="10"/>
+  <rect x="471" y="525" width="74" height="24" rx="12" fill="#168878"/>
+  <text class="chip" x="508" y="542" text-anchor="middle">CONTEXT</text>
+  <text class="body" x="566" y="542">transform_context() → ephemeral ContextView → prompt</text>
+
+  <rect class="blue" x="455" y="581" width="690" height="54" rx="10"/>
+  <rect x="471" y="596" width="78" height="24" rx="12" fill="#3568d4"/>
+  <text class="chip" x="510" y="613" text-anchor="middle">PROVIDER</text>
+  <text class="body" x="570" y="613">encode → complete / stream → normalize ToolCall[]</text>
+
+  <rect class="violet" x="455" y="652" width="690" height="54" rx="10"/>
+  <rect x="471" y="667" width="70" height="24" rx="12" fill="#7358d5"/>
+  <text class="chip" x="506" y="684" text-anchor="middle">INTENT</text>
+  <text class="body" x="562" y="684">append AssistantMessage / ToolCall → commit</text>
+
+  <polygon class="gold" points="800,724 930,772 800,820 670,772"/>
+  <text class="box-title" x="800" y="768" text-anchor="middle">normalized output</text>
+  <text class="small" x="800" y="790" text-anchor="middle">no tools · wait only · tools</text>
+
+  <rect class="green" x="425" y="850" width="210" height="72" rx="11"/>
+  <text class="box-title" x="530" y="878" text-anchor="middle">No ToolCall</text>
+  <text class="body" x="530" y="902" text-anchor="middle">commit FINISH</text>
+
+  <rect class="orange" x="695" y="850" width="210" height="72" rx="11"/>
+  <text class="box-title" x="800" y="878" text-anchor="middle">Sole wait Tool</text>
+  <text class="body" x="800" y="902" text-anchor="middle">commit durable WAIT</text>
+
+  <rect class="violet" x="965" y="850" width="210" height="72" rx="11"/>
+  <text class="box-title" x="1070" y="878" text-anchor="middle">Capability Tool</text>
+  <text class="small" x="1070" y="899" text-anchor="middle">execute → ToolResult</text>
+  <text class="small" x="1070" y="915" text-anchor="middle">append → commit → loop</text>
+
+  <path class="arrow" d="M800,402 L800,452"/>
+  <path class="arrow" d="M800,564 L800,581"/>
+  <path class="arrow" d="M800,635 L800,652"/>
+  <path class="arrow" d="M800,706 L800,724"/>
+  <path class="arrow-teal" d="M690,791 L530,850"/>
+  <path class="arrow-orange" d="M800,820 L800,850"/>
+  <path class="arrow" d="M910,791 L1070,850"/>
+  <path class="arrow" d="M1175,886 L1192,886 L1192,608 L1145,608"/>
+
+  <!-- Commit barriers -->
+  <rect class="panel" x="45" y="452" width="300" height="354" rx="16"/>
+  <text class="section" x="195" y="482" text-anchor="middle">Commit barriers</text>
+  <text class="small" x="195" y="505" text-anchor="middle">persist before the next side effect</text>
+
+  <rect class="gray" x="70" y="530" width="250" height="52" rx="9"/>
+  <text class="box-title" x="195" y="552" text-anchor="middle">UserMessage → commit</text>
+  <text class="small" x="195" y="571" text-anchor="middle">before Provider</text>
+
+  <rect class="gray" x="70" y="598" width="250" height="52" rx="9"/>
+  <text class="box-title" x="195" y="620" text-anchor="middle">ToolCall → commit</text>
+  <text class="small" x="195" y="639" text-anchor="middle">before Tool effect</text>
+
+  <rect class="gray" x="70" y="666" width="250" height="52" rx="9"/>
+  <text class="box-title" x="195" y="688" text-anchor="middle">ToolResult → commit</text>
+  <text class="small" x="195" y="707" text-anchor="middle">before next Tool / Provider</text>
+
+  <rect class="gray" x="70" y="734" width="250" height="52" rx="9"/>
+  <text class="box-title" x="195" y="756" text-anchor="middle">FINISH / WAIT → commit</text>
+  <text class="small" x="195" y="775" text-anchor="middle">before fact Event</text>
+
+  <path class="arrow-gray dash" d="M345,624 L420,624 L420,679 L455,679"/>
+
+  <!-- Effect boundary -->
+  <rect class="panel" x="1255" y="452" width="300" height="252" rx="16"/>
+  <text class="section" x="1405" y="482" text-anchor="middle">Effect boundary</text>
+
+  <rect class="violet" x="1280" y="510" width="250" height="56" rx="10"/>
+  <text class="box-title" x="1405" y="534" text-anchor="middle">execute_tool(call)</text>
+  <text class="small" x="1405" y="554" text-anchor="middle">validate · audit · normalize</text>
+
+  <rect class="teal" x="1280" y="584" width="250" height="48" rx="10"/>
+  <text class="box-title" x="1405" y="613" text-anchor="middle">Workspace virtual paths</text>
+
+  <rect class="orange" x="1280" y="650" width="250" height="36" rx="10"/>
+  <text class="small" x="1405" y="673" text-anchor="middle">ExecutionResources / lazy Sandbox</text>
+
+  <path class="arrow-gray dash" d="M1175,886 L1232,886 L1232,538 L1280,538"/>
+  <path class="arrow-gray" d="M1405,566 L1405,584"/>
+  <path class="arrow-gray" d="M1405,632 L1405,650"/>
+
+  <!-- Event plane -->
+  <rect class="panel" x="1255" y="736" width="300" height="222" rx="16"/>
+  <text class="section" x="1405" y="766" text-anchor="middle">Event observation plane</text>
+
+  <rect class="blue" x="1280" y="792" width="250" height="48" rx="10"/>
+  <text class="box-title" x="1405" y="821" text-anchor="middle">emit(run_id, sequence)</text>
+
+  <rect class="gray" x="1280" y="858" width="72" height="60" rx="9"/>
+  <text class="box-title" x="1316" y="884" text-anchor="middle">SSE</text>
+  <text class="small" x="1316" y="904" text-anchor="middle">live</text>
+
+  <rect class="gray" x="1369" y="858" width="72" height="60" rx="9"/>
+  <text class="box-title" x="1405" y="884" text-anchor="middle">Trace</text>
+  <text class="small" x="1405" y="904" text-anchor="middle">evidence</text>
+
+  <rect class="gray" x="1458" y="858" width="72" height="60" rx="9"/>
+  <text class="box-title" x="1494" y="884" text-anchor="middle">Metrics</text>
+  <text class="small" x="1494" y="904" text-anchor="middle">measure</text>
+
+  <path class="arrow-gray dash" d="M1210,679 L1240,679 L1240,816 L1280,816"/>
+  <path class="arrow-gray" d="M1405,840 L1405,850 L1316,850 L1316,858"/>
+  <path class="arrow-gray" d="M1405,840 L1405,858"/>
+  <path class="arrow-gray" d="M1405,840 L1405,850 L1494,850 L1494,858"/>
+
+  <!-- Durable recovery and quality perimeter -->
+  <rect class="gray" x="45" y="842" width="300" height="116" rx="14"/>
+  <text class="box-title" x="195" y="870" text-anchor="middle">Dangling effect recovery</text>
+  <text class="small" x="195" y="893" text-anchor="middle">committed ToolCall + missing ToolResult</text>
+  <text class="small" x="195" y="914" text-anchor="middle">→ WAIT(reason=unknown_tool_effect)</text>
+  <text class="small" x="195" y="935" text-anchor="middle">verify externally; never replay blindly</text>
+
+  <rect class="panel" x="270" y="1002" width="1060" height="105" rx="16" filter="url(#shadow)"/>
+  <text class="section" x="800" y="1033" text-anchor="middle">Durable evidence and quality feedback — outside State ownership</text>
+  <text class="body" x="800" y="1060" text-anchor="middle">SQLite checkpoint stores State · Trace stores how facts formed · Eval consumes State + Trace + environment</text>
+  <text class="small" x="800" y="1086" text-anchor="middle">Extensions enter only through Context transformation, Tool execution, or Event subscription</text>
+
+  <path class="arrow-gray dash" d="M212,412 L212,430 L250,430 L250,1002"/>
+  <path class="arrow-gray dash" d="M1405,918 L1405,975 L1130,975 L1130,1002"/>
+  <path class="arrow-gray dash" d="M530,922 L530,1002"/>
+  <path class="arrow-gray dash" d="M800,922 L800,1002"/>
+
+  <text class="subtitle" x="800" y="1140" text-anchor="middle">Save intent before changing the world · Save results before reasoning again · Commit facts before announcing them</text>
+</svg>

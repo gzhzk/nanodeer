@@ -47,7 +47,7 @@ NanoDeer 是 **Agent Runtime 工程的开源参考实现**——不是又一个�
 |--------|------|
 | 状态所有权 | 每个 thread 一个 `NanoAgent` + execution lock |
 | 上下文加载 | `transform_context()` — 临时模型视图 |
-| Workspace 边界 | `WorkspaceManager` — thread 绑定的虚拟路径 |
+| Workspace 边界 | 不可变 `Workspace` + thread 绑定虚拟路径 |
 | 沙箱生命周期 | `SandboxManager.acquire()/release()` — 执行工具按需懒加载 |
 | 工具副作用 | `execute_tool()` — 校验、审计、backend、结果归一化 |
 | LLM 重试 | `_call_with_retry()` — 指数退避 |
@@ -60,7 +60,7 @@ NanoDeer 是 **Agent Runtime 工程的开源参考实现**——不是又一个�
 
 项目明确分为两层：
 
-- **核心**（默认加载）：ReAct 循环、Workspace、9 个工具、检查点、扁平文件记忆、SSE API
+- **核心**（默认加载）：ReAct 循环、Workspace、8 个能力工具 + `wait`、检查点、扁平文件记忆、SSE API
 - **执行后端**（可选/懒加载）：bash 使用 Docker；Local 执行必须显式进入 trusted mode
 - **外接**（硬盘保留，不默认加载）：subagent、plan、skills、wiki、记忆分层、12 个额外工具
 
@@ -80,7 +80,7 @@ NanoDeer 是 **Agent Runtime 工程的开源参考实现**——不是又一个�
 
 ### 6. 为什么 factory 合并进 engine
 
-`NanoDeerFactory` 只是个薄薄的参数转发层。少一层间接，读代码时少一次跳转。
+`NanoDeerFactory` 只是个薄参数转发层。现在由 `NanoEngine` 组装依赖，并把模块顶层 `agent_loop()` 注入每个 `NanoAgent`；保留的 `ReActExecutor` 只承担兼容包装。少一层所有权，生产主链更直接。
 
 ### 7. 参考实现，不是产品
 
@@ -89,6 +89,8 @@ NanoDeer 是 **Agent Runtime 工程的开源参考实现**——不是又一个�
 ---
 
 ## 核心架构
+
+![NanoDeer v0.3 核心运行时](docs/nanodeer_current_core_chain.svg)
 
 ```
                       ┌──────────────────────────────┐
@@ -137,7 +139,7 @@ NanoDeer 是 **Agent Runtime 工程的开源参考实现**——不是又一个�
 
 ## 工具
 
-**9 个核心工具**（`default_tools()` 默认加载）：
+**8 个能力工具 + 1 个控制工具**（`default_tools()` 默认加载）：
 
 | 工具 | 类别 | 执行位置 |
 |------|------|---------|
@@ -151,7 +153,7 @@ NanoDeer 是 **Agent Runtime 工程的开源参考实现**——不是又一个�
 | `search_memory` | 记忆 | 宿主机 |
 | `wait` | 运行控制 | ReAct 内部拦截 |
 
-**12 个外接工具**（文件保留，需手动 import）：
+**13 个外接工具函数**（文件保留，需手动 import）：
 `ls`, `glob`, `grep`, `git`, `exec_python`, `read_image`,
 `create_plan`, `add_step`, `update_step`, `list_plans`,
 `spawn_subagent`, `get_subagent_results`, `invoke_skill`
@@ -248,7 +250,7 @@ nanodeer/
 │   │   └── path.py          # 路径验证 (外接模块保留)
 │   │
 │   ├── tools/               # 内置工具定义
-│   │   ├── __init__.py      # default_tools() → 9 个核心，外接工具可单独 import
+│   │   ├── __init__.py      # 8 个能力工具 + wait，外接工具可单独 import
 │   │   ├── read_file.py     # 核心: 读取文件
 │   │   ├── write_file.py    # 核心: 写入文件
 │   │   ├── edit_file.py     # 核心: 字符串替换编辑
@@ -268,8 +270,7 @@ nanodeer/
 │   │   ├── create_plan.py   # 外接: 创建计划
 │   │   ├── plan_step.py     # 外接: 添加/更新计划步骤
 │   │   ├── list_plans.py    # 外接: 列出计划
-│   │   ├── spawn_subagent.py # 外接: 派生子代理
-│   │   └── get_subagent_results.py # 外接: 收集子代理结果
+│   │   └── spawn_subagent.py # 外接: 派生/收集子代理
 │   │
 │   ├── cli/
 │   │   ├── __init__.py
@@ -283,7 +284,7 @@ nanodeer/
 │   ├── dev.sh               # 一键启动: 后端 (+ --with-frontend 演示前端)
 │   └── check.sh             # 运行测试 (pytest)
 │
-├── tests/                   # Python 测试套件 (115 项)
+├── tests/                   # Python 回归测试套件 (293 项)
 │   ├── conftest.py          # 共享 fixtures
 │   ├── test_agent/          # ReAct, engine, state, messages 等
 │   ├── test_sandbox/        # Docker, 路径, 工具包装
@@ -299,6 +300,7 @@ nanodeer/
 ├── evaluation/              # 评测框架 (归档)
 └── docs/                    # 设计文档
     ├── harness_architecture.md
+    ├── nanodeer_current_core_chain.svg
     ├── runtime_architecture.md
     ├── sandbox_design.md
     ├── tools_design.md

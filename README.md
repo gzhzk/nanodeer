@@ -47,7 +47,7 @@ Most agent frameworks route cross-cutting concerns as pre/post hooks. NanoDeer d
 |---------|---------------|
 | State ownership | one `NanoAgent` + execution lock per thread |
 | Context loading | `transform_context()` — ephemeral model view |
-| Workspace boundary | `WorkspaceManager` — thread-bound virtual paths |
+| Workspace boundary | immutable `Workspace` + thread-bound virtual paths |
 | Sandbox lifecycle | `SandboxManager.acquire()/release()` — lazy, execution-only |
 | Tool effects | `execute_tool()` — validation, audit, backend, normalized result |
 | LLM retry | `_call_with_retry()` — exponential backoff for 429/5xx/timeout |
@@ -60,7 +60,7 @@ This means you can read the entire execution path in [react.py](src/nanodeer/age
 
 The project is explicitly divided into two layers:
 
-- **Core** (always loaded): ReAct loop, Workspace, 9 tools, checkpoint, flat-file memory, SSE API
+- **Core** (always loaded): ReAct loop, Workspace, 8 capability tools + `wait`, checkpoint, flat-file memory, SSE API
 - **Execution backend** (optional/lazy): Docker sandbox for bash; trusted Local mode is explicit opt-in
 - **Extension** (on disk, not default): subagent, plan, skills, wiki, memory layers, 12 additional tools
 
@@ -80,7 +80,7 @@ The original `ToolManager` + `groups.py` system handled progressive tool exposur
 
 ### 6. Why factory was merged into engine
 
-`NanoDeerFactory` was a thin assembly layer that forwarded parameters from `NanoEngine` to `ReActExecutor`. One fewer indirection layer means less code to read when tracing how the executor is built.
+`NanoDeerFactory` was a thin assembly layer. `NanoEngine` now assembles dependencies and injects the module-level `agent_loop()` into each `NanoAgent`; the remaining `ReActExecutor` is only a compatibility wrapper. One fewer ownership layer makes the production path explicit.
 
 ### 7. Reference implementation, not product
 
@@ -89,6 +89,8 @@ This is the most important decision. NanoDeer does not compete with Claude Code,
 ---
 
 ## Core Architecture
+
+![NanoDeer v0.3 core runtime](docs/nanodeer_current_core_chain.svg)
 
 ```
                       ┌──────────────────────────────┐
@@ -137,7 +139,7 @@ This is the most important decision. NanoDeer does not compete with Claude Code,
 
 ## Tools
 
-**9 core tools** (always available via `default_tools()`):
+**8 capability tools + 1 control tool** (available via `default_tools()`):
 
 | Tool | Category | Runs in |
 |------|----------|---------|
@@ -151,7 +153,7 @@ This is the most important decision. NanoDeer does not compete with Claude Code,
 | `search_memory` | Memory | Host |
 | `wait` | Runtime control | Intercepted by ReAct |
 
-**12 extension tools** (on disk, import individually):
+**13 extension tool functions** (on disk, import individually):
 `ls`, `glob`, `grep`, `git`, `exec_python`, `read_image`,
 `create_plan`, `add_step`, `update_step`, `list_plans`,
 `spawn_subagent`, `get_subagent_results`, `invoke_skill`
@@ -248,7 +250,7 @@ nanodeer/
 │   │   └── path.py          # Path validation (retained for extension use)
 │   │
 │   ├── tools/               # Built-in tool definitions
-│   │   ├── __init__.py      # default_tools() → 9 core, extension tools importable
+│   │   ├── __init__.py      # 8 capability tools + wait; extensions importable
 │   │   ├── read_file.py     # Core: read file content
 │   │   ├── write_file.py    # Core: write file content
 │   │   ├── edit_file.py     # Core: string replacement editing
@@ -268,8 +270,7 @@ nanodeer/
 │   │   ├── create_plan.py   # Extension: create task plan
 │   │   ├── plan_step.py     # Extension: add/update plan step
 │   │   ├── list_plans.py    # Extension: list plans
-│   │   ├── spawn_subagent.py # Extension: fork worker agent
-│   │   └── get_subagent_results.py # Extension: collect worker results
+│   │   └── spawn_subagent.py # Extension: spawn/collect worker agents
 │   │
 │   ├── cli/
 │   │   ├── __init__.py
@@ -283,7 +284,7 @@ nanodeer/
 │   ├── dev.sh               # One-command launch: backend (+ --with-frontend)
 │   └── check.sh             # Run tests (pytest)
 │
-├── tests/                   # Python test suite (115 tests)
+├── tests/                   # Python regression suite (293 tests)
 │   ├── conftest.py          # Shared fixtures (thread_id, alt_thread_id)
 │   ├── test_agent/          # ReAct, engine, state, messages, trace, factory
 │   ├── test_sandbox/        # Docker provider, path, tool wrapping, exec
@@ -299,6 +300,7 @@ nanodeer/
 ├── evaluation/              # Evaluation harness (archived)
 └── docs/                    # Design documentation (中文)
     ├── harness_architecture.md
+    ├── nanodeer_current_core_chain.svg
     ├── runtime_architecture.md
     ├── sandbox_design.md
     ├── tools_design.md
