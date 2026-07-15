@@ -1,6 +1,6 @@
 """Agent state — single source of truth."""
 
-from dataclasses import dataclass, field
+import time
 from enum import Enum
 
 from pydantic import BaseModel, Field
@@ -9,20 +9,20 @@ from .messages import BaseMessage
 
 
 class NextAction(str, Enum):
-    PROCESS = "process"
+    """Terminal result exposed by one agent run."""
+
+    FINISH = "finish"
     WAIT = "wait"
-    END = "end"
 
 
-@dataclass
-class TurnSignals:
-    """Per-turn data carrier — produced and consumed within a single ReAct turn."""
-    clarification_question: str | None = None
-    memory_context: str | None = None
-    plan_context: str | None = None
-    events: list = field(default_factory=list)
-    uploaded_files_list: str | None = None
-    uploaded_files: list[dict] | None = None
+class WaitState(BaseModel):
+    """Durable description of the external input required to resume a thread."""
+
+    question: str
+    required_input: str | None = None
+    tool_call_id: str
+    reason: str | None = None
+    created_at_ms: int = Field(default_factory=lambda: int(time.time() * 1000))
 
 
 class SandboxState(BaseModel):
@@ -32,12 +32,16 @@ class SandboxState(BaseModel):
     status: str | None = None
 
 
-class ThreadState(BaseModel):
-    """Persistent conversation-scoped state — survives across turns and supports snapshot."""
+class AgentState(BaseModel):
+    """Persistent conversation facts owned by exactly one active Agent."""
     thread_id: str | None = None
     messages: list[BaseMessage] = Field(default_factory=list)
-    next_action: NextAction = NextAction.PROCESS
-    finish_reason: str = "running"  # why the last turn ended: completed/repeated_tool_calls/max_turns/bash_blocked/sandbox_released
+    next_action: NextAction | None = None
+    finish_reason: str = "running"
+    wait: WaitState | None = None
     title: str | None = None
-    sandbox: SandboxState | None = None
-    system_prompt: str | None = None  # cached static system prompt (built once, reused every turn)
+    revision: int = 0
+
+
+# Backward-compatible name for public imports and persisted fixtures.
+ThreadState = AgentState

@@ -1,18 +1,33 @@
-"""SandboxManager — container lifecycle management.
+"""Execution-only sandbox resources and lifecycle.
 
 Replaces SandboxMiddleware (before_llm / after_tools_all hooks).
 Provides idempotent acquire/release that reuses containers across turns
 via the module-level _sandbox_context.
 
-Used by ReActExecutor directly, not as middleware.
+Used by the top-level agent_loop directly, not as middleware.
 """
 
 import logging
+from dataclasses import dataclass
 
-from nanodeer.agent.state import SandboxState, ThreadState
-from nanodeer.sandbox import SandboxProvider, create_sandbox_provider, get_sandbox, set_sandbox, clear_sandbox
+from nanodeer.sandbox import (
+    Sandbox,
+    SandboxProvider,
+    clear_sandbox,
+    create_sandbox_provider,
+    get_sandbox,
+    set_sandbox,
+)
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ExecutionResources:
+    """Ephemeral resources for one run; never part of AgentState/checkpoint."""
+
+    thread_id: str
+    sandbox: Sandbox | None = None
 
 
 class SandboxManager:
@@ -21,47 +36,39 @@ class SandboxManager:
     def __init__(self, provider: SandboxProvider | None = None):
         self._provider = provider or create_sandbox_provider()
 
-    async def acquire(self, state: ThreadState) -> None:
+    async def acquire(self, resources: ExecutionResources) -> Sandbox:
         """Ensure sandbox is available for this thread.
 
         Idempotent — if already acquired this turn or cached in module-level
         _sandbox_context, reuses without calling Docker again.
         """
-        if state.sandbox is None:
-            state.sandbox = SandboxState()
-        if state.sandbox.container_id:
-            return  # already acquired this turn
-
         # Check module-level context (survives WAIT across turns)
-        existing = get_sandbox(state.thread_id)
+        existing = get_sandbox(resources.thread_id)
         if existing:
-            state.sandbox.exec_id = existing.exec_id
-            state.sandbox.container_id = existing.container_id
-            state.sandbox.working_dir = existing.working_dir
-            state.sandbox.status = "ready"
-            return
+            resources.sandbox = existing
+            return existing
 
-        if not state.thread_id:
+        if not resources.thread_id:
             raise ValueError("thread_id required to acquire sandbox")
 
-        sandbox = await self._provider.acquire(state.thread_id)
-        state.sandbox.exec_id = sandbox.exec_id
-        state.sandbox.container_id = sandbox.container_id
-        state.sandbox.working_dir = sandbox.working_dir
-        state.sandbox.status = "ready"
-        set_sandbox(state.thread_id, sandbox)
+        sandbox = await self._provider.acquire(resources.thread_id)
+        resources.sandbox = sandbox
+        set_sandbox(resources.thread_id, sandbox)
+        return sandbox
 
-    async def release(self, state: ThreadState) -> None:
+    async def release(self, resources: ExecutionResources) -> None:
         """Release container. Idempotent — skips if already released."""
-        if not state.sandbox or state.sandbox.status == "released":
+        sandbox = resources.sandbox
+        if sandbox is None:
             return
 
-        exec_id = state.sandbox.exec_id
         try:
-            await self._provider.release(state.sandbox)
+            await self._provider.release(sandbox)
         except Exception:
-            logger.exception("Error releasing sandbox %s", exec_id)
+            logger.exception("Error releasing sandbox %s", sandbox.exec_id)
         finally:
-            if exec_id:
-                clear_sandbox(exec_id)
-            state.sandbox.status = "released"
+            clear_sandbox(resources.thread_id)
+            resources.sandbox = None
+
+
+__all__ = ["ExecutionResources", "SandboxManager"]

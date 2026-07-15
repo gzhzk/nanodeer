@@ -26,8 +26,7 @@ from nanodeer.engine import NanoEngine
 
 logger = logging.getLogger(__name__)
 
-# Track running tasks per thread_id for cancellation
-_running_tasks: dict[str, asyncio.Task] = {}
+_engine: NanoEngine | None = None
 
 _MAX_UPLOADS = 8
 _MAX_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -51,6 +50,14 @@ def _make_checkpointer():
     """Create SqliteCheckpointer from config."""
     from nanodeer.agent.checkpoint.sqlite import SqliteCheckpointer
     return SqliteCheckpointer(str(get_config().thread.db_path.expanduser().resolve()))
+
+
+def _get_engine() -> NanoEngine:
+    """Return the process-wide Agent owner registry."""
+    global _engine
+    if _engine is None:
+        _engine = NanoEngine(get_config())
+    return _engine
 
 
 def _parse_uploaded_files(raw_files):
@@ -147,11 +154,9 @@ async def chat(request: Request):
     if not prompt:
         prompt = "Please inspect the uploaded file(s)."
 
-    engine = NanoEngine(get_config())
+    engine = _get_engine()
 
     async def event_generator():
-        task = asyncio.current_task()
-        _running_tasks[thread_id] = task
         try:
             async for event in engine.run_streaming(
                 prompt=prompt,
@@ -172,8 +177,6 @@ async def chat(request: Request):
                     "threadId": thread_id,
                 }),
             }
-        finally:
-            _running_tasks.pop(thread_id, None)
 
     return EventSourceResponse(event_generator())
 
@@ -190,9 +193,7 @@ async def cancel_chat(request: Request):
     if not thread_id:
         return JSONResponse({"ok": False, "error": "thread_id is required"}, status_code=400)
 
-    task = _running_tasks.get(thread_id)
-    if task and not task.done():
-        task.cancel()
+    if await _get_engine().cancel(thread_id):
         return {"ok": True, "thread_id": thread_id}
     return {"ok": False, "error": "no running task found", "thread_id": thread_id}
 
@@ -256,6 +257,9 @@ async def get_conversation(thread_id: str):
         "thread_id": thread_id,
         "title": state.title or "",
         "status": state.status if hasattr(state, "status") else "regular",
+        "next_action": state.next_action.value if state.next_action else None,
+        "finish_reason": state.finish_reason,
+        "wait": state.wait.model_dump() if state.wait else None,
         "messages": [msg.to_dict() for msg in state.messages],
     }
 
@@ -273,10 +277,15 @@ async def get_conversation_meta(thread_id: str):
 @app.delete("/api/conversations/{thread_id}")
 async def delete_conversation(thread_id: str):
     """Delete a conversation by thread_id."""
+    engine = _get_engine()
+    agent = engine.get_cached_agent(thread_id)
+    if agent is not None and agent.is_running:
+        return JSONResponse({"error": "conversation is running"}, status_code=409)
     cp = _make_checkpointer()
     deleted = await cp.delete(thread_id)
     if not deleted:
         return JSONResponse({"error": "conversation not found"}, status_code=404)
+    engine.forget_agent(thread_id)
     return {"ok": True, "thread_id": thread_id}
 
 

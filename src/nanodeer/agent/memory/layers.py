@@ -18,7 +18,8 @@ from typing import TYPE_CHECKING
 from .storage import MemoryStore
 
 if TYPE_CHECKING:
-    from ..state import ThreadState, TurnSignals
+    from ..context import ContextView
+    from ..state import AgentState
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,7 @@ class MemoryLayers:
     # ------------------------------------------------------------------
 
     def inject(
-        self, signals: "TurnSignals", context_hint: str | None = None
+        self, signals: "ContextView", context_hint: str | None = None
     ) -> None:
         """Assemble L1-L4 memory into signals.memory_context.
 
@@ -83,7 +84,7 @@ class MemoryLayers:
         if parts:
             signals.memory_context = "\n\n".join(parts)
 
-    def absorb(self, state: "ThreadState") -> None:
+    def absorb(self, state: "AgentState") -> None:
         """Auto-log the last turn to episodic storage.
 
         Captures the last user→AI exchange as raw text.

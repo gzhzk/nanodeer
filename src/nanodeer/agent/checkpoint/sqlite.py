@@ -5,16 +5,20 @@ Schema serves dual purpose:
   - Agent resume: load() reconstructs message history for LLM context
 
 Not persisted (reconstructed at runtime):
-  - system_prompt (from config + prompt.py)
   - sandbox state (resume creates fresh container + re-mounts volume)
-  - next_action (resume always starts PROCESS)
 
-See also: ThreadState fields vs DB columns mapping in class doc.
+Persisted run control:
+  - next_action (FINISH or WAIT)
+  - finish_reason
+  - wait (question and required external input for WAIT)
+
+See also: AgentState fields vs DB columns mapping in class doc.
 """
 
 import asyncio
 import json
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -28,7 +32,7 @@ from ..messages import (
     ToolCall,
     ToolMessage,
 )
-from ..state import ThreadState
+from ..state import AgentState, NextAction, WaitState
 from .base import Checkpointer
 
 
@@ -72,15 +76,15 @@ def _row_to_message(row: dict[str, Any]) -> BaseMessage:
 
 
 class SqliteCheckpointer(Checkpointer):
-    """ThreadState persistence via SQLite.
+    """AgentState persistence via SQLite.
 
     Threads table stores frontend-facing metadata (title, message_count, timestamps).
     Messages table stores the full message history for LLM context reconstruction.
 
     Fields NOT persisted (reconstructed at runtime):
-      - system_prompt   ← built from config + prompt.py
       - sandbox         ← resume creates fresh container
-      - next_action     ← resume always starts PROCESS
+
+    ``next_action`` and ``wait`` are persisted so WAIT survives restarts.
 
     Single DB file at ``{db_path}/threads.db``.
     Uses WAL mode for read-concurrent safety.
@@ -89,7 +93,7 @@ class SqliteCheckpointer(Checkpointer):
     def __init__(self, db_path: str | Path):
         self.db_path = Path(db_path).expanduser().resolve()
         self.db_path.mkdir(parents=True, exist_ok=True)
-        self._conn: sqlite3.Connection | None = None
+        self._connections = threading.local()
         self._lock = asyncio.Lock()
         self._init_db()
 
@@ -98,13 +102,15 @@ class SqliteCheckpointer(Checkpointer):
     # ------------------------------------------------------------------
 
     def _get_conn(self) -> sqlite3.Connection:
-        if self._conn is None:
+        conn = getattr(self._connections, "conn", None)
+        if conn is None:
             db_file = self.db_path / "threads.db"
-            self._conn = sqlite3.connect(str(db_file), check_same_thread=False)
-            self._conn.row_factory = sqlite3.Row
-            self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.execute("PRAGMA foreign_keys=ON")
-        return self._conn
+            conn = sqlite3.connect(str(db_file))
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA foreign_keys=ON")
+            self._connections.conn = conn
+        return conn
 
     def _init_db(self) -> None:
         conn = self._get_conn()
@@ -115,7 +121,11 @@ class SqliteCheckpointer(Checkpointer):
                 message_count INTEGER DEFAULT 0,
                 created_at    TEXT NOT NULL,
                 updated_at    TEXT NOT NULL,
-                status        TEXT DEFAULT 'regular'
+                status        TEXT DEFAULT 'regular',
+                run_outcome   TEXT,
+                finish_reason TEXT,
+                wait_state    TEXT,
+                state_revision INTEGER DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS messages (
                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -130,33 +140,58 @@ class SqliteCheckpointer(Checkpointer):
             CREATE INDEX IF NOT EXISTS idx_messages_thread_id ON messages(thread_id);
         """)
         conn.commit()
-        # Migration: add status column for existing databases
-        try:
-            conn.execute("ALTER TABLE threads ADD COLUMN status TEXT DEFAULT 'regular'")
-            conn.commit()
-        except sqlite3.OperationalError:
-            pass  # column already exists
+        # Additive migrations for existing databases. Inspecting the schema avoids
+        # leaving failed ALTER statements on a connection later used by a worker.
+        existing_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(threads)").fetchall()
+        }
+        for column, sql_type in (
+            ("status", "TEXT DEFAULT 'regular'"),
+            ("run_outcome", "TEXT"),
+            ("finish_reason", "TEXT"),
+            ("wait_state", "TEXT"),
+            ("state_revision", "INTEGER DEFAULT 0"),
+        ):
+            if column not in existing_columns:
+                conn.execute(f"ALTER TABLE threads ADD COLUMN {column} {sql_type}")
+        conn.commit()
 
     # ------------------------------------------------------------------
     # Synchronous implementations
     # ------------------------------------------------------------------
 
-    def _sync_save(self, thread_id: str, state: ThreadState) -> None:
+    def _sync_save(self, thread_id: str, state: AgentState) -> None:
         conn = self._get_conn()
         now = datetime.now(timezone.utc).isoformat()
 
         # Preserve original created_at on re-save
         row = conn.execute(
-            "SELECT created_at FROM threads WHERE thread_id = ?", (thread_id,)
+            "SELECT created_at, status FROM threads WHERE thread_id = ?", (thread_id,)
         ).fetchone()
         created_at = row["created_at"] if row else now
 
-        status = getattr(state, "status", "regular") or "regular"
+        # Archive is conversation metadata, not AgentState. A runtime checkpoint
+        # must not silently unarchive the thread.
+        status = row["status"] if row and row["status"] else "regular"
+        run_outcome = state.next_action.value if state.next_action else None
+        wait_state = state.wait.model_dump_json() if state.wait else None
         conn.execute(
             """INSERT OR REPLACE INTO threads
-               (thread_id, title, message_count, created_at, updated_at, status)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (thread_id, state.title, len(state.messages), created_at, now, status),
+               (thread_id, title, message_count, created_at, updated_at, status,
+                run_outcome, finish_reason, wait_state, state_revision)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                thread_id,
+                state.title,
+                len(state.messages),
+                created_at,
+                now,
+                status,
+                run_outcome,
+                state.finish_reason,
+                wait_state,
+                state.revision,
+            ),
         )
 
         # Replace all messages atomically
@@ -172,7 +207,7 @@ class SqliteCheckpointer(Checkpointer):
             )
         conn.commit()
 
-    def _sync_load(self, thread_id: str) -> ThreadState | None:
+    def _sync_load(self, thread_id: str) -> AgentState | None:
         conn = self._get_conn()
         cur = conn.execute("SELECT * FROM threads WHERE thread_id = ?", (thread_id,))
         thread_row = cur.fetchone()
@@ -184,23 +219,43 @@ class SqliteCheckpointer(Checkpointer):
         )
         messages = [_row_to_message(dict(r)) for r in cur.fetchall()]
 
-        return ThreadState(
+        outcome_raw = thread_row["run_outcome"]
+        try:
+            next_action = NextAction(outcome_raw) if outcome_raw else None
+        except ValueError:
+            next_action = None
+
+        wait_raw = thread_row["wait_state"]
+        try:
+            wait_state = WaitState.model_validate_json(wait_raw) if wait_raw else None
+        except (ValueError, TypeError):
+            wait_state = None
+
+        return AgentState(
             thread_id=thread_row["thread_id"],
             title=thread_row["title"],
             messages=messages,
+            next_action=next_action,
+            wait=wait_state,
+            finish_reason=thread_row["finish_reason"] or (
+                "wait" if next_action == NextAction.WAIT else "completed"
+            ),
+            revision=thread_row["state_revision"] or 0,
         )
 
     def _sync_load_meta(self, thread_id: str) -> dict | None:
         """Lightweight metadata load — no messages, single query."""
         conn = self._get_conn()
         cur = conn.execute(
-            "SELECT thread_id, title, message_count, created_at, updated_at, status "
+            "SELECT thread_id, title, message_count, created_at, updated_at, status, "
+            "run_outcome, finish_reason, wait_state, state_revision "
             "FROM threads WHERE thread_id = ?",
             (thread_id,),
         )
         row = cur.fetchone()
         if row is None:
             return None
+        wait_state = json.loads(row["wait_state"]) if row["wait_state"] else None
         return {
             "thread_id": row["thread_id"],
             "title": row["title"],
@@ -208,16 +263,29 @@ class SqliteCheckpointer(Checkpointer):
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
             "status": row["status"] or "regular",
+            "next_action": row["run_outcome"],
+            "finish_reason": row["finish_reason"],
+            "wait": wait_state,
+            "revision": row["state_revision"] or 0,
         }
 
     def _sync_list_threads(self) -> list[dict]:
         """List all thread metadata (no messages)."""
         conn = self._get_conn()
         cur = conn.execute(
-            "SELECT thread_id, title, message_count, created_at, updated_at, status "
+            "SELECT thread_id, title, message_count, created_at, updated_at, status, "
+            "run_outcome, finish_reason, wait_state, state_revision "
             "FROM threads ORDER BY updated_at DESC"
         )
-        return [dict(r) for r in cur.fetchall()]
+        rows = []
+        for raw in cur.fetchall():
+            row = dict(raw)
+            row["next_action"] = row.pop("run_outcome")
+            wait_raw = row.pop("wait_state")
+            row["wait"] = json.loads(wait_raw) if wait_raw else None
+            row["revision"] = row.pop("state_revision") or 0
+            rows.append(row)
+        return rows
 
     def _sync_delete(self, thread_id: str) -> bool:
         conn = self._get_conn()
@@ -249,12 +317,12 @@ class SqliteCheckpointer(Checkpointer):
     # Async public API
     # ------------------------------------------------------------------
 
-    async def save(self, thread_id: str, state: ThreadState) -> None:
+    async def save(self, thread_id: str, state: AgentState) -> None:
         async with self._lock:
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, self._sync_save, thread_id, state)
 
-    async def load(self, thread_id: str) -> ThreadState | None:
+    async def load(self, thread_id: str) -> AgentState | None:
         async with self._lock:
             loop = asyncio.get_event_loop()
             return await loop.run_in_executor(None, self._sync_load, thread_id)

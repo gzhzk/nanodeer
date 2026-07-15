@@ -3,7 +3,7 @@
 Core tools (always available via default_tools()):
   read_file, write_file, edit_file, bash,
   web_search, web_fetch,
-  save_memory, search_memory
+  save_memory, search_memory, wait
 
 Extension tools (import individually, not in default_tools()):
   ls, glob, grep, git, exec_python, read_image,
@@ -19,6 +19,7 @@ from .web_search import web_search
 from .web_fetch import web_fetch
 from .save_memory import save_memory
 from .search_memory import search_memory
+from .wait import wait
 
 # Extension tools — importable individually, not in default_tools()
 from .ls import ls
@@ -44,6 +45,7 @@ CORE_TOOLS = [
     web_fetch,
     save_memory,
     search_memory,
+    wait,
 ]
 
 
@@ -62,6 +64,7 @@ __all__ = [
     "web_fetch",
     "save_memory",
     "search_memory",
+    "wait",
     # extension (importable by name)
     "ls",
     "glob",

@@ -1,10 +1,10 @@
-"""Checkpointer ABC — persist and resume ThreadState across process restarts."""
+"""Checkpointer ABC — persist and resume AgentState across process restarts."""
 
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from nanodeer.agent.state import ThreadState
+    from nanodeer.agent.state import AgentState
 
 
 class Checkpointer(ABC):
@@ -14,12 +14,12 @@ class Checkpointer(ABC):
             State is complete and consistent at this point.
 
     load():  Called at run() start when thread_id is known but messages are empty.
-            Returns restored ThreadState or None if no checkpoint exists.
+            Returns restored AgentState or None if no checkpoint exists.
     """
 
     @abstractmethod
-    async def save(self, thread_id: str, state: "ThreadState") -> None:
-        """Persist ThreadState for a thread."""
+    async def save(self, thread_id: str, state: "AgentState") -> None:
+        """Persist AgentState for a thread."""
 
     @abstractmethod
     async def delete(self, thread_id: str) -> bool:
@@ -27,8 +27,8 @@ class Checkpointer(ABC):
         ...
 
     @abstractmethod
-    async def load(self, thread_id: str) -> "ThreadState | None":
-        """Restore ThreadState for a thread. Returns None if no checkpoint found."""
+    async def load(self, thread_id: str) -> "AgentState | None":
+        """Restore AgentState for a thread. Returns None if no checkpoint found."""
         ...
 
     @abstractmethod

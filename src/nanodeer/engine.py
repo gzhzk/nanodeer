@@ -1,4 +1,4 @@
-"""NanoEngine — thin execution wrapper around ReActExecutor.
+"""NanoEngine — dependency assembly and per-thread Agent registry.
 
 Usage::
 
@@ -10,24 +10,7 @@ Usage::
 """
 
 import asyncio
-import logging
-import time
-import uuid
-from dataclasses import dataclass, field
-from typing import Any, AsyncGenerator
-
-"""NanoEngine — thin execution wrapper around ReActExecutor.
-
-Usage::
-
-    from nanodeer.engine import NanoEngine
-    from nanodeer.config import get_config
-
-    engine = NanoEngine(get_config())
-    result = await engine.run("Analyze this file")
-"""
-
-import asyncio
+from functools import partial
 import logging
 import time
 import uuid
@@ -36,7 +19,8 @@ from typing import Any, AsyncGenerator
 
 from langchain_core.messages import SystemMessage, HumanMessage as LCHumanMessage
 
-from .agent.state import NextAction, ThreadState
+from .agent.agent import NanoAgent
+from .agent.state import AgentState, NextAction
 from .agent.messages import HumanMessage, AIMessage
 from .config import HarnessConfig
 
@@ -48,7 +32,7 @@ __all__ = ["NanoEngine", "RunResult", "RuntimeFeatures"]
 @dataclass
 class RuntimeFeatures:
     """Feature gates for NanoDeer agent assembly."""
-    sandbox: bool = True
+    sandbox: bool = True  # Enable lazy isolated execution for tools such as bash
     prompt_profile: str = "default"
     prompt_memory: bool = True
 
@@ -58,8 +42,8 @@ class RunResult:
     """Agent run result."""
     thread_id: str
     message: str
-    next_action: NextAction = NextAction.PROCESS
-    finish_reason: str = "running"  # completed / repeated_tool_calls / max_turns / bash_blocked / sandbox_released
+    next_action: NextAction = NextAction.FINISH
+    finish_reason: str = "completed"
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     duration_ms: int = 0
     events: list = field(default_factory=list)  # JSON events from --json-events mode
@@ -124,11 +108,7 @@ def _create_llm(config: HarnessConfig, model_name: str | None = None):
 
 
 class NanoEngine:
-    """Thin execution wrapper around ReActExecutor.
-
-    App layer entry point. Creates ThreadState from prompt,
-    calls executor.run(), returns RunResult.
-    """
+    """App façade that assembles dependencies and returns one owner per thread."""
 
     def __init__(
         self,
@@ -160,9 +140,10 @@ class NanoEngine:
         self._sandbox_provider = sandbox_provider
         self._generate_titles = generate_titles
         self._executor = None
+        self._agents: dict[str, NanoAgent] = {}
 
     def _get_executor(self):
-        """Lazy-build ReActExecutor with all its dependencies inline."""
+        """Lazy-build the dependency runtime used by top-level agent_loop()."""
         if self._executor is None:
             llm = _create_llm(self.config, self._model_name)
             if self._checkpointer is None:
@@ -176,13 +157,13 @@ class NanoEngine:
 
             from nanodeer.tools import default_tools
             from nanodeer.agent.memory.storage import MemoryStore
-            from nanodeer.agent.context import ContextManager
             from nanodeer.agent.sandbox_manager import SandboxManager
             from nanodeer.agent.prompt import PromptConfig
             from nanodeer.agent.react import ReActExecutor
+            from nanodeer.workspace import WorkspaceManager
 
             feat = self._features or RuntimeFeatures()
-            tools = self._tools or default_tools()
+            tools = list(self._tools) if self._tools is not None else default_tools()
 
             # Sandbox setup
             sandbox_provider = self._sandbox_provider
@@ -195,12 +176,13 @@ class NanoEngine:
                 sandbox_mgr = SandboxManager(provider=sandbox_provider)
 
             # Wrap sandbox-aware tools for execution
-            wrapped_tools = None
-            if sandbox_provider:
-                from nanodeer.sandbox.tools import wrap_tool_for_sandbox
-                wrapped_tools = [wrap_tool_for_sandbox(t, sandbox_provider) or t for t in tools]
+            from nanodeer.sandbox.tools import wrap_tool_for_sandbox
+            wrapped_tools = [
+                wrap_tool_for_sandbox(tool, sandbox_provider) or tool
+                for tool in tools
+            ]
 
-            context_mgr = ContextManager(memory_store=MemoryStore())
+            workspace_mgr = WorkspaceManager(self.config.thread.storage_path)
 
             self._executor = ReActExecutor(
                 llm=llm,
@@ -212,10 +194,53 @@ class NanoEngine:
                 ),
                 checkpointer=self._checkpointer,
                 model_name=display_name,
-                context_manager=context_mgr,
+                memory_store=MemoryStore(),
                 sandbox_manager=sandbox_mgr,
+                workspace_manager=workspace_mgr,
             )
         return self._executor
+
+    def get_agent(self, thread_id: str) -> NanoAgent:
+        """Return the sole in-process State owner for ``thread_id``."""
+        if not thread_id:
+            raise ValueError("thread_id is required")
+        agent = self._agents.get(thread_id)
+        if agent is not None:
+            return agent
+
+        executor = self._get_executor()
+        checkpointer = self._checkpointer or getattr(executor, "_checkpointer", None)
+        from nanodeer.agent.react import ReActExecutor, agent_loop
+
+        loop = partial(agent_loop, executor) if isinstance(executor, ReActExecutor) else None
+
+        agent = NanoAgent(
+            thread_id,
+            executor=executor,
+            checkpointer=checkpointer,
+            loop=loop,
+        )
+        self._agents[thread_id] = agent
+        return agent
+
+    async def cancel(self, thread_id: str) -> bool:
+        """Cancel the active run owned by one Agent."""
+        agent = self._agents.get(thread_id)
+        return await agent.cancel() if agent is not None else False
+
+    def get_cached_agent(self, thread_id: str) -> NanoAgent | None:
+        """Return an existing owner without creating or loading one."""
+        return self._agents.get(thread_id)
+
+    def forget_agent(self, thread_id: str) -> bool:
+        """Evict an idle in-memory owner after its durable thread is deleted."""
+        agent = self._agents.get(thread_id)
+        if agent is None:
+            return True
+        if agent.is_running:
+            return False
+        del self._agents[thread_id]
+        return True
 
     async def run(
         self,
@@ -237,56 +262,43 @@ class NanoEngine:
         thread_id = thread_id or uuid.uuid4().hex
         start_ms = int(time.time() * 1000)
 
-        executor = self._get_executor()
-
-        # Resume from checkpoint if thread_id provided and checkpoint exists
-        state = None
-        if thread_id and self._checkpointer:
-            saved = await self._checkpointer.load(thread_id)
-            if saved:
-                state = saved
-
-        is_new = False
-        if state is None:
-            state = ThreadState(
-                thread_id=thread_id,
-                messages=[HumanMessage(content=prompt)],
-                title=None,
-            )
-            is_new = True
-        else:
-            state.messages.append(HumanMessage(content=prompt))
-
-        final_state, events = await executor.run(state, uploaded_files=uploaded_files)
+        agent = self.get_agent(thread_id)
+        final_state, events, is_new = await agent.run(
+            prompt,
+            uploaded_files=uploaded_files,
+        )
 
         # Fire-and-forget title generation for new or untitled conversations
         if self._generate_titles and final_state.thread_id and (is_new or not final_state.title):
-            asyncio.create_task(self._generate_and_save_title(final_state))
+            asyncio.create_task(self._generate_and_save_title(agent))
 
         end_ms = int(time.time() * 1000)
         return self._extract_result(final_state, events, thread_id, end_ms - start_ms)
 
     def _extract_result(
         self,
-        state: ThreadState,
+        state: AgentState,
         events: list,
         thread_id: str,
         duration_ms: int,
     ) -> RunResult:
-        """Extract RunResult from ThreadState and accumulated events."""
+        """Extract RunResult from AgentState and accumulated events."""
         # Patch duration into the final end event
         for ev in reversed(events):
             if ev.get("type") == "end":
                 ev["duration_ms"] = duration_ms
                 break
 
-        # Last message with content is the final response
-        final_message = ""
-        for msg in reversed(state.messages):
-            if hasattr(msg, "content") and msg.content:
-                content = msg.content
-                final_message = content if isinstance(content, str) else str(content or "")
-                break
+        if state.next_action == NextAction.WAIT and state.wait:
+            final_message = state.wait.question
+        else:
+            # Last message with content is the final response.
+            final_message = ""
+            for msg in reversed(state.messages):
+                if hasattr(msg, "content") and msg.content:
+                    content = msg.content
+                    final_message = content if isinstance(content, str) else str(content or "")
+                    break
 
         # Collect tool calls
         tool_calls = []
@@ -347,9 +359,12 @@ class NanoEngine:
             **usage,
         }
 
-    async def _generate_and_save_title(self, state: ThreadState) -> None:
+    async def _generate_and_save_title(self, agent: NanoAgent) -> None:
         """Fire-and-forget: generate a short title from the first turn and persist."""
         try:
+            state = agent.state
+            if state is None:
+                return
             llm = _create_llm(self.config, self._model_name)
 
             # Extract first meaningful exchange
@@ -382,10 +397,9 @@ class NanoEngine:
 
             title = str(resp.content).strip().strip('"\'.,;:!?').strip()
             if title:
-                state.title = title[:100]
-                if self._checkpointer:
-                    await self._checkpointer.save(state.thread_id, state)
-                logger.info("Generated title: %s", title)
+                saved = await agent.set_title_if_empty(title[:100])
+                if saved:
+                    logger.info("Generated title: %s", title)
         except Exception as e:
             logger.warning("Title generation failed: %s", e)
 
@@ -408,29 +422,15 @@ class NanoEngine:
         """
         thread_id = thread_id or uuid.uuid4().hex
 
-        executor = self._get_executor()
-
-        # Resume from checkpoint if thread_id provided and checkpoint exists
-        state = None
-        if thread_id and self._checkpointer:
-            saved = await self._checkpointer.load(thread_id)
-            if saved:
-                state = saved
-
-        is_new = False
-        if state is None:
-            state = ThreadState(
-                thread_id=thread_id,
-                messages=[HumanMessage(content=prompt)],
-                title=None,
-            )
-            is_new = True
-        else:
-            state.messages.append(HumanMessage(content=prompt))
+        agent = self.get_agent(thread_id)
 
         try:
-            async for event in executor.run_streaming(state, uploaded_files=uploaded_files):
+            async for event in agent.run_streaming(
+                prompt,
+                uploaded_files=uploaded_files,
+            ):
                 yield {**event, "threadId": thread_id}
         finally:
-            if state.thread_id and (is_new or not state.title):
-                asyncio.create_task(self._generate_and_save_title(state))
+            state = agent.state
+            if state and state.thread_id and (agent.last_run_was_new or not state.title):
+                asyncio.create_task(self._generate_and_save_title(agent))

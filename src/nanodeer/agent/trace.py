@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 import uuid
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 TRACE_SCHEMA_VERSION = "nanodeer.trace.v1"
 TRACE_PREVIEW_CHARS = 500
@@ -77,12 +80,17 @@ class TraceCollector:
         self.thread_id = thread_id
         self.run_id = run_id or uuid.uuid4().hex
         self._events: list[dict] = []
+        self._sequence = 0
         self._persist = _trace_enabled() if persist is None else persist
         self._path: Path | None = None
         if self._persist:
             root = Path(trace_root).expanduser() if trace_root else _default_trace_root()
             self._path = root / self.thread_id / f"{self.run_id}.jsonl"
-            self._path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                self._path.parent.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                logger.exception("Trace directory unavailable: %s", self._path.parent)
+                self._path = None
 
     @property
     def events(self) -> list[dict]:
@@ -95,26 +103,43 @@ class TraceCollector:
     def emit(self, event: str, **fields) -> dict:
         fields.setdefault("threadId", self.thread_id)
         fields.setdefault("run_id", self.run_id)
+        fields["sequence"] = self._next_sequence()
         payload = make_trace_event(event, **fields)
         self._events.append(payload)
-        self._write(payload)
+        self._safe_write(payload)
         return payload
 
     def normalize(self, event: dict, **defaults) -> dict:
         name = event.get("event") or event.get("type") or "unknown"
         defaults.setdefault("run_id", self.run_id)
+        sequence = self._next_sequence()
         normalized = make_trace_event(name, **defaults)
         normalized.update(event)
         normalized["event"] = name
         normalized["type"] = name
         normalized["schema_version"] = TRACE_SCHEMA_VERSION
+        normalized["sequence"] = sequence
         if not isinstance(normalized.get("ts_ms"), int):
             normalized["ts_ms"] = now_ms()
         normalized.setdefault("threadId", self.thread_id)
         normalized.setdefault("run_id", self.run_id)
         self._events.append(normalized)
-        self._write(normalized)
+        self._safe_write(normalized)
         return normalized
+
+    def _next_sequence(self) -> int:
+        self._sequence += 1
+        return self._sequence
+
+    def _safe_write(self, event: dict) -> None:
+        try:
+            self._write(event)
+        except Exception:
+            logger.exception(
+                "Trace write failed run_id=%s sequence=%s",
+                self.run_id,
+                event.get("sequence"),
+            )
 
     def _write(self, event: dict) -> None:
         if not self._path:
