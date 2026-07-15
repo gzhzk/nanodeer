@@ -30,10 +30,8 @@ def invoke_skill(skill_name: str) -> str:
     Call this when you need to perform a specific task that has a defined workflow.
     The skill's workflow will be loaded into context.
 
-    Available skills:
-    - excel_analysis:   分析 Excel 文件，生成图表和报告
-    - web_scraper:     从多个网站抓取内容，生成结构化报告
-    - code_project:    生成完整的多文件 Python 项目
+    Available skill names are supplied by the active Profile and discovered
+    dynamically from Markdown files.
 
     Args:
         skill_name: The name of the skill to invoke.

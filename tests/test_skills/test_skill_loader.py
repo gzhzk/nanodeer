@@ -161,3 +161,17 @@ class TestLoadAllSkills:
             (Path(tmp) / "impl" / "s.md").write_text("---\nname: s\ndescription: S\n---\nS")
             skills = load_all_skills(tmp)
             assert len(skills) == 1
+
+
+def test_built_in_coding_and_research_skills_use_real_tool_names():
+    skills_root = Path(__file__).parents[2] / "src" / "nanodeer" / "skills"
+    loader = SkillLoader(skills_root)
+
+    coding = loader.get("code_project")
+    research = loader.get("research_report")
+
+    assert coding is not None
+    assert {"read_file", "edit_file", "bash"} <= set(coding.tools)
+    assert "ExecPython" not in coding.tools
+    assert research is not None
+    assert {"web_search", "web_fetch", "write_file"} <= set(research.tools)
