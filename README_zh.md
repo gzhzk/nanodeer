@@ -41,15 +41,17 @@ NanoDeer 是 **Agent Runtime 工程的开源参考实现**——不是又一个�
 
 ### 1. 没有中间件链
 
-大多数 Agent 框架把横切关注点做成 pre/post 钩子。NanoDeer **完全没有中间件链**——每个关注点要么是主循环里的内联函数，要么是独立的 Manager：
+大多数 Agent 框架把横切关注点做成 pre/post 钩子。NanoDeer **完全没有中间件链**——核心只有一条状态推进链和几个小函数边界：
 
 | 关注点 | 实现 |
 |--------|------|
-| 上下文加载 | `ContextManager.load()` — 并行 I/O |
-| 沙箱生命周期 | `SandboxManager.acquire()/release()` — 幂等管理 |
-| Bash 审计 | `_bash_safe()` — 内联正则，拦截危险命令 |
+| 状态所有权 | 每个 thread 一个 `NanoAgent` + execution lock |
+| 上下文加载 | `transform_context()` — 临时模型视图 |
+| Workspace 边界 | `WorkspaceManager` — thread 绑定的虚拟路径 |
+| 沙箱生命周期 | `SandboxManager.acquire()/release()` — 执行工具按需懒加载 |
+| 工具副作用 | `execute_tool()` — 校验、审计、backend、结果归一化 |
 | LLM 重试 | `_call_with_retry()` — 指数退避 |
-| 澄清检测 | `_check_clarification()` — 检查 `[CLARIFICATION]` 标签 |
+| 外部输入 | 显式 `wait` 控制工具 + 可持久化 `WaitState` |
 | 收敛保护 | 重复工具调用上限 + 最大轮数限制 |
 
 这意味着你只需要读 [react.py](src/nanodeer/agent/react.py) 一个文件就能理解整个执行流程，不需要学任何图 DSL。
@@ -58,14 +60,15 @@ NanoDeer 是 **Agent Runtime 工程的开源参考实现**——不是又一个�
 
 项目明确分为两层：
 
-- **核心**（默认加载）：ReAct 循环、8 个工具、检查点、扁平文件记忆、沙箱、SSE API
+- **核心**（默认加载）：ReAct 循环、Workspace、9 个工具、检查点、扁平文件记忆、SSE API
+- **执行后端**（可选/懒加载）：bash 使用 Docker；Local 执行必须显式进入 trusted mode
 - **外接**（硬盘保留，不默认加载）：subagent、plan、skills、wiki、记忆分层、12 个额外工具
 
 早期版本所有功能默认全加载。这次重构清理后，探索成果不浪费，只是不放在关键路径上。需要的人可以手动启用。
 
 ### 3. 为什么只有 bash 走沙箱
 
-文件工具（read/write/edit）在宿主机直接运行，因为 workspace 目录是通过 volume mount 挂载到容器里的——宿主机和容器看到的是同一份文件。只有 bash 需要在容器内执行来隔离命令。这使沙箱包装从 263 行（每个工具配模板、base64 编码、虚拟路径翻译）简化到 40 行。
+文件工具（read/write/edit）统一通过 thread-bound 虚拟 Workspace 运行。只有真正调用 bash 时才懒加载 Docker，并把同一份持久目录挂进容器；普通 LLM、Context 和文件操作都不会探测 Docker。除非显式启用 trusted Local mode，否则不会回退到宿主机 shell。
 
 ### 4. 为什么用扁平文件记忆
 
@@ -95,29 +98,33 @@ NanoDeer 是 **Agent Runtime 工程的开源参考实现**——不是又一个�
                                  │
                       ┌──────────▼───────────────────┐
                       │  NanoEngine (engine.py)       │
-                      │  — LLM 多 provider 路由       │
-                      │  — 会话状态创建/恢复           │
-                      │  — 内联执行器组装              │
+                      │  — 依赖组装                   │
+                      │  — get_agent(thread_id)      │
                       └──────────┬───────────────────┘
                                  │
                       ┌──────────▼───────────────────┐
-                      │  ReActExecutor (react.py)     │
-                      │  1. ContextManager.load()     │
-                      │  2. SandboxManager.acquire()  │
-                      │  3. LLM.ainvoke() + 重试      │
-                      │  4. 澄清检测                  │
-                      │  5. 工具循环（bash 审计）     │
-                      │  6. Checkpoint.save()         │
+                      │  NanoAgent 持有 AgentState    │
+                      │  — execution lock             │
+                      │  — prompt / resume / cancel   │
+                      └──────────┬───────────────────┘
+                                 │
+                      ┌──────────▼───────────────────┐
+                      │  agent_loop() (react.py)      │
+                      │ Context → Provider → Tool     │
+                      │ commit → Event → FINISH/WAIT  │
                       └──────────────────────────────┘
 ```
 
-**10 个核心模式：**
+**核心运行时模块：**
 
 | 模块 | 展示的模式 | 行数 |
 |------|-----------|------|
-| `react.py` | ReAct 主循环 | ~1160 |
-| `state.py` | 会话状态模型 | 43 |
-| `context.py` | 上下文装配 | 111 |
+| `agent.py` | 每个 thread 的 State owner 与执行锁 | — |
+| `react.py` | 唯一主循环 | — |
+| `state.py` | AgentState / FINISH / WAIT 事实 | — |
+| `context.py` | Context 变换与上传边界 | — |
+| `provider.py` | Provider 消息编解码与归一化 | — |
+| `tooling.py` | 单一工具副作用边界 | — |
 | `prompt.py` | Prompt 构建 | 196 |
 | `llm.py` | LLM provider 抽象 | 41 |
 | `sandbox/tools.py` | 沙箱包装 | 40 |
@@ -130,7 +137,7 @@ NanoDeer 是 **Agent Runtime 工程的开源参考实现**——不是又一个�
 
 ## 工具
 
-**8 个核心工具**（`default_tools()` 默认加载）：
+**9 个核心工具**（`default_tools()` 默认加载）：
 
 | 工具 | 类别 | 执行位置 |
 |------|------|---------|
@@ -142,6 +149,7 @@ NanoDeer 是 **Agent Runtime 工程的开源参考实现**——不是又一个�
 | `web_fetch` | 网络 | 宿主机 |
 | `save_memory` | 记忆 | 宿主机 |
 | `search_memory` | 记忆 | 宿主机 |
+| `wait` | 运行控制 | ReAct 内部拦截 |
 
 **12 个外接工具**（文件保留，需手动 import）：
 `ls`, `glob`, `grep`, `git`, `exec_python`, `read_image`,
@@ -213,9 +221,12 @@ nanodeer/
 │   │
 │   ├── agent/               # 核心运行时
 │   │   ├── __init__.py
-│   │   ├── react.py         # ReActExecutor — 主循环 (~1160 行)
-│   │   ├── state.py         # ThreadState, TurnSignals, NextAction, SandboxState
-│   │   ├── context.py       # ContextManager — 记忆 + 文件上传，并行加载
+│   │   ├── agent.py         # NanoAgent — State owner + execution lock
+│   │   ├── react.py         # 唯一 Agent loop + 兼容 wrapper
+│   │   ├── state.py         # AgentState, NextAction, WaitState
+│   │   ├── context.py       # ContextView + transform/上传边界
+│   │   ├── provider.py      # Provider 编解码/归一化边界
+│   │   ├── tooling.py       # execute_tool 副作用边界
 │   │   ├── prompt.py        # PromptConfig, build_base/lead_agent_prompt
 │   │   ├── llm.py           # ReasoningChatOpenAI (OpenAI 兼容包装)
 │   │   ├── messages.py      # HumanMessage, AIMessage, ToolMessage, ToolCall
@@ -237,7 +248,7 @@ nanodeer/
 │   │   └── path.py          # 路径验证 (外接模块保留)
 │   │
 │   ├── tools/               # 内置工具定义
-│   │   ├── __init__.py      # default_tools() → 8 个核心，外接工具可单独 import
+│   │   ├── __init__.py      # default_tools() → 9 个核心，外接工具可单独 import
 │   │   ├── read_file.py     # 核心: 读取文件
 │   │   ├── write_file.py    # 核心: 写入文件
 │   │   ├── edit_file.py     # 核心: 字符串替换编辑
@@ -246,6 +257,7 @@ nanodeer/
 │   │   ├── web_fetch.py     # 核心: 获取 URL 内容
 │   │   ├── save_memory.py   # 核心: 写入 USER.md / MEMORY.md
 │   │   ├── search_memory.py # 核心: 读取 USER.md / MEMORY.md
+│   │   ├── wait.py          # 核心: 显式、可持久化 WAIT 控制
 │   │   ├── ls.py            # 外接: 列出目录
 │   │   ├── glob.py          # 外接: 文件模式匹配
 │   │   ├── grep.py          # 外接: 搜索文件内容
@@ -348,7 +360,7 @@ nanodeer/
 | 来源 | 参考的模式 |
 |------|-----------|
 | **DeerFlow** | 状态机 + `next_action` 信号路由 |
-| **Claude Code** | 工具优先设计、`[CLARIFICATION]` 澄清标签 |
+| **Claude Code** | 工具优先设计、显式运行控制 |
 | **OpenClaw** | 分层记忆、Wiki 结构化知识 |
 | **NanoClaw** | Docker 沙箱、Volume mount、路径隔离 |
 

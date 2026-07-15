@@ -41,15 +41,17 @@ The story might have ended there. But on the last evening of March, I attended B
 
 ### 1. No middleware chain
 
-Most agent frameworks route cross-cutting concerns as pre/post hooks. NanoDeer does **none of that**. Every concern is handled inline in the ReAct loop or via standalone Managers:
+Most agent frameworks route cross-cutting concerns as pre/post hooks. NanoDeer does **none of that**. The core follows one state-advancement path with small function boundaries:
 
 | Concern | Implementation |
 |---------|---------------|
-| Context loading | `ContextManager.load()` — parallel I/O |
-| Sandbox lifecycle | `SandboxManager.acquire()/release()` — idempotent |
-| Bash audit | `_bash_safe()` — inline regex, blocks dangerous patterns |
+| State ownership | one `NanoAgent` + execution lock per thread |
+| Context loading | `transform_context()` — ephemeral model view |
+| Workspace boundary | `WorkspaceManager` — thread-bound virtual paths |
+| Sandbox lifecycle | `SandboxManager.acquire()/release()` — lazy, execution-only |
+| Tool effects | `execute_tool()` — validation, audit, backend, normalized result |
 | LLM retry | `_call_with_retry()` — exponential backoff for 429/5xx/timeout |
-| Clarification | `_check_clarification()` — checks `[CLARIFICATION]` tag |
+| External input | explicit `wait` control tool + durable `WaitState` |
 | Convergence guard | Repeated identical tool calls capped, max turn limit |
 
 This means you can read the entire execution path in [react.py](src/nanodeer/agent/react.py) and understand control flow without learning a graph DSL.
@@ -58,14 +60,15 @@ This means you can read the entire execution path in [react.py](src/nanodeer/age
 
 The project is explicitly divided into two layers:
 
-- **Core** (always loaded): ReAct loop, 8 tools, checkpoint, flat-file memory, sandbox, SSE API
+- **Core** (always loaded): ReAct loop, Workspace, 9 tools, checkpoint, flat-file memory, SSE API
+- **Execution backend** (optional/lazy): Docker sandbox for bash; trusted Local mode is explicit opt-in
 - **Extension** (on disk, not default): subagent, plan, skills, wiki, memory layers, 12 additional tools
 
 This was a deliberate cleanup from an earlier version that loaded everything by default. Keeping extension code on disk means exploration work isn't wasted — it's just not in the critical path. Users who need those patterns can activate them manually.
 
 ### 3. Why only bash goes through the sandbox
 
-File tools (read/write/edit) run on the host because workspace directories are **volume-mounted** into the container — both host and container see the same files. Only bash needs to execute inside the container to isolate arbitrary command execution. This simplifies the sandbox wrapper from 263 lines (with per-tool templates, base64 encoding, and virtual path translation) to 40 lines.
+File tools (read/write/edit) run through a thread-bound virtual Workspace. The same persistent directories are volume-mounted when an execution backend is actually needed. Only bash triggers lazy Docker acquisition; ordinary LLM, context, and file operations do not probe Docker. Host shell fallback is disabled unless trusted Local execution is explicitly enabled.
 
 ### 4. Why flat-file memory
 
@@ -95,29 +98,33 @@ This is the most important decision. NanoDeer does not compete with Claude Code,
                                  │
                       ┌──────────▼───────────────────┐
                       │  NanoEngine (engine.py)      │
-                      │  — LLM provider routing      │
-                      │  — Thread state create/resume│
-                      │  — Inline executor assembly  │
+                      │  — dependency assembly       │
+                      │  — get_agent(thread_id)      │
                       └──────────┬───────────────────┘
                                  │
                       ┌──────────▼───────────────────┐
-                      │  ReActExecutor (react.py)    │
-                      │  1. ContextManager.load()    │
-                      │  2. SandboxManager.acquire() │
-                      │  3. LLM.ainvoke() + retry    │
-                      │  4. Clarification check      │
-                      │  5. Tool loop (bash audit)   │
-                      │  6. Checkpoint.save()        │
+                      │  NanoAgent owns AgentState   │
+                      │  — execution lock            │
+                      │  — prompt / resume / cancel  │
+                      └──────────┬───────────────────┘
+                                 │
+                      ┌──────────▼───────────────────┐
+                      │  agent_loop() (react.py)     │
+                      │  Context → Provider → Tool   │
+                      │  commit → Event → FINISH/WAIT│
                       └──────────────────────────────┘
 ```
 
-**The 10 core patterns:**
+**Core runtime pieces:**
 
 | Module | Pattern | Lines |
 |--------|---------|-------|
-| `react.py` | ReAct loop — context → LLM → tools → checkpoint | ~1160 |
-| `state.py` | ThreadState / TurnSignals / NextAction data model | 43 |
-| `context.py` | Parallel context loading (memory + files) | 111 |
+| `agent.py` | Per-thread State owner and execution lock | — |
+| `react.py` | One loop — context → provider → tools → commit | — |
+| `state.py` | AgentState / FINISH / WAIT facts | — |
+| `context.py` | Context transformation and upload boundary | — |
+| `provider.py` | Provider message encoding and normalization | — |
+| `tooling.py` | Single tool effect boundary | — |
 | `prompt.py` | Static base + dynamic injection prompt assembly | 196 |
 | `llm.py` | Multi-provider LLM abstraction | 41 |
 | `sandbox/tools.py` | Sandbox tool wrapping (bash only, 40 lines) | 40 |
@@ -130,7 +137,7 @@ This is the most important decision. NanoDeer does not compete with Claude Code,
 
 ## Tools
 
-**8 core tools** (always available via `default_tools()`):
+**9 core tools** (always available via `default_tools()`):
 
 | Tool | Category | Runs in |
 |------|----------|---------|
@@ -142,6 +149,7 @@ This is the most important decision. NanoDeer does not compete with Claude Code,
 | `web_fetch` | Web | Host |
 | `save_memory` | Memory | Host |
 | `search_memory` | Memory | Host |
+| `wait` | Runtime control | Intercepted by ReAct |
 
 **12 extension tools** (on disk, import individually):
 `ls`, `glob`, `grep`, `git`, `exec_python`, `read_image`,
@@ -213,9 +221,12 @@ nanodeer/
 │   │
 │   ├── agent/               # Core runtime
 │   │   ├── __init__.py
-│   │   ├── react.py         # ReActExecutor — main loop (~1160 lines)
-│   │   ├── state.py         # ThreadState, TurnSignals, NextAction, SandboxState
-│   │   ├── context.py       # ContextManager — memory + uploads, parallel load
+│   │   ├── agent.py         # NanoAgent — State owner + execution lock
+│   │   ├── react.py         # Canonical Agent loop + compatibility wrapper
+│   │   ├── state.py         # AgentState, NextAction, WaitState
+│   │   ├── context.py       # ContextView + transform/upload boundary
+│   │   ├── provider.py      # Provider encode/normalize boundary
+│   │   ├── tooling.py       # execute_tool effect boundary
 │   │   ├── prompt.py        # PromptConfig, build_base/lead_agent_prompt
 │   │   ├── llm.py           # ReasoningChatOpenAI (OpenAI-compatible wrapper)
 │   │   ├── messages.py      # HumanMessage, AIMessage, ToolMessage, ToolCall
@@ -237,7 +248,7 @@ nanodeer/
 │   │   └── path.py          # Path validation (retained for extension use)
 │   │
 │   ├── tools/               # Built-in tool definitions
-│   │   ├── __init__.py      # default_tools() → 8 core, extension tools importable
+│   │   ├── __init__.py      # default_tools() → 9 core, extension tools importable
 │   │   ├── read_file.py     # Core: read file content
 │   │   ├── write_file.py    # Core: write file content
 │   │   ├── edit_file.py     # Core: string replacement editing
@@ -245,6 +256,7 @@ nanodeer/
 │   │   ├── web_search.py    # Core: DuckDuckGo search
 │   │   ├── web_fetch.py     # Core: fetch URL content
 │   │   ├── save_memory.py   # Core: persist to USER.md / MEMORY.md
+│   │   ├── wait.py          # Core: explicit durable WAIT control
 │   │   ├── search_memory.py # Core: recall from USER.md / MEMORY.md
 │   │   ├── ls.py            # Extension: list directory
 │   │   ├── glob.py          # Extension: file pattern match
@@ -365,7 +377,7 @@ To my mentor — for opening the door to Agent and Harness Engineering, and enco
 | Source | Pattern |
 |--------|---------|
 | **DeerFlow** | State machine + `next_action` signal routing |
-| **Claude Code** | Tool-first design, clarification via tags |
+| **Claude Code** | Tool-first design, explicit runtime control |
 | **OpenClaw** | Layered memory, wiki-structured knowledge |
 | **NanoClaw** | Docker sandbox, volume mounts, path isolation |
 
