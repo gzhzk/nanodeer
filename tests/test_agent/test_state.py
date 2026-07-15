@@ -1,20 +1,20 @@
-"""Tests for ThreadState, TurnSignals, NextAction."""
+"""Tests for AgentState compatibility and durable run outcomes."""
 
 import pytest
 
 from nanodeer.agent.state import (
     ThreadState,
-    TurnSignals,
     NextAction,
     SandboxState,
+    WaitState,
 )
 
 
 class TestNextAction:
     def test_enum_values(self):
-        assert NextAction.PROCESS == "process"
+        assert NextAction.FINISH == "finish"
         assert NextAction.WAIT == "wait"
-        assert NextAction.END == "end"
+        assert len(NextAction) == 2
 
 
 class TestSandboxState:
@@ -38,31 +38,35 @@ class TestThreadState:
         t = ThreadState()
         assert t.thread_id is None
         assert t.messages == []
-        assert t.next_action == NextAction.PROCESS
+        assert t.next_action is None
+        assert t.wait is None
         assert t.title is None
-        assert t.sandbox is None
 
     def test_with_values(self):
         t = ThreadState(
             thread_id="thread-1",
-            next_action=NextAction.END,
+            next_action=NextAction.FINISH,
             title="Test",
         )
         assert t.thread_id == "thread-1"
-        assert t.next_action == NextAction.END
+        assert t.next_action == NextAction.FINISH
         assert t.title == "Test"
 
+    def test_runtime_resources_and_prompt_cache_are_not_state_fields(self):
+        assert "sandbox" not in ThreadState.model_fields
+        assert "system_prompt" not in ThreadState.model_fields
 
-class TestTurnSignals:
-    def test_defaults(self):
-        s = TurnSignals()
-        assert s.clarification_question is None
-        assert s.memory_context is None
 
-    def test_with_values(self):
-        s = TurnSignals(
-            clarification_question="Which format?",
-            memory_context="User prefers JSON",
-        )
-        assert s.clarification_question == "Which format?"
-        assert s.memory_context == "User prefers JSON"
+def test_wait_state_has_durable_resume_contract():
+    wait_state = WaitState(
+        question="Which account should I use?",
+        required_input="account id",
+        tool_call_id="call-wait",
+        reason="missing_external_input",
+    )
+
+    restored = WaitState.model_validate_json(wait_state.model_dump_json())
+
+    assert restored == wait_state
+    assert restored.created_at_ms > 0
+    assert restored.reason == "missing_external_input"

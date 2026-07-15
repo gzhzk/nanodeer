@@ -18,13 +18,13 @@ def test_evaluate_trace_tool_metric_and_file_assertions(tmp_path: Path):
             {"type": "trace_has", "event": "sandbox_acquired"},
             {"type": "file_contains", "path": "summary.md", "text": "TOTAL_AMOUNT=65"},
             {"type": "metric_eq", "key": "num_tool_errors", "value": 0},
-            {"type": "next_action_is", "value": "end"},
+            {"type": "next_action_is", "value": "finish"},
         ],
     )
     result = RunResult(
         thread_id="thread",
         message="done",
-        next_action=NextAction.END,
+        next_action=NextAction.FINISH,
         tool_calls=[{"name": "write_file", "args": {}, "id": "call-1"}],
         events=[{"event": "sandbox_acquired"}],
         metrics={"num_tool_errors": 0},
@@ -60,7 +60,7 @@ def test_trace_contract_passes_for_complete_run(tmp_path: Path):
     result = RunResult(
         thread_id="thread",
         message="done",
-        next_action=NextAction.END,
+        next_action=NextAction.FINISH,
         events=[
             {
                 "event": "turn_start",
@@ -163,7 +163,7 @@ def test_quality_assertions_check_negative_output_tool_order_args_and_events(tmp
     result = RunResult(
         thread_id="thread",
         message="SAFE_RESULT",
-        next_action=NextAction.END,
+        next_action=NextAction.FINISH,
         tool_calls=[
             {"name": "read_file", "args": {"file_path": "/mnt/user-data/source.txt"}, "id": "call-1"},
             {"name": "write_file", "args": {"file_path": "/mnt/user-data/result.json"}, "id": "call-2"},

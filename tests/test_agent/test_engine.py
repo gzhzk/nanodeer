@@ -4,7 +4,8 @@ import pytest
 from unittest.mock import MagicMock, AsyncMock
 
 from nanodeer.engine import NanoEngine, RunResult, RuntimeFeatures, _OPENAI_COMPATIBLE
-from nanodeer.agent.state import NextAction
+from nanodeer.agent.messages import HumanMessage
+from nanodeer.agent.state import NextAction, ThreadState, WaitState
 
 
 class TestRunResult:
@@ -12,19 +13,19 @@ class TestRunResult:
         r = RunResult(
             thread_id="t1",
             message="Hello",
-            next_action=NextAction.PROCESS,
+            next_action=NextAction.FINISH,
             tool_calls=[{"name": "read_file", "args": {}}],
             duration_ms=150,
         )
         assert r.thread_id == "t1"
         assert r.message == "Hello"
-        assert r.next_action == NextAction.PROCESS
+        assert r.next_action == NextAction.FINISH
         assert r.tool_calls == [{"name": "read_file", "args": {}}]
         assert r.duration_ms == 150
 
     def test_defaults(self):
         r = RunResult(thread_id="t1", message="Hi")
-        assert r.next_action == NextAction.PROCESS
+        assert r.next_action == NextAction.FINISH
         assert r.tool_calls == []
         assert r.duration_ms == 0
         assert r.metrics == {}
@@ -117,27 +118,45 @@ class TestProviderRouting:
 class TestNanoEngineRun:
     """Injects mock executor directly (no factory mocking needed after v0.2 merge)."""
 
+    def test_get_agent_returns_one_owner_per_thread(self):
+        config = MagicMock()
+        engine = NanoEngine(config)
+        executor = MagicMock()
+        executor._checkpointer = None
+        engine._executor = executor
+
+        first = engine.get_agent("thread-1")
+        second = engine.get_agent("thread-1")
+        other = engine.get_agent("thread-2")
+
+        assert first is second
+        assert first is not other
+
+        assert engine.forget_agent("thread-1") is True
+        assert engine.get_cached_agent("thread-1") is None
+
     @pytest.mark.asyncio
     async def test_returns_run_result(self):
         """run() returns a RunResult with correct thread_id."""
         config = MagicMock()
         engine = NanoEngine(config)
 
-        mock_state = MagicMock()
-        mock_state.messages = [MagicMock(content="Hi")]
-        mock_state.next_action = NextAction.PROCESS
-        mock_state.thread_id = "t1"
-
         mock_executor = AsyncMock()
         mock_executor._checkpointer = None
-        mock_executor.run = AsyncMock(return_value=(mock_state, []))
+
+        async def complete(state, uploaded_files=None):
+            state.messages.append(MagicMock(content="Hi"))
+            state.next_action = NextAction.FINISH
+            return state, []
+
+        mock_executor.run = AsyncMock(side_effect=complete)
         engine._executor = mock_executor
 
         result = await engine.run("hello", thread_id="t1")
 
         assert result.thread_id == "t1"
         assert result.message == "Hi"
-        assert result.next_action == NextAction.PROCESS
+        assert result.next_action == NextAction.FINISH
 
     @pytest.mark.asyncio
     async def test_auto_generates_thread_id(self):
@@ -145,13 +164,15 @@ class TestNanoEngineRun:
         config = MagicMock()
         engine = NanoEngine(config)
 
-        mock_state = MagicMock()
-        mock_state.messages = [MagicMock(content="Done")]
-        mock_state.next_action = NextAction.PROCESS
-
         mock_executor = AsyncMock()
         mock_executor._checkpointer = None
-        mock_executor.run = AsyncMock(return_value=(mock_state, []))
+
+        async def complete(state, uploaded_files=None):
+            state.messages.append(MagicMock(content="Done"))
+            state.next_action = NextAction.FINISH
+            return state, []
+
+        mock_executor.run = AsyncMock(side_effect=complete)
         engine._executor = mock_executor
 
         result = await engine.run("hello")
@@ -165,13 +186,15 @@ class TestNanoEngineRun:
         config = MagicMock()
         engine = NanoEngine(config)
 
-        mock_state = MagicMock()
-        mock_state.messages = [MagicMock(content="Hi")]
-        mock_state.next_action = NextAction.PROCESS
-
         mock_executor = AsyncMock()
         mock_executor._checkpointer = None
-        mock_executor.run = AsyncMock(return_value=(mock_state, []))
+
+        async def complete(state, uploaded_files=None):
+            state.messages.append(MagicMock(content="Hi"))
+            state.next_action = NextAction.FINISH
+            return state, []
+
+        mock_executor.run = AsyncMock(side_effect=complete)
         engine._executor = mock_executor
 
         files = [{"name": "test.txt", "content": "hello"}]
@@ -187,15 +210,52 @@ class TestNanoEngineRun:
         config = MagicMock()
         engine = NanoEngine(config)
 
-        mock_state = MagicMock()
-        mock_state.messages = [MagicMock(content="Hi")]
-        mock_state.next_action = NextAction.PROCESS
-
         mock_executor = AsyncMock()
         mock_executor._checkpointer = None
-        mock_executor.run = AsyncMock(return_value=(mock_state, []))
+
+        async def complete(state, uploaded_files=None):
+            state.messages.append(MagicMock(content="Hi"))
+            state.next_action = NextAction.FINISH
+            return state, []
+
+        mock_executor.run = AsyncMock(side_effect=complete)
         engine._executor = mock_executor
 
         result = await engine.run("hello")
 
         assert result.duration_ms >= 0
+
+    @pytest.mark.asyncio
+    async def test_user_reply_consumes_persisted_wait_before_resume(self):
+        config = MagicMock()
+        engine = NanoEngine(config, generate_titles=False)
+        saved = ThreadState(
+            thread_id="t-wait",
+            messages=[HumanMessage(content="Original request")],
+            next_action=NextAction.WAIT,
+            finish_reason="wait",
+            wait=WaitState(
+                question="Which account?",
+                required_input="account id",
+                tool_call_id="call-wait",
+            ),
+        )
+        engine._checkpointer = AsyncMock()
+        engine._checkpointer.load = AsyncMock(return_value=saved)
+
+        async def complete(state, uploaded_files=None):
+            assert state.next_action is None
+            assert state.wait is None
+            assert state.finish_reason == "running"
+            assert state.messages[-1].content == "account-42"
+            state.next_action = NextAction.FINISH
+            state.finish_reason = "completed"
+            return state, []
+
+        executor = MagicMock()
+        executor.run = AsyncMock(side_effect=complete)
+        engine._executor = executor
+
+        result = await engine.run("account-42", thread_id="t-wait")
+
+        assert result.next_action == NextAction.FINISH

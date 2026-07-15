@@ -21,6 +21,7 @@ def test_trace_collector_emit_collects_events_with_thread_id():
 
     assert event["threadId"] == "thread-1"
     assert event["run_id"] == collector.run_id
+    assert event["sequence"] == 1
     assert collector.events == [event]
 
 
@@ -74,3 +75,17 @@ def test_trace_collector_can_persist_jsonl(tmp_path):
     assert [row["event"] for row in rows] == ["turn_start", "memory_context"]
     assert all(row["threadId"] == "thread-1" for row in rows)
     assert all(row["run_id"] == "run-1" for row in rows)
+    assert [row["sequence"] for row in rows] == [1, 2]
+
+
+def test_trace_write_failure_does_not_lose_runtime_event(monkeypatch):
+    collector = TraceCollector(thread_id="thread-1")
+
+    def fail(_event):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(collector, "_write", fail)
+    event = collector.emit("agent_finished")
+
+    assert collector.events == [event]
+    assert event["sequence"] == 1
