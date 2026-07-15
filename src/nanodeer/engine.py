@@ -115,6 +115,7 @@ class NanoEngine:
         *,
         model_name: str | None = None,
         features: RuntimeFeatures | None = None,
+        capabilities: str | tuple[str, ...] | list[str] | None = None,
         tools: list | None = None,
         context_transform: Any | None = None,
         checkpointer=None,
@@ -127,6 +128,7 @@ class NanoEngine:
             config: HarnessConfig instance.
             model_name: Optional model override.
             features: Optional RuntimeFeatures for feature gating.
+            capabilities: Optional profile names; overrides config defaults.
             tools: Optional custom tool list. None = use default tools.
             context_transform: Optional callable that populates one ContextView.
             checkpointer: Optional Checkpointer instance. Defaults to SqliteCheckpointer.
@@ -136,6 +138,7 @@ class NanoEngine:
         self.config = config
         self._model_name = model_name
         self._features = features
+        self._capabilities = capabilities
         self._tools = tools
         self._context_transform = context_transform
         self._checkpointer = checkpointer
@@ -143,6 +146,28 @@ class NanoEngine:
         self._generate_titles = generate_titles
         self._loop = None
         self._agents: dict[str, NanoAgent] = {}
+        self._profile = None
+
+    @property
+    def capabilities(self) -> tuple[str, ...]:
+        """Capability names selected for this engine instance."""
+        return self._resolve_profile().capabilities
+
+    @property
+    def tool_names(self) -> tuple[str, ...]:
+        """Tool schemas exposed by this engine instance."""
+        if self._tools is not None:
+            return tuple(tool.name for tool in self._tools)
+        return tuple(tool.name for tool in self._resolve_profile().tools)
+
+    def _resolve_profile(self):
+        if self._profile is None:
+            from nanodeer.profiles import compose_profile
+
+            configured = getattr(self.config.agents.defaults, "capabilities", None)
+            selected = self._capabilities if self._capabilities is not None else configured
+            self._profile = compose_profile(selected)
+        return self._profile
 
     def _get_loop(self):
         """Lazy-bind dependencies into the one callable Agent Loop."""
@@ -157,7 +182,6 @@ class NanoEngine:
                 cfg = self.config.agents.defaults
                 display_name = f"{cfg.provider}/{cfg.model}"
 
-            from nanodeer.tools import default_tools
             from nanodeer.agent.memory.storage import MemoryStore
             from nanodeer.agent.sandbox_manager import SandboxManager
             from nanodeer.agent.prompt import PromptConfig
@@ -165,7 +189,12 @@ class NanoEngine:
             from nanodeer.workspace import WorkspaceManager
 
             feat = self._features or RuntimeFeatures()
-            tools = list(self._tools) if self._tools is not None else default_tools()
+            profile = self._resolve_profile()
+            tools = (
+                list(self._tools)
+                if self._tools is not None
+                else list(profile.tools)
+            )
 
             # Sandbox setup
             sandbox_provider = self._sandbox_provider
@@ -193,6 +222,7 @@ class NanoEngine:
                 prompt_config=PromptConfig(
                     profile=feat.prompt_profile,
                     memory=feat.prompt_memory,
+                    capability_instructions=profile.prompt,
                 ),
                 checkpointer=self._checkpointer,
                 model_name=display_name,

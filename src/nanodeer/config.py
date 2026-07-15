@@ -87,6 +87,9 @@ class AgentsDefaults(Base):
     provider: str = "minimax"  # Provider must be explicitly specified
     max_tokens: int = 8192
     temperature: float = 0.1
+    capabilities: list[str] = Field(
+        default_factory=lambda: ["coding", "research", "office", "daily"]
+    )
 
 
 class AgentsConfig(Base):

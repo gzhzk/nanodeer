@@ -80,6 +80,27 @@ class TestNanoEngineInit:
         engine = NanoEngine(config, features=features)
         assert engine._features is features
 
+    def test_capabilities_come_from_config(self):
+        config = MagicMock()
+        config.agents.defaults.capabilities = ["research"]
+        engine = NanoEngine(config)
+
+        assert engine.capabilities == ("research",)
+        assert "web_search" in engine.tool_names
+        assert "bash" not in engine.tool_names
+
+    def test_runtime_capabilities_override_config(self):
+        config = MagicMock()
+        config.agents.defaults.capabilities = ["research"]
+        engine = NanoEngine(
+            config,
+            capabilities=("coding", "daily"),
+        )
+
+        assert engine.capabilities == ("coding", "daily")
+        assert "bash" in engine.tool_names
+        assert "save_memory" in engine.tool_names
+
     def test_stores_tools(self):
         config = MagicMock()
         tools = [MagicMock()]

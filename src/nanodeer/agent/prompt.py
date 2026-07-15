@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 class PromptConfig:
     profile: str = "default"
     memory: bool = True
+    capability_instructions: str = ""
 
 
 _IDENTITY_CORE = """Act on requests directly — don't ask for confirmation unless the instruction is ambiguous or dangerous.
@@ -141,6 +142,10 @@ def _memory_instructions_section() -> str:
     return f"<memory_instructions>\n{_MEMORY_SHORT}\n</memory_instructions>"
 
 
+def _capabilities_section(instructions: str) -> str:
+    return f"<capabilities>\n{instructions}\n</capabilities>"
+
+
 def _memory_section(memory_context: str) -> str:
     # memory_context already contains tagged sections from load_for_prompt():
     # <user_memory>, <wiki_entries>, <memory>, <episodic>
@@ -170,6 +175,8 @@ def build_base_system_prompt(
         ]
     if config.memory:
         sections.append(_memory_instructions_section())
+    if config.capability_instructions:
+        sections.append(_capabilities_section(config.capability_instructions))
 
     return "\n\n".join(sections)
 

@@ -117,6 +117,8 @@ async def api_info():
     return {
         "provider": cfg.agents.defaults.provider,
         "model": cfg.agents.defaults.model,
+        "capabilities": list(_get_engine().capabilities),
+        "tools": list(_get_engine().tool_names),
     }
 
 

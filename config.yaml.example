@@ -16,6 +16,8 @@ agents:
     provider: siliconflow  # minimax, anthropic, openrouter, deepseek, moonshot, etc.
     max_tokens: 8192
     temperature: 0.1
+    # One Loop, composable extension packs. Use a subset or [all].
+    capabilities: [coding, research, office, daily]
 
 # ============================================================================
 # Provider Configurations
