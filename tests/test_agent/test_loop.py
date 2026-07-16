@@ -1,17 +1,24 @@
 """Tests for the native async Agent Loop (no middleware chain)."""
 
 import asyncio
+import importlib
 
 import pytest
 from unittest.mock import MagicMock, AsyncMock
 
-from nanodeer.agent.react import create_agent_loop, _bash_safe, _tool_success
+from nanodeer.agent.loop import create_agent_loop, _bash_safe, _tool_success
 from nanodeer.agent.state import NextAction, ThreadState
 from nanodeer.agent.messages import HumanMessage, SystemMessage, AIMessage, ToolMessage
 from nanodeer.agent.prompt import PromptConfig
 from nanodeer.tools.write_file import write_file
 from nanodeer.tools.wait import wait
 from nanodeer.workspace import WorkspaceManager
+
+
+def test_legacy_react_module_resolves_to_canonical_loop():
+    assert importlib.import_module("nanodeer.agent.react") is importlib.import_module(
+        "nanodeer.agent.loop"
+    )
 
 
 class MockLLM:

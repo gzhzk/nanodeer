@@ -183,9 +183,9 @@ class NanoEngine:
                 display_name = f"{cfg.provider}/{cfg.model}"
 
             from nanodeer.agent.memory.storage import MemoryStore
-            from nanodeer.agent.sandbox_manager import SandboxManager
+            from nanodeer.sandbox.runtime import SandboxManager
             from nanodeer.agent.prompt import PromptConfig
-            from nanodeer.agent.react import create_agent_loop
+            from nanodeer.agent.loop import create_agent_loop
             from nanodeer.workspace import WorkspaceManager
 
             feat = self._features or RuntimeFeatures()

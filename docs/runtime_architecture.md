@@ -67,7 +67,7 @@ src/nanodeer/agent/prompt.py
   build_base_system_prompt()
   build_lead_agent_prompt()
 
-src/nanodeer/agent/react.py
+src/nanodeer/agent/loop.py
   ReActExecutor
     - native ReAct loop
     - retry
@@ -82,7 +82,7 @@ src/nanodeer/agent/context.py
     - upload processing
     - episodic absorb
 
-src/nanodeer/agent/sandbox_manager.py
+src/nanodeer/sandbox/runtime.py
   SandboxManager
     - acquire/reuse/release sandbox
 ```
@@ -575,7 +575,7 @@ title 生成失败只写 warning，不影响主结果。
 1. `src/nanodeer/engine.py`
 2. `src/nanodeer/agent/factory.py`
 3. `src/nanodeer/agent/state.py`
-4. `src/nanodeer/agent/react.py`
+4. `src/nanodeer/agent/loop.py`
 5. `src/nanodeer/agent/context.py`
 6. `src/nanodeer/agent/prompt.py`
 7. `src/nanodeer/sandbox/tools.py`

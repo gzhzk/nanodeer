@@ -1,4 +1,4 @@
-"""NanoDeer native ReAct executor — minimal, no middleware chain.
+"""NanoDeer native Agent Loop — explicit and free of middleware chains.
 
 Loop:
   1. Bind persistent Workspace — thread-isolated virtual paths
@@ -43,7 +43,7 @@ from .context import (
     save_uploaded_files,
     transform_context,
 )
-from .sandbox_manager import ExecutionResources, SandboxManager
+from nanodeer.sandbox.runtime import ExecutionResources, SandboxManager
 from .trace import (
     TRACE_PREVIEW_CHARS,
     TraceCollector,
@@ -59,7 +59,7 @@ from nanodeer.workspace import (
 logger = logging.getLogger(__name__)
 
 
-# -- Retry helpers (from original react.py) -----------------------------------
+# -- Retry helpers ------------------------------------------------------------
 
 _MAX_RETRIES = 3
 _BASE_DELAY = 2.0

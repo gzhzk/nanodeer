@@ -1,7 +1,7 @@
 # NanoDeer Harness Architecture
 
 > 本文描述 NanoDeer v0.3 当前实现。Loop 细节见
-> [react_design.md](./react_design.md)，重构约束见
+> [loop_design.md](./loop_design.md)，重构约束见
 > [nanodeer_v0.3_general_agent_refactor_plan.md](./nanodeer_v0.3_general_agent_refactor_plan.md)。
 
 ## 1. 设计公理
@@ -364,12 +364,12 @@ Event subscription
 | `engine.py` | 依赖装配、Agent registry、RunResult |
 | `agent/agent.py` | State owner、lock、resume、cancel、subscriber |
 | `agent/state.py` | AgentState、WaitState、FINISH/WAIT |
-| `agent/react.py` | 顶层 agent_loop、Event 与退出编排 |
+| `agent/loop.py` | 顶层 agent_loop、Event 与退出编排 |
 | `agent/context.py` | ContextView、uploads、transform_context |
 | `agent/provider.py` | Provider 编码与响应归一化 |
 | `agent/tooling.py` | execute_tool 副作用边界 |
 | `agent/checkpoint/` | commit barrier 与 durable store |
-| `agent/sandbox_manager.py` | ExecutionResources 与 Sandbox lease |
+| `sandbox/runtime.py` | ExecutionResources 与 Sandbox lease |
 | `workspace.py` | thread Workspace 与虚拟路径安全 |
 | `agent/trace.py` | Event envelope、sequence、JSONL evidence |
 | `cli/api.py` | FastAPI、SSE、cancel、conversation API |

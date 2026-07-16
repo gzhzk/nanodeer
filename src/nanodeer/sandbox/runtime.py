@@ -4,7 +4,7 @@ Replaces SandboxMiddleware (before_llm / after_tools_all hooks).
 Provides idempotent acquire/release that reuses containers across turns
 via the module-level _sandbox_context.
 
-Used by the top-level agent_loop directly, not as middleware.
+Used by the top-level Agent Loop directly, not as middleware.
 """
 
 import logging

@@ -54,7 +54,7 @@ Most agent frameworks route cross-cutting concerns as pre/post hooks. NanoDeer d
 | External input | explicit `wait` control tool + durable `WaitState` |
 | Convergence guard | Repeated identical tool calls capped, max turn limit |
 
-This means you can read the entire execution path in [react.py](src/nanodeer/agent/react.py) and understand control flow without learning a graph DSL.
+This means you can read the entire execution path in [loop.py](src/nanodeer/agent/loop.py) and understand control flow without learning a graph DSL.
 
 ### 2. Core + Extension split
 
@@ -112,7 +112,7 @@ This is the most important decision. NanoDeer does not compete with Claude Code,
                       └──────────┬───────────────────┘
                                  │
                       ┌──────────▼───────────────────┐
-                      │  agent_loop() (react.py)     │
+                      │  agent_loop() (loop.py)      │
                       │  Context → Provider → Tool   │
                       │  commit → Event → FINISH/WAIT│
                       └──────────────────────────────┘
@@ -123,7 +123,7 @@ This is the most important decision. NanoDeer does not compete with Claude Code,
 | Module | Pattern | Lines |
 |--------|---------|-------|
 | `agent.py` | Per-thread State owner and execution lock | — |
-| `react.py` | One loop — context → provider → tools → commit | — |
+| `loop.py` | One loop — context → provider → tools → commit | — |
 | `state.py` | AgentState / FINISH / WAIT facts | — |
 | `context.py` | Context transformation and upload boundary | — |
 | `provider.py` | Provider message encoding and normalization | — |
@@ -222,7 +222,7 @@ nanodeer/
 │   ├── agent/               # Core runtime
 │   │   ├── __init__.py
 │   │   ├── agent.py         # NanoAgent — State owner + execution lock
-│   │   ├── react.py         # Canonical agent_loop + dependency binder
+│   │   ├── loop.py          # Canonical agent_loop + dependency binder
 │   │   ├── state.py         # AgentState, NextAction, WaitState
 │   │   ├── context.py       # ContextView + transform/upload boundary
 │   │   ├── provider.py      # Provider encode/normalize boundary
@@ -230,7 +230,6 @@ nanodeer/
 │   │   ├── prompt.py        # PromptConfig, build_base/lead_agent_prompt
 │   │   ├── llm.py           # ReasoningChatOpenAI (OpenAI-compatible wrapper)
 │   │   ├── messages.py      # HumanMessage, AIMessage, ToolMessage, ToolCall
-│   │   ├── sandbox_manager.py  # SandboxManager — acquire/release lifecycle
 │   │   ├── trace.py         # TraceCollector — structured event emission
 │   │   ├── checkpoint/
 │   │   │   ├── __init__.py
@@ -245,6 +244,7 @@ nanodeer/
 │   │   ├── docker.py        # DockerSandboxProvider — container lifecycle
 │   │   ├── local.py         # LocalSandboxProvider — subprocess fallback
 │   │   ├── tools.py         # SandboxToolWrapper — bash only, 40 lines
+│   │   ├── runtime.py       # ExecutionResources + sandbox acquire/release
 │   │   └── path.py          # Path validation (retained for extension use)
 │   │
 │   ├── tools/               # Built-in tool definitions

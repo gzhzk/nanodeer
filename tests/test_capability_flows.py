@@ -10,7 +10,7 @@ import pytest
 from nanodeer.agent.checkpoint import SqliteCheckpointer
 from nanodeer.agent.messages import HumanMessage, ToolMessage
 from nanodeer.agent.prompt import PromptConfig
-from nanodeer.agent.react import create_agent_loop
+from nanodeer.agent.loop import create_agent_loop
 from nanodeer.agent.state import NextAction, ThreadState
 from nanodeer.profiles import compose_profile
 from nanodeer.workspace import WorkspaceManager

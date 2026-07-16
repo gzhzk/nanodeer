@@ -54,7 +54,7 @@ NanoDeer 是 **Agent Runtime 工程的开源参考实现**——不是又一个�
 | 外部输入 | 显式 `wait` 控制工具 + 可持久化 `WaitState` |
 | 收敛保护 | 重复工具调用上限 + 最大轮数限制 |
 
-这意味着你只需要读 [react.py](src/nanodeer/agent/react.py) 一个文件就能理解整个执行流程，不需要学任何图 DSL。
+这意味着你只需要读 [loop.py](src/nanodeer/agent/loop.py) 一个文件就能理解整个执行流程，不需要学任何图 DSL。
 
 ### 2. 核心 + 外接分层
 
@@ -112,7 +112,7 @@ NanoDeer 是 **Agent Runtime 工程的开源参考实现**——不是又一个�
                       └──────────┬───────────────────┘
                                  │
                       ┌──────────▼───────────────────┐
-                      │  agent_loop() (react.py)      │
+                      │  agent_loop() (loop.py)       │
                       │ Context → Provider → Tool     │
                       │ commit → Event → FINISH/WAIT  │
                       └──────────────────────────────┘
@@ -123,7 +123,7 @@ NanoDeer 是 **Agent Runtime 工程的开源参考实现**——不是又一个�
 | 模块 | 展示的模式 | 行数 |
 |------|-----------|------|
 | `agent.py` | 每个 thread 的 State owner 与执行锁 | — |
-| `react.py` | 唯一主循环 | — |
+| `loop.py` | 唯一主循环 | — |
 | `state.py` | AgentState / FINISH / WAIT 事实 | — |
 | `context.py` | Context 变换与上传边界 | — |
 | `provider.py` | Provider 消息编解码与归一化 | — |
@@ -222,7 +222,7 @@ nanodeer/
 │   ├── agent/               # 核心运行时
 │   │   ├── __init__.py
 │   │   ├── agent.py         # NanoAgent — State owner + execution lock
-│   │   ├── react.py         # 唯一 agent_loop + 依赖绑定函数
+│   │   ├── loop.py          # 唯一 agent_loop + 依赖绑定函数
 │   │   ├── state.py         # AgentState, NextAction, WaitState
 │   │   ├── context.py       # ContextView + transform/上传边界
 │   │   ├── provider.py      # Provider 编解码/归一化边界
@@ -230,7 +230,6 @@ nanodeer/
 │   │   ├── prompt.py        # PromptConfig, build_base/lead_agent_prompt
 │   │   ├── llm.py           # ReasoningChatOpenAI (OpenAI 兼容包装)
 │   │   ├── messages.py      # HumanMessage, AIMessage, ToolMessage, ToolCall
-│   │   ├── sandbox_manager.py  # SandboxManager — acquire/release 生命周期
 │   │   ├── trace.py         # TraceCollector — 结构化事件发射
 │   │   ├── checkpoint/
 │   │   │   ├── __init__.py
@@ -245,6 +244,7 @@ nanodeer/
 │   │   ├── docker.py        # DockerSandboxProvider — 容器生命周期
 │   │   ├── local.py         # LocalSandboxProvider — 子进程回退
 │   │   ├── tools.py         # SandboxToolWrapper — 仅 bash，40 行
+│   │   ├── runtime.py       # ExecutionResources + 沙箱 acquire/release
 │   │   └── path.py          # 路径验证 (外接模块保留)
 │   │
 │   ├── tools/               # 内置工具定义

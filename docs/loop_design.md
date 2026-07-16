@@ -1,4 +1,4 @@
-# NanoDeer ReAct 主链路设计
+# NanoDeer Agent Loop 主链路设计
 
 > 本文描述 v0.3 当前实现。重构目标与删除兼容壳的顺序见
 > [nanodeer_v0.3_general_agent_refactor_plan.md](./nanodeer_v0.3_general_agent_refactor_plan.md)。

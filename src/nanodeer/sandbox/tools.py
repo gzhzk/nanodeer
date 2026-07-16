@@ -21,7 +21,7 @@ class SandboxToolWrapper:
     def __init__(self, tool, provider):
         self._tool = tool
         self._provider = provider
-        # Marker for _invoke_tool in react.py — signals that exec_id is needed
+        # Marker for the Agent Loop — signals that exec_id is needed
         self.get_sandbox_command = True
         self.requires_sandbox = True
 

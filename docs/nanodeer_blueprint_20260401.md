@@ -36,7 +36,7 @@
 当前实现改成了：
 
 - 一个明确的 `while` 主循环
-- 在 [react.py](/home/kai/workspace/nanodeer/src/nanodeer/agent/react.py:1) 中顺序推进
+- 在 [loop.py](/home/kai/workspace/nanodeer/src/nanodeer/agent/loop.py:1) 中顺序推进
 - 不依赖图 DSL 或图编译
 
 这样做的好处是：
@@ -121,6 +121,6 @@
 
 1. [docs/harness_architecture.md](/home/kai/workspace/nanodeer/docs/harness_architecture.md:1)
 2. [src/nanodeer/engine.py](/home/kai/workspace/nanodeer/src/nanodeer/engine.py:1)
-3. [src/nanodeer/agent/react.py](/home/kai/workspace/nanodeer/src/nanodeer/agent/react.py:1)
+3. [src/nanodeer/agent/loop.py](/home/kai/workspace/nanodeer/src/nanodeer/agent/loop.py:1)
 4. [src/nanodeer/agent/context.py](/home/kai/workspace/nanodeer/src/nanodeer/agent/context.py:1)
 5. [src/nanodeer/sandbox/tools.py](/home/kai/workspace/nanodeer/src/nanodeer/sandbox/tools.py:1)

@@ -1,10 +1,17 @@
 """SandboxManager lease behavior over persistent workspaces."""
 
+import importlib
+
 import pytest
 
-from nanodeer.agent.sandbox_manager import SandboxManager
-from nanodeer.agent.sandbox_manager import ExecutionResources
+from nanodeer.sandbox.runtime import ExecutionResources, SandboxManager
 from nanodeer.sandbox import RunResult, Sandbox, clear_sandbox, get_sandbox
+
+
+def test_legacy_sandbox_manager_module_resolves_to_sandbox_runtime():
+    assert importlib.import_module(
+        "nanodeer.agent.sandbox_manager"
+    ) is importlib.import_module("nanodeer.sandbox.runtime")
 
 
 class MockProvider:
