@@ -270,7 +270,7 @@ async def _astream_with_retry(llm, messages, logger_prefix: str = "", on_retry=N
 
 # -- Private loop dependencies ------------------------------------------------
 
-class _LoopRuntime:
+class _LoopDeps:
     """Private dependency holder for the module-level ``agent_loop``.
 
     This object owns no AgentState and exposes no alternate run API.  It keeps
@@ -604,7 +604,7 @@ def create_agent_loop(
     stream_llm=False, sink=None)``.  Engine and Agent depend only on that
     callable; the private dependency holder never becomes a State owner.
     """
-    runtime = _LoopRuntime(
+    runtime = _LoopDeps(
         llm=llm,
         tools=tools,
         wrapped_tools=wrapped_tools,
@@ -638,7 +638,7 @@ def create_agent_loop(
 # -- Canonical top-level loop -------------------------------------------------
 
 async def agent_loop(
-    runtime: _LoopRuntime,
+    runtime: _LoopDeps,
     state: AgentState,
     uploaded_files: list[dict] | None,
     *,
