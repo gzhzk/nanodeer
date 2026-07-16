@@ -16,11 +16,14 @@ from nanodeer.config import get_config
 from nanodeer.engine import NanoEngine
 
 
-async def repl():
-    engine = NanoEngine(get_config())
+async def repl(capabilities=None):
+    engine = NanoEngine(get_config(), capabilities=capabilities)
     thread_id = None
 
-    print("NanoDeer REPL — /new for new thread, exit to quit")
+    print(
+        "NanoDeer REPL "
+        f"[{','.join(engine.capabilities)}] — /new for new thread, exit to quit"
+    )
     print()
 
     while True:
@@ -56,9 +59,17 @@ async def repl():
         print()
 
 
-def main():
+def main(argv=None):
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Run the NanoDeer REPL")
+    parser.add_argument(
+        "--capabilities",
+        help="Comma-separated profiles: coding,research,office,daily or all",
+    )
+    args = parser.parse_args(argv)
     logging.basicConfig(level=logging.WARNING)
-    asyncio.run(repl())
+    asyncio.run(repl(args.capabilities))
 
 
 if __name__ == "__main__":

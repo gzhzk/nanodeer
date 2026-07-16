@@ -1,6 +1,9 @@
-"""Built-in tool definitions.
+"""Tool definitions and the legacy minimal tool list.
 
-Core tools (always available via default_tools()):
+``NanoEngine`` now selects tools through ``profiles.py``. The historical
+``default_tools()`` API remains for embedders that explicitly import it.
+
+Legacy minimal tools returned by default_tools():
   read_file, write_file, edit_file, bash,
   web_search, web_fetch,
   save_memory, search_memory, wait
@@ -37,7 +40,7 @@ from .list_plans import list_plans
 from .spawn_subagent import spawn_subagent, get_subagent_results
 
 
-# Core tool list — always available
+# Legacy minimal list — kept as a public compatibility function
 CORE_TOOLS = [
     read_file,
     write_file,
@@ -52,7 +55,7 @@ CORE_TOOLS = [
 
 
 def default_tools() -> list:
-    """Return core built-in tools. Extension tools must be added manually."""
+    """Return the pre-Profile minimal tool set for compatibility."""
     return list(CORE_TOOLS)
 
 

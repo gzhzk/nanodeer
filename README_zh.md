@@ -9,7 +9,7 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.135-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![Docker](https://img.shields.io/badge/Docker-optional-2496ED?style=flat-square&logo=docker&logoColor=white)](https://docker.com)
 
-ReAct 循环 · 工具调用 · 沙箱隔离 · 检查点 · 记忆 · SSE 流式
+ReAct 循环 · Coding · Research · Office · Daily · 持久化 WAIT
 
 *探索 LLM Agent 背后的运行时。*
 
@@ -21,7 +21,7 @@ ReAct 循环 · 工具调用 · 沙箱隔离 · 检查点 · 记忆 · SSE 流�
 
 NanoDeer 是 **Agent Runtime 工程的开源参考实现**——不是又一个跟 Claude Code、Cursor 竞争的工具，而是把 Agent 运行时拆开、展示每个核心模式是怎么实现的。
 
-它的核心是一条直白的 ReAct 循环，没有中间件链、没有图编排、没有框架锁。每个核心模块刚好展示一个模式。非核心模块（subagent、plan、skills、wiki、layers）保留为**外接模块**——代码完整留存，但不进入默认加载路径。
+它的核心是一条直白的 ReAct 循环，没有中间件链、没有图编排、没有框架锁。Coding、Research、Office、Daily 只是可组合的 Profile（Tools + Skills + Prompt），不是四套 Agent 或 Workflow。Subagent、Plan、Wiki 和分层记忆仍作为外接模块保留。
 
 ---
 
@@ -60,9 +60,10 @@ NanoDeer 是 **Agent Runtime 工程的开源参考实现**——不是又一个�
 
 项目明确分为两层：
 
-- **核心**（默认加载）：ReAct 循环、Workspace、8 个能力工具 + `wait`、检查点、扁平文件记忆、SSE API
+- **核心**：ReAct 循环、State 所有权、Workspace、工具边界、检查点和 SSE API
 - **执行后端**（可选/懒加载）：bash 使用 Docker；Local 执行必须显式进入 trusted mode
-- **外接**（硬盘保留，不默认加载）：subagent、plan、skills、wiki、记忆分层、12 个额外工具
+- **Profile**（启动时组装）：coding、research、office、daily 的 Tools + Markdown Skills
+- **外接**（硬盘保留，不默认加载）：subagent、plan、wiki、记忆分层和额外工具模式
 
 早期版本所有功能默认全加载。这次重构清理后，探索成果不浪费，只是不放在关键路径上。需要的人可以手动启用。
 
@@ -137,26 +138,18 @@ NanoDeer 是 **Agent Runtime 工程的开源参考实现**——不是又一个�
 
 ---
 
-## 工具
+## 多功能能力
 
-**8 个能力工具 + 1 个控制工具**（`default_tools()` 默认加载）：
+一个默认 Agent 可以在四类任务间自然切换，不经过领域 Router：
 
-| 工具 | 类别 | 执行位置 |
-|------|------|---------|
-| `read_file` | 文件 | 宿主机 |
-| `write_file` | 文件 | 宿主机 |
-| `edit_file` | 文件 | 宿主机 |
-| `bash` | Shell | **沙箱内**（容器） |
-| `web_search` | 网络 | 宿主机 |
-| `web_fetch` | 网络 | 宿主机 |
-| `save_memory` | 记忆 | 宿主机 |
-| `search_memory` | 记忆 | 宿主机 |
-| `wait` | 运行控制 | ReAct 内部拦截 |
+| Profile | 副作用边界 | Skill 工作流 |
+|---|---|---|
+| `coding` | Workspace 文件 + 沙箱 `bash` | 检查、修改、验证 |
+| `research` | `web_search/web_fetch` + 带来源输出 | 来源核验与研究报告 |
+| `office` | 一个 `office_artifact` 生成/反读 DOCX/XLSX/PPTX | 创建、检查、交付 |
+| `daily` | 一个持久化 `tasks` + 扁平记忆 | 日期、待办与每日回顾 |
 
-**13 个外接工具函数**（文件保留，需手动 import）：
-`ls`, `glob`, `grep`, `git`, `exec_python`, `read_image`,
-`create_plan`, `add_step`, `update_step`, `list_plans`,
-`spawn_subagent`, `get_subagent_results`, `invoke_skill`
+四类组合后共 16 个去重工具；单领域只有 7–10 个。Profile 只在 Loop 创建前组装，不写入 State。详见 [capabilities.md](docs/capabilities.md) 和 [tools_design.md](docs/tools_design.md)。
 
 ---
 
@@ -184,6 +177,10 @@ pip install -e .
 ```bash
 nanodeer          # 启动 API 服务 http://127.0.0.1:20266
 nanodeer-repl     # CLI REPL 调试
+
+# 可选：只启用部分能力
+nanodeer --capabilities research,office
+nanodeer-repl --capabilities daily
 ```
 
 ### 测试
@@ -220,6 +217,7 @@ nanodeer/
 │   ├── __init__.py          # 包导出: NanoEngine, RuntimeFeatures, config
 │   ├── engine.py            # NanoEngine — 应用入口，Loop 组装
 │   ├── config.py            # HarnessConfig — Pydantic 模型，YAML + 环境变量加载
+│   ├── profiles.py          # 四类 Profile 组合
 │   │
 │   ├── agent/               # 核心运行时
 │   │   ├── __init__.py
@@ -250,7 +248,7 @@ nanodeer/
 │   │   └── path.py          # 路径验证 (外接模块保留)
 │   │
 │   ├── tools/               # 内置工具定义
-│   │   ├── __init__.py      # 8 个能力工具 + wait，外接工具可单独 import
+│   │   ├── __init__.py      # 工具导出 + 旧最小工具列表兼容
 │   │   ├── read_file.py     # 核心: 读取文件
 │   │   ├── write_file.py    # 核心: 写入文件
 │   │   ├── edit_file.py     # 核心: 字符串替换编辑
@@ -259,6 +257,8 @@ nanodeer/
 │   │   ├── web_fetch.py     # 核心: 获取 URL 内容
 │   │   ├── save_memory.py   # 核心: 写入 USER.md / MEMORY.md
 │   │   ├── search_memory.py # 核心: 读取 USER.md / MEMORY.md
+│   │   ├── office_artifact.py # DOCX/XLSX/PPTX 创建与反读
+│   │   ├── tasks.py         # 持久化日常任务
 │   │   ├── wait.py          # 核心: 显式、可持久化 WAIT 控制
 │   │   ├── ls.py            # 外接: 列出目录
 │   │   ├── glob.py          # 外接: 文件模式匹配
@@ -318,6 +318,7 @@ nanodeer/
 ```
 ~/.nanodeer/
 ├── memory/                    # 核心: 扁平文件记忆 (USER.md + MEMORY.md)
+├── daily/tasks.json           # 持久化日常任务
 ├── threads/
 │   ├── threads.db             # SQLite — 消息 + 元数据持久化
 │   └── {thread_id}/

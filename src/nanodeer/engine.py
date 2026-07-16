@@ -129,7 +129,7 @@ class NanoEngine:
             model_name: Optional model override.
             features: Optional RuntimeFeatures for feature gating.
             capabilities: Optional profile names; overrides config defaults.
-            tools: Optional custom tool list. None = use default tools.
+            tools: Optional custom tool list. None = use the composed Profile tools.
             context_transform: Optional callable that populates one ContextView.
             checkpointer: Optional Checkpointer instance. Defaults to SqliteCheckpointer.
             sandbox_provider: Optional sandbox provider override for integrations.

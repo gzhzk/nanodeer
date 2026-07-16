@@ -9,7 +9,7 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.135-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![Docker](https://img.shields.io/badge/Docker-optional-2496ED?style=flat-square&logo=docker&logoColor=white)](https://docker.com)
 
-ReAct Loop · Tool Use · Sandbox · Checkpoint · Memory · SSE Streaming
+ReAct Loop · Coding · Research · Office · Daily · Durable WAIT
 
 *Exploring the runtime behind LLM agents.*
 
@@ -21,7 +21,7 @@ English | [中文](./README_zh.md)
 
 NanoDeer is an open-source reference implementation for agent runtime engineering — not another product competing with Claude Code or Cursor, but a walkthrough that takes the agent runtime apart and shows how each core pattern is implemented.
 
-At its core is a straightforward ReAct loop — no middleware chain, no graph DSL, no framework lock-in. Each core module demonstrates exactly one pattern. Non-core modules (subagent, plan, skills, wiki, layers) are kept as **extensions** — the code stays on disk but is not in the default load path.
+At its core is a straightforward ReAct loop — no middleware chain, no graph DSL, no framework lock-in. Coding, research, office, and daily work are composable Profiles (`Tools + Skills + prompt`), not separate agents or workflows. Subagent, plan, wiki, and layered memory remain optional extensions.
 
 ---
 
@@ -60,9 +60,10 @@ This means you can read the entire execution path in [react.py](src/nanodeer/age
 
 The project is explicitly divided into two layers:
 
-- **Core** (always loaded): ReAct loop, Workspace, 8 capability tools + `wait`, checkpoint, flat-file memory, SSE API
+- **Core**: ReAct loop, State ownership, Workspace, tool boundary, checkpoint, and SSE API
 - **Execution backend** (optional/lazy): Docker sandbox for bash; trusted Local mode is explicit opt-in
-- **Extension** (on disk, not default): subagent, plan, skills, wiki, memory layers, 12 additional tools
+- **Profiles** (startup assembly): coding, research, office, and daily Tools + Markdown Skills
+- **Extension** (on disk, not default): subagent, plan, wiki, layered memory, and additional tool patterns
 
 This was a deliberate cleanup from an earlier version that loaded everything by default. Keeping extension code on disk means exploration work isn't wasted — it's just not in the critical path. Users who need those patterns can activate them manually.
 
@@ -137,26 +138,18 @@ This is the most important decision. NanoDeer does not compete with Claude Code,
 
 ---
 
-## Tools
+## Capabilities
 
-**8 capability tools + 1 control tool** (available via `default_tools()`):
+One default Agent can move between four domains without a router:
 
-| Tool | Category | Runs in |
-|------|----------|---------|
-| `read_file` | File | Host |
-| `write_file` | File | Host |
-| `edit_file` | File | Host |
-| `bash` | Shell | **Sandbox** (container) |
-| `web_search` | Web | Host |
-| `web_fetch` | Web | Host |
-| `save_memory` | Memory | Host |
-| `search_memory` | Memory | Host |
-| `wait` | Runtime control | Intercepted by ReAct |
+| Profile | Effect boundary | Workflow Skills |
+|---|---|---|
+| `coding` | Workspace files + sandboxed `bash` | inspect, edit, verify |
+| `research` | `web_search`, `web_fetch`, sourced output | source verification and reports |
+| `office` | one `office_artifact` tool for DOCX/XLSX/PPTX | create, inspect, validate |
+| `daily` | one persistent `tasks` tool + flat memory | dated actions and daily review |
 
-**13 extension tool functions** (on disk, import individually):
-`ls`, `glob`, `grep`, `git`, `exec_python`, `read_image`,
-`create_plan`, `add_step`, `update_step`, `list_plans`,
-`spawn_subagent`, `get_subagent_results`, `invoke_skill`
+The combined default exposes 16 deduplicated tools. A single-domain Profile exposes only 7–10. Profile assembly happens before the Loop and never enters State. See [capabilities.md](docs/capabilities.md) and [tools_design.md](docs/tools_design.md).
 
 ---
 
@@ -184,6 +177,10 @@ pip install -e .
 ```bash
 nanodeer          # Start API server at http://127.0.0.1:20266
 nanodeer-repl     # CLI REPL for debugging
+
+# Optional profile subsets
+nanodeer --capabilities research,office
+nanodeer-repl --capabilities daily
 ```
 
 ### Test
@@ -220,6 +217,7 @@ nanodeer/
 │   ├── __init__.py          # Package exports: NanoEngine, RuntimeFeatures, config
 │   ├── engine.py            # NanoEngine — app entry point, Loop assembly
 │   ├── config.py            # HarnessConfig — Pydantic models, YAML + env loading
+│   ├── profiles.py          # Coding/research/office/daily Profile composition
 │   │
 │   ├── agent/               # Core runtime
 │   │   ├── __init__.py
@@ -250,7 +248,7 @@ nanodeer/
 │   │   └── path.py          # Path validation (retained for extension use)
 │   │
 │   ├── tools/               # Built-in tool definitions
-│   │   ├── __init__.py      # 8 capability tools + wait; extensions importable
+│   │   ├── __init__.py      # Tool exports + legacy minimal compatibility list
 │   │   ├── read_file.py     # Core: read file content
 │   │   ├── write_file.py    # Core: write file content
 │   │   ├── edit_file.py     # Core: string replacement editing
@@ -260,6 +258,8 @@ nanodeer/
 │   │   ├── save_memory.py   # Core: persist to USER.md / MEMORY.md
 │   │   ├── wait.py          # Core: explicit durable WAIT control
 │   │   ├── search_memory.py # Core: recall from USER.md / MEMORY.md
+│   │   ├── office_artifact.py # DOCX/XLSX/PPTX create + inspect
+│   │   ├── tasks.py         # Persistent daily task actions
 │   │   ├── ls.py            # Extension: list directory
 │   │   ├── glob.py          # Extension: file pattern match
 │   │   ├── grep.py          # Extension: search file contents
@@ -318,6 +318,7 @@ nanodeer/
 ```
 ~/.nanodeer/
 ├── memory/                    # Core: flat-file memory (USER.md + MEMORY.md)
+├── daily/tasks.json           # Persistent daily tasks
 ├── threads/
 │   ├── threads.db             # SQLite — message + metadata persistence
 │   └── {thread_id}/

@@ -330,16 +330,32 @@ async def unarchive_conversation(thread_id: str):
 # ---------------------------------------------------------------------------
 
 
-def main():
+def main(argv=None):
+    import argparse
     import uvicorn
+
+    parser = argparse.ArgumentParser(description="Run the NanoDeer SSE API")
+    parser.add_argument(
+        "--capabilities",
+        help="Comma-separated profiles: coding,research,office,daily or all",
+    )
+    args = parser.parse_args(argv)
+
     cfg = get_config()
+    global _engine
+    _engine = NanoEngine(cfg, capabilities=args.capabilities)
     host = "0.0.0.0"
     port = 20266
     logging.basicConfig(
         level=logging.INFO,
         format="[NanoDeer] %(levelname)s: %(message)s",
     )
-    logger.info("NanoDeer API starting on http://%s:%s", host, port)
+    logger.info(
+        "NanoDeer API starting on http://%s:%s capabilities=%s",
+        host,
+        port,
+        ",".join(_engine.capabilities),
+    )
     uvicorn.run(app, host=host, port=port, log_level="info")
 
 
