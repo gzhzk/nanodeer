@@ -317,39 +317,35 @@ class SqliteCheckpointer(Checkpointer):
     # Async public API
     # ------------------------------------------------------------------
 
+    # SQLite transactions are intentionally executed inline. They are short,
+    # serialized by the checkpointer lock, and avoid binding executor Futures and
+    # thread-local connections to a different event-loop lifecycle.
+
     async def save(self, thread_id: str, state: AgentState) -> None:
         async with self._lock:
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, self._sync_save, thread_id, state)
+            self._sync_save(thread_id, state)
 
     async def load(self, thread_id: str) -> AgentState | None:
         async with self._lock:
-            loop = asyncio.get_event_loop()
-            return await loop.run_in_executor(None, self._sync_load, thread_id)
+            return self._sync_load(thread_id)
 
     async def load_meta(self, thread_id: str) -> dict | None:
         """Load thread metadata without fetching messages."""
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self._sync_load_meta, thread_id)
+        return self._sync_load_meta(thread_id)
 
     async def list_threads(self) -> list[str]:
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, self._sync_list_threads)
+        result = self._sync_list_threads()
         return [r["thread_id"] for r in result]
 
     async def list_conversations(self) -> list[dict]:
         """List all thread metadata (title, count, timestamps) — no messages loaded."""
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self._sync_list_threads)
+        return self._sync_list_threads()
 
     async def delete(self, thread_id: str) -> bool:
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self._sync_delete, thread_id)
+        return self._sync_delete(thread_id)
 
     async def update_title(self, thread_id: str, title: str) -> bool:
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self._sync_update_title, thread_id, title)
+        return self._sync_update_title(thread_id, title)
 
     async def update_status(self, thread_id: str, status: str) -> bool:
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self._sync_update_status, thread_id, status)
+        return self._sync_update_status(thread_id, status)
